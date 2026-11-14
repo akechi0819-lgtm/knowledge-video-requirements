@@ -1,0 +1,10 @@
+# mac 队友会直接用这些 .sh；core.autocrlf=true 会把它们变成 CRLF 导致跑不起来
+* text=auto
+*.sh   text eol=lf
+*.cmd  text eol=crlf
+*.js   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.html text eol=lf

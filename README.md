@@ -1,5 +1,24 @@
 # 知识视频需求整理模块：交接说明
 
+## 三模块工作台与正式演示
+
+[播放或下载 90 秒火锅成片](交付/没有美洲火锅会少些什么_90秒/没有美洲，火锅会少些什么？.mp4) · [定稿蓝图](交付/没有美洲火锅会少些什么_90秒/定稿蓝图.md) · [逐段核对](交付/没有美洲火锅会少些什么_90秒/逐段核对.md)
+
+完整工作台使用 DSH 对话整理需求、上传资料、生成并确认蓝图，再调用 video-kit 制作成片。安装和启动见[工作台部署说明](dsh-workbench-fix/dsh-base/部署说明-队友机.md)与[视频模块说明](video-kit/README.md)。原有 1 号模块仍可按下方说明独立运行。
+
+本次演示使用普通话晓晓音色。完成视频依赖安装后，在仓库根目录运行以下命令，可从随附的定稿制作单重新渲染。输出目录需为新路径，神经配音需要网络。
+
+```sh
+demo='交付/没有美洲火锅会少些什么_90秒'
+out=$(mktemp -d)
+node video-kit/scripts/hotpot-scenes.mjs --input "$demo/production.json" --output "$out/scenes"
+VIDEO_TTS_RATE=+7% node video-kit/WORK/modules/video/pipeline.mjs --prepared "$out/scenes/production.json" --out "$out/film" --voice zh-CN-XiaoxiaoNeural
+node video-kit/WORK/modules/video/verify.mjs "$out/film/mapping.json"
+```
+
+如在工作台新创作中复演此片，先上传同目录的“火锅餐桌.png”，并把“hotpot-demo-scene.json”复制到该创作的 `workspace/threads/<会话 ID>/` 目录，以启用本题五段专用场景。启动工作台前设置 `VIDEO_VOICE=zh-CN-XiaoxiaoNeural`、`VIDEO_TTS_RATE=+7%`，并将 `VIDEO_PYTHON` 指向安装了 video-kit 依赖的 Python。
+
+
 本包交付需求整理与资料交接模块。它与创作者对话，生成 Markdown 视频需求；有用户提供的本地长文时，可筛选相关原文并生成可查询索引。作者要求开始整理后，由程序生成可移动的单次任务交接包。
 
 ## 分工边界与状态

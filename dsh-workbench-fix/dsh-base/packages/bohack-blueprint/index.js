@@ -1,0 +1,71 @@
+/**
+ * @bohack/blueprint — Host plugin entry.
+ *
+ * One Cordis row registers both the capability service (ctx.bohack) and the
+ * /bohack prefix route. Only `webServer` is declared as a hard dependency so
+ * the temporary UI always comes up; agent/preset/session services are looked
+ * up lazily at generation time, and a missing one degrades to the offline
+ * engine instead of blocking the whole plugin.
+ */
+import { createService } from './lib/service.js'
+import { createEngine } from './lib/engine.js'
+import { createWebHandler } from './lib/web.js'
+import { createThreads } from './lib/threads.js'
+
+export const name = '@bohack/blueprint'
+export const inject = ['webServer']
+
+/**
+ * Optional network diagnostics. DSH's DeepSeek adapter wraps a raw fetch
+ * failure as "DeepSeek Messages transport failed / TRANSPORT" and discards the
+ * cause, which makes a proxy/TLS/credential problem indistinguishable from a
+ * plugin bug. This wrapper only logs; it never changes the request.
+ */
+function installNetworkDiagnostics(ctx) {
+  const original = globalThis.fetch
+  if (typeof original !== 'function') return () => {}
+  globalThis.fetch = async function debugFetch(input, init) {
+    const url = typeof input === 'string' ? input : input?.url
+    if (!/deepseek/i.test(String(url))) return original(input, init)
+    try {
+      const res = await original(input, init)
+      if (!res.ok) {
+        try {
+          const body = await res.clone().text()
+          process.stderr.write(`[bohack/net] ${init?.method || 'GET'} ${url} -> ${res.status} ${body.slice(0, 600)}\n`)
+        } catch { /* ignore */ }
+      }
+      return res
+    } catch (e) {
+      const cause = e?.cause
+      process.stderr.write(`[bohack/net] FETCH THROW ${url}: ${e?.name} ${e?.message} | cause=${cause?.code || cause?.message || cause?.name || 'none'}\n`)
+      throw e
+    }
+  }
+  return () => { globalThis.fetch = original }
+}
+
+export function apply(ctx, config = {}) {
+  if (config.debugNetwork) {
+    ctx.effect(() => installNetworkDiagnostics(ctx), 'bohack: network diagnostics')
+  }
+  const service = createService(ctx, config)
+  const engine = createEngine(ctx, config)
+  const threads = createThreads(ctx, config, service, engine)
+  const handler = createWebHandler(service, engine, ctx, threads)
+
+  ctx.effect(() => ctx.provide('bohack', service), 'bohack: ctx.bohack service')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'prefix',
+    path: '/bohack',
+    handler,
+  }), 'bohack: /bohack prefix route')
+
+  ctx.effect(() => () => { engine.reset(); threads.reset() }, 'bohack: release agent session')
+
+  try {
+    ctx.logger?.info?.('[bohack] ready — workspace:', service._internal.dirs.root,
+      '| preset:', config.preset || 'blueprint',
+      '| allowWebResearch:', !!config.allowWebResearch)
+  } catch { /* logging must never break activation */ }
+}

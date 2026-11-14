@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>明讲 · 知识视频工作台</title>
+<style>
+/* 墨影书斋：纸本与留白，朱砂钤印（token 取自绎影 v3）
+   底层实现沿用旧临时 UI：api() 信封 / refresh() 轮询 / busy() / log() / 同款端点 */
+:root {
+  --paper:#f3eee4; --paper-2:#ebe4d6; --ink:#1c1915; --ink-soft:#3a342c;
+  --faded:#6a6358; --rule:rgba(28,25,21,.12); --rule-2:rgba(28,25,21,.28);
+  --cinnabar:#b1352a; --cinnabar-soft:#c45a4c; --gold:#b0893e; --water:#3d5c6e;
+  --serif:"Noto Serif SC","Source Serif 4","Songti SC","SimSun",serif;
+  --sans:"Noto Sans SC","Source Han Sans SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);font-size:15px;line-height:1.7;overflow:hidden}
+button,textarea,select,input{font-family:inherit;color:inherit;font-size:inherit}
+button{cursor:pointer}
+h1,h2,h3{font-weight:500;margin:0;letter-spacing:.04em}
+a{color:var(--cinnabar);text-decoration:none}
+a:hover{text-decoration:underline}
+.paper-bg{position:fixed;inset:0;pointer-events:none;z-index:0;background:
+  radial-gradient(1000px 600px at 0% 0%,rgba(177,53,42,.045),transparent 50%),
+  radial-gradient(800px 500px at 100% 100%,rgba(176,137,62,.07),transparent 45%),var(--paper)}
+.app{position:relative;z-index:1;display:grid;grid-template-columns:64px minmax(0,1.15fr) minmax(360px,.95fr);height:100vh}
+@media(max-width:1050px){.app{grid-template-columns:64px 1fr}.side{display:none}}
+/* 书脊 */
+.spine{border-right:1px solid var(--rule);display:flex;flex-direction:column;align-items:center;
+  padding:18px 0;background:rgba(243,238,228,.72)}
+.seal{width:40px;height:40px;background:var(--cinnabar);color:#f6efe4;display:grid;place-items:center;
+  font-size:21px;box-shadow:2px 2px 0 rgba(28,25,21,.15)}
+.vert{writing-mode:vertical-rl;letter-spacing:.4em;font-family:var(--sans);font-size:11px;color:var(--ink-soft);margin-top:10px}
+.spine .foot{margin-top:auto;font-family:var(--sans);font-size:10px;color:var(--faded);letter-spacing:.15em;writing-mode:vertical-rl}
+/* 主列：对话 */
+.chat{border-right:1px solid var(--rule);display:flex;flex-direction:column;min-width:0}
+.chat-top{padding:14px 24px 10px;border-bottom:1px solid var(--rule);display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.path{font-family:var(--sans);font-size:11px;letter-spacing:.16em;color:var(--faded)}
+.chat-top h1{font-size:19px}
+.stage-badge{font-family:var(--sans);font-size:11px;padding:3px 10px;border:1px solid var(--cinnabar);
+  border-radius:99px;color:var(--cinnabar)}
+.chat-log{flex:1;overflow-y:auto;padding:16px 24px;display:flex;flex-direction:column;gap:12px}
+.note{border:1px solid var(--rule);border-radius:4px;padding:10px 14px;background:rgba(255,255,255,.42);max-width:94%}
+.note header{display:flex;justify-content:space-between;font-family:var(--sans);font-size:11px;
+  letter-spacing:.12em;color:var(--faded);margin-bottom:4px}
+.note-user{border-left:2px solid var(--cinnabar);margin-left:auto}
+.note-user header span{color:var(--cinnabar)}
+.note p{margin:0;white-space:pre-wrap;font-size:14.5px}
+.note .sys{color:var(--faded);font-size:12.5px}
+.activity-list{margin-top:8px;padding-top:5px;border-top:1px solid var(--rule);font-family:var(--sans);font-size:11px;line-height:1.5;color:var(--faded)}
+.activity-item{padding:2px 0;white-space:pre-wrap}
+.activity-item::before{content:'· ';color:var(--cinnabar)}
+.dropzone{margin:0 24px 8px;border:1.5px dashed var(--rule-2);border-radius:4px;padding:8px 12px;
+  font-family:var(--sans);font-size:11.5px;color:var(--faded);text-align:center;transition:.15s}
+.dropzone.hover{border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(177,53,42,.04)}
+.composer{padding:0 24px 16px}
+.composer textarea{width:100%;min-height:66px;border:1px solid var(--rule);background:rgba(255,255,255,.5);
+  padding:9px 11px;outline:none;resize:none;line-height:1.6}
+.composer textarea:focus{border-color:var(--cinnabar)}
+.composer .row{display:flex;gap:10px;margin-top:8px;align-items:center}
+.hint{font-family:var(--sans);font-size:11.5px;color:var(--faded)}
+button.primary{border:0;background:var(--cinnabar);color:#f6efe4;border-radius:3px;padding:6px 16px;font-size:13.5px}
+button.primary:hover:not(:disabled){background:var(--cinnabar-soft)}
+button.ghost{border:1px solid var(--rule-2);background:transparent;border-radius:3px;padding:5px 13px;font-size:13px}
+button.ghost:hover:not(:disabled){border-color:var(--cinnabar);color:var(--cinnabar)}
+button.sm{padding:2px 9px;font-size:11.5px;border-radius:3px}
+button:disabled{opacity:.4;cursor:not-allowed}
+/* 侧栏 */
+.side{display:flex;flex-direction:column;min-width:0;background:rgba(235,228,214,.4)}
+.side-top{padding:12px 20px 0}
+.side-tabs{display:flex;gap:0;border-bottom:1px solid var(--rule);padding:0 20px;align-items:center}
+.side-tabs button.tab{border:0;background:transparent;padding:9px 13px;font-family:var(--sans);
+  font-size:12.5px;letter-spacing:.12em;color:var(--faded);border-bottom:2px solid transparent}
+.side-tabs button.tab.on{color:var(--cinnabar);border-bottom-color:var(--cinnabar)}
+.side-tabs .push{margin-left:auto}
+.mode-btn{border:1px solid var(--rule-2);border-radius:99px;padding:4px 12px;font-family:var(--sans);
+  font-size:11px;background:transparent;margin-bottom:4px}
+.mode-btn.on{border-color:var(--cinnabar);color:var(--cinnabar)}
+.side-body{flex:1;overflow-y:auto;padding:14px 20px 24px}
+.pane{display:none}.pane.on{display:block}
+/* 徽标 */
+.badge{display:inline-block;font-family:var(--sans);font-size:11px;padding:2px 9px;
+  border:1px solid var(--rule-2);border-radius:99px;color:var(--ink-soft)}
+.badge.on{border-color:var(--cinnabar);color:var(--cinnabar)}
+.badge.gold{border-color:var(--gold);color:var(--gold)}
+.badge.water{border-color:var(--water);color:var(--water)}
+.tag{display:inline-block;font-family:var(--sans);font-size:10px;padding:1px 7px;border-radius:99px;margin-left:6px;vertical-align:1px}
+.tag.vetted{border:1px solid var(--water);color:var(--water)}
+.tag.unvetted{border:1px solid var(--gold);color:var(--gold)}
+.tag.candidate{border:1px solid var(--rule-2);color:var(--faded)}
+/* 需求单文档 */
+.doc h1{font-size:16px;border-bottom:1px solid var(--rule-2);padding-bottom:5px;margin:10px 0 8px}
+.doc h2{font-family:var(--sans);font-size:11px;letter-spacing:.28em;color:var(--gold);margin:14px 0 6px}
+.doc h3{font-size:14.5px;margin:12px 0 4px}
+.doc p{margin:3px 0;font-size:14px}
+.doc ul{margin:4px 0;padding-left:18px}
+.doc li{font-size:14px;margin:2px 0}
+.doc blockquote{margin:6px 0;padding:2px 12px;border-left:2px solid var(--rule-2);color:var(--faded);font-size:13px}
+/* 资产 */
+.asset{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--rule);border-radius:3px;
+  padding:9px 12px;margin-bottom:8px;background:rgba(255,255,255,.42)}
+.asset .ic{font-size:17px}
+.asset .name{font-size:13.5px;font-weight:600;word-break:break-all}
+.asset .desc{font-family:var(--sans);font-size:11px;color:var(--faded)}
+.asset .ops{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
+/* 蓝图长卷 */
+.bp-meta{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.leaf{border:1px solid var(--rule);border-left:3px solid var(--rule-2);border-radius:3px;
+  padding:10px 13px;margin-bottom:9px;background:rgba(255,255,255,.42)}
+.leaf.done{border-left-color:var(--cinnabar)}
+.leaf.locked{border-left-color:var(--gold)}
+.leaf-head{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.sid{font-family:var(--sans);font-size:10.5px;font-weight:600;color:var(--faded);letter-spacing:.08em}
+.leaf.done .sid{color:var(--cinnabar)}
+.stitle{font-size:14.5px;font-weight:600}
+.leaf .intent{font-size:13px;color:var(--ink-soft);margin-top:4px;white-space:pre-wrap}
+.leaf .facts{font-family:var(--sans);font-size:11.5px;color:var(--faded);margin-top:3px;white-space:pre-wrap}
+.leaf .ops{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+.leaf textarea{width:100%;min-height:52px;border:1px solid var(--rule);background:rgba(255,255,255,.5);
+  padding:6px 9px;outline:none;resize:vertical;font-size:13px;margin-top:6px}
+.hand{border:1px solid var(--rule);border-radius:3px;background:rgba(255,255,255,.42);padding:11px 13px;margin-top:12px}
+.hand h3{font-family:var(--sans);font-size:11px;letter-spacing:.24em;color:var(--gold);margin-bottom:6px}
+.hand textarea{width:100%;min-height:52px;border:1px solid var(--rule);background:rgba(255,255,255,.5);
+  padding:7px 9px;outline:none;resize:vertical;font-size:13px}
+.manual-banner{font-family:var(--sans);font-size:11.5px;color:var(--gold);border:1px solid rgba(176,137,62,.5);
+  border-radius:3px;padding:6px 10px;margin-bottom:12px}
+/* 面板/提示 */
+.okbox{font-family:var(--sans);font-size:12px;color:var(--water);border:1px solid rgba(61,92,110,.4);
+  border-radius:3px;padding:6px 10px;margin-top:8px}
+.errbox{font-family:var(--sans);font-size:12px;color:var(--cinnabar);border:1px solid rgba(177,53,42,.4);
+  border-radius:3px;padding:6px 10px;margin-top:8px;white-space:pre-wrap}
+.warnbox{font-family:var(--sans);font-size:12px;color:var(--gold);border:1px solid rgba(176,137,62,.5);
+  border-radius:3px;padding:6px 10px;margin-top:8px;white-space:pre-wrap}
+.kv{font-family:var(--sans);font-size:12px;color:var(--faded);display:flex;gap:8px;margin:2px 0}
+.kv b{color:var(--ink);font-weight:600;word-break:break-all}
+.pill{display:inline-block;font-family:var(--sans);font-size:11px;padding:2px 8px;
+  border:1px solid var(--rule-2);border-radius:99px;color:var(--ink-soft);margin:2px 4px 2px 0}
+#log{font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.6;color:var(--ink-soft);
+  background:rgba(28,25,21,.05);border-radius:3px;padding:10px;max-height:170px;overflow:auto;white-space:pre-wrap}
+#log .t{color:var(--faded)} #log .e{color:var(--cinnabar)} #log .s{color:var(--water)}
+.empty{padding:26px;text-align:center;color:var(--faded);border:1px dashed var(--rule-2);border-radius:4px;font-size:13px}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(177,53,42,.3);
+  border-top-color:var(--cinnabar);border-radius:50%;animation:sp .7s linear infinite;
+  vertical-align:-1px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+details{margin-top:8px}
+summary{cursor:pointer;font-family:var(--sans);font-size:12px;color:var(--faded)}
+/* 墨影书斋：对谈与正文并置，内容区独立滚动 */
+.app{grid-template-columns:72px minmax(0,1fr) minmax(0,1fr);height:100dvh;min-height:0}
+.spine{padding:20px 0}.seal{width:42px;height:42px;font-size:22px;font-weight:600}.vert{font-size:13px}
+.chat,.side{min-height:0}.chat{padding:22px 32px 24px 36px}.side{padding:22px 36px 24px 32px;background:transparent}
+.chat-top{padding:0 0 16px;gap:10px;border-bottom:1px solid var(--rule)}
+.chat-top h1,.side-top h2{font-size:28px;line-height:1.4;margin:4px 0}
+.path{margin:0}.intro{margin:3px 0 0;font-size:13px;color:var(--faded)}
+#threadSelect{max-width:170px;min-width:0;border:1px solid var(--rule);background:rgba(255,255,255,.4);padding:4px}
+.stage-badge{border-radius:0}.chat-log{min-height:0;padding:20px 8px 12px 0;gap:18px}
+.note{max-width:100%;border:0;border-radius:0;background:transparent;padding:0;margin:0}
+.note-user{border-left:2px solid var(--cinnabar);padding-left:12px;margin-left:0}
+.note p{font-size:15px;overflow-wrap:anywhere}.dropzone{margin:0 0 8px;padding:6px 10px}
+.composer{padding:12px 0 0;border-top:1px solid var(--rule);flex-shrink:0}
+.composer textarea{max-height:22dvh;min-height:52px;background:transparent;border:0;padding:2px 0;resize:vertical}
+.composer .row{margin-top:6px}.composer .hint{flex:1}
+button.primary,button.ghost{border-radius:0;letter-spacing:.08em;padding:8px 16px}
+button.sm{padding:3px 9px}.side-top{padding:0 0 8px}.chapter{font-family:var(--sans);font-size:11px;letter-spacing:.3em;color:var(--cinnabar);margin:0}
+.side-tabs{padding:0;gap:0;flex-wrap:wrap}.side-tabs button.tab{padding:9px 12px}.mode-btn{border-radius:0}
+.side-body{min-height:0;padding:20px 0 24px;overflow:auto;overflow-wrap:anywhere}
+.doc h1{font-size:24px;border:0;margin:4px 0 12px}.doc h2{margin:20px 0 8px}.doc p,.doc li{font-size:15px}
+.leaf,.hand,.asset,.empty{border-radius:0}.leaf,.hand,.asset{background:rgba(255,255,255,.35)}
+button:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--cinnabar);outline-offset:2px}
+@media(max-width:1050px){
+  html,body{height:auto;min-height:100%}body{overflow:auto}
+  .app{display:flex;flex-direction:column;height:auto;min-height:100dvh}
+  .spine{display:none}.chat{height:100dvh;min-height:min(460px,100dvh);padding:18px 22px 16px;border-right:0;border-bottom:1px solid var(--rule)}
+  .side{display:flex;min-height:65vh;padding:24px 22px}.side-body{overflow:visible}
+}
+@media(max-width:520px){
+  .chat{padding:14px 16px 12px}.chat-top{gap:6px}.chat-top h1,.side-top h2{font-size:24px}
+  .chat-top .spacer{display:none}.chat-top>div{width:100%}.chat-top .hint{font-size:11px}
+  .side{padding:22px 16px}.side-tabs button.tab{padding:8px}.mode-btn{margin-left:0}
+  .composer .hint{font-size:10px;line-height:1.4}.dropzone{font-size:10px;line-height:1.4}
+}
+@media(max-height:600px) and (min-width:1051px){.chat,.side{padding-top:10px;padding-bottom:10px}.chat-top{padding-bottom:6px}.chat-top h1,.side-top h2{font-size:21px}.intro{display:none}.chat-log{padding-top:8px}.dropzone{padding:3px}.composer{padding-top:5px}.composer textarea{min-height:38px}}
+</style>
+</head>
+<body>
+<div class="paper-bg" aria-hidden="true"></div>
+<div class="app">
+  <aside class="spine">
+    <div class="seal">明</div>
+    <div class="vert">明讲工作台</div>
+    <div class="foot">知识视频创作工作台</div>
+  </aside>
+
+  <!-- 主列：需求助手对话（唯一主界面，无页面跳转） -->
+  <section class="chat">
+    <div class="chat-top">
+      <div>
+        <p class="path">明讲工作台 · <span id="wsName">当前创作</span></p>
+        <h1>对谈</h1>
+        <p class="intro">说出主题、补充想法，或把资料带进来。</p>
+      </div>
+      <span class="spacer" style="flex:1"></span>
+      <label class="hint" for="threadSelect">当前创作</label>
+      <select id="threadSelect" aria-label="切换创作"></select>
+      <button class="ghost sm" id="btnNewThread">新建创作</button>
+      <span class="stage-badge" id="stageBadge">整理需求中</span>
+    </div>
+    <div class="chat-log" id="chatLog"><div class="empty">还没有对话。先在下面写第一句话。</div></div>
+    <div class="dropzone" id="dropzone">把资料拖到这里上传（单个文件不超过 10MB）</div>
+    <div class="composer">
+      <textarea id="chatInput" placeholder="在页边写下主题、补充或修改…（Ctrl+Enter 发送）"></textarea>
+      <div class="row">
+        <button class="primary" id="btnChat">写下</button>
+        <span class="hint">在这里补充想法或提出修改。</span>
+      </div>
+      <div class="msg" id="chatMsg" style="font-family:var(--sans);font-size:12px;margin-top:8px"></div>
+    </div>
+  </section>
+
+  <!-- 侧栏：需求单 / 资产 / 蓝图 / 成片(预留) -->
+  <aside class="side">
+    <div class="side-top"><p class="chapter">正文 · 实时产物</p><h2>创作长卷</h2></div>
+    <div class="side-tabs">
+      <button class="tab on" data-tab="req">需求单</button>
+      <button class="tab" data-tab="assets">资料</button>
+      <button class="tab" data-tab="bp">蓝图</button>
+      <button class="tab" data-tab="film">成片</button>
+      <span class="push"></span>
+      <button class="mode-btn" id="modeBtn" title="在蓝图中直接编辑和提出修改">手动工作台</button>
+    </div>
+    <div class="side-body">
+      <!-- 需求单 -->
+      <div class="pane on" id="pane-req">
+        <div class="doc" id="reqDoc"><div class="empty">需求单为空。在左侧写下第一句话，助手会开始整理。</div></div>
+        <p class="hint" style="margin-top:10px">这里显示整理好的视频需求。</p>
+      </div>
+      <!-- 资产 -->
+      <div class="pane" id="pane-assets">
+        <p class="hint" style="margin-bottom:10px">资料的核验状态显示在标签中。「通过」表示认可其作为事实依据；删除只移除登记，不删除文件。</p>
+        <div id="assetList"><div class="empty">还没有资料。可以将文件拖到对话区上传。</div></div>
+      </div>
+      <!-- 蓝图 -->
+      <div class="pane" id="pane-bp">
+        <div class="bp-meta" id="bpMeta"></div>
+        <div id="bpPreview"></div>
+        <div id="bpManual" style="display:none"></div>
+      </div>
+      <div class="pane" id="pane-film">
+        <div class="kv"><span>当前蓝图</span><b id="filmBp">—</b></div>
+        <div class="kv"><span>定稿状态</span><b id="filmState">未定稿</b></div>
+        <p class="hint" style="margin:12px 0">每段需要已确认的旁白。自动质检通过后，仍需观看并核对内容与画面。</p>
+        <button class="primary" id="btnProduction">开始制作成片</button>
+        <div id="productionStatus" class="hint" style="margin-top:12px"></div>
+        <div id="filmPlayer" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const $ = s => document.querySelector(s)
+const $$ = s => [...document.querySelectorAll(s)]
+const state = { status:null, busy:false, editing:null, manual:false, tab:'req', assets:[], threadId:null, threads:[] }
+
+function log(msg, kind=''){
+  const el=$('#log') || null
+  // log 面板并入运行日志（成片页下方的 details）不存在时仅 console
+  const box=$('#runLog')
+  if(!box) return
+  const t=new Date().toLocaleTimeString('zh-CN',{hour12:false})
+  const line=document.createElement('div')
+  if(kind) line.className=kind
+  line.textContent=`[${t}] ${msg}`
+  box.appendChild(line); box.scrollTop=box.scrollHeight
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function chatMsg(html, cls='okbox'){ $('#chatMsg').innerHTML=html?`<div class="${cls}">${html}</div>`:'' }
+function busy(on,label){
+  state.busy=on
+  $$('button').forEach(b=>{ if(!['btnRefresh'].includes(b.id)) b.disabled=on })
+  $('#threadSelect').disabled=on
+  if(on){ const b=$('#stageBadge'); b.innerHTML='<span class="spin"></span>'+(label||'处理中') }
+  refresh()
+}
+async function api(url, body){
+  const opt = body===undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}
+  if (!url.startsWith('/bohack/api/threads') && !state.threadId) throw new Error('请先选择创作')
+  if(state.threadId && !url.startsWith('/bohack/api/threads')) url += (url.includes('?')?'&':'?')+'threadId='+encodeURIComponent(state.threadId)
+  const r = await fetch(url,opt)
+  const j = await r.json().catch(()=>({ok:false,error:'响应不是 JSON ('+r.status+')'}))
+  if(!r.ok || j.ok===false) throw new Error(j.error||('HTTP '+r.status))
+  return j
+}
+
+async function streamApi(url, body, onEvent){
+  if(!state.threadId) throw new Error('请先选择创作')
+  const response=await fetch(url+'?threadId='+encodeURIComponent(state.threadId),{
+    method:'POST', headers:{'content-type':'application/json','accept':'application/x-ndjson'}, body:JSON.stringify(body)
+  })
+  if(!response.ok){
+    const data=await response.json().catch(()=>({}))
+    throw new Error(data.error||('HTTP '+response.status))
+  }
+  const reader=response.body.getReader(), decoder=new TextDecoder()
+  let buffer='', result, completed=false
+  function consume(line){
+    if(!line.trim()) return
+    const event=JSON.parse(line)
+    if(event.type==='error') throw new Error(event.message||'处理失败')
+    if(event.type==='done'){ result=event.result; completed=true }
+    else if(event.type==='status'||event.type==='text'||event.type==='activity') onEvent(event)
+  }
+  while(true){
+    const {value,done}=await reader.read()
+    buffer+=decoder.decode(value||new Uint8Array(),{stream:!done})
+    const lines=buffer.split('\n'); buffer=lines.pop()
+    for(const line of lines) consume(line)
+    if(done) break
+  }
+  if(buffer.trim()) consume(buffer)
+  if(!completed) throw new Error('连接中断，未收到完成结果；请先检查对话记录再重试。')
+  return result
+}
+function nearChatBottom(){ const b=$('#chatLog'); return b.scrollHeight-b.scrollTop-b.clientHeight<80 }
+function appendChatNote(who,text,cls=''){
+  const box=$('#chatLog'), follow=nearChatBottom()
+  box.querySelector('.empty')?.remove()
+  const note=document.createElement('article'); note.className='note '+cls
+  const header=document.createElement('header'), name=document.createElement('span'), p=document.createElement('p')
+  name.textContent=who; header.appendChild(name); p.textContent=text
+  note.append(header,p); box.appendChild(note)
+  if(follow) box.scrollTop=box.scrollHeight
+  return note
+}
+function updateChatNote(note,text){
+  const follow=nearChatBottom(); note.querySelector('p').textContent=text
+  if(follow) $('#chatLog').scrollTop=$('#chatLog').scrollHeight
+}
+function countUserMessage(raw,text){
+  return String(raw||'').split(/^## /m).filter(p=>{
+    const m=/^[\dT:.\-]+Z? · (.+?)\n\n?([\s\S]*)$/.exec(p.trim())
+    return m && m[1].includes('创作者') && m[2].trim()===text
+  }).length
+}
+function appendActivity(note,text){
+  if(!note) return
+  const follow=nearChatBottom()
+  let list=note.querySelector('.activity-list')
+  if(!list){ list=document.createElement('div'); list.className='activity-list'; note.appendChild(list) }
+  const item=document.createElement('div'); item.className='activity-item'; item.textContent=text; list.appendChild(item)
+  if(follow) $('#chatLog').scrollTop=$('#chatLog').scrollHeight
+}
+function progressNotes(userNote=null){
+  let status=null, reply=null, accumulated=''
+  const handle=event=>{
+    if(event.type==='activity'){
+      appendActivity(userNote,event.text)
+    } else if(event.type==='status'){
+      if(!status) status=appendChatNote('进度',event.text,'stream-status')
+      else updateChatNote(status,event.text)
+    } else {
+      accumulated+=event.text
+      if(!reply) reply=appendChatNote('助手',accumulated,'stream-reply')
+      else updateChatNote(reply,accumulated)
+    }
+  }
+  handle.clear=()=>{ status?.remove(); reply?.remove() }
+  return handle
+}
+
+async function loadThreads(){
+  const r=await api('/bohack/api/threads')
+  state.threads=r.threads
+  $('#threadSelect').innerHTML=r.threads.map(t=>`<option value="${esc(t.id)}">${esc(t.title||'新创作')}</option>`).join('')
+  $('#threadSelect').value=state.threadId||''
+}
+function clearThreadView(){
+  state.status=null; state.assets=[]; state.editing=null
+  $('#runLog')?.replaceChildren()
+  $('#chatInput').value=''; chatMsg(''); renderChat(''); renderRequirement(''); renderAssets([])
+  $('#wsName').textContent='当前创作'; $('#stageBadge').textContent='整理需求中'
+  $('#stageBadge').style.borderColor=''; $('#stageBadge').style.color=''
+  $('#filmBp').textContent='—'; $('#filmState').textContent='未定稿'
+  renderBlueprint()
+}
+async function selectThread(id){
+  state.threadId=id; localStorage.setItem('bohackThreadId',id)
+  const locationUrl=new URL(location.href); locationUrl.searchParams.set('thread',id); history.replaceState(null,'',locationUrl)
+  clearThreadView()
+  await Promise.all([refresh(),loadChat(),loadAssets()])
+}
+$('#threadSelect').addEventListener('change',e=>selectThread(e.target.value))
+$('#btnNewThread').addEventListener('click',async()=>{
+  try{ const r=await api('/bohack/api/threads',{}); await loadThreads(); await selectThread(r.thread.id); $('#threadSelect').value=r.thread.id }
+  catch(e){ chatMsg(esc(e.message),'errbox') }
+})
+
+/* ── 侧栏 tab ── */
+$$('.side-tabs .tab').forEach(b=>b.addEventListener('click',()=>{
+  $$('.side-tabs .tab').forEach(x=>x.classList.toggle('on',x===b))
+  $$('.pane').forEach(p=>p.classList.remove('on'))
+  $('#pane-'+b.dataset.tab).classList.add('on')
+}))
+/* 手动工作台开关 */
+$('#modeBtn').addEventListener('click',()=>{
+  state.manual=!state.manual
+  $('#modeBtn').classList.toggle('on',state.manual)
+  $('#modeBtn').textContent=state.manual?'退出手动':'手动工作台'
+  renderBlueprint()
+})
+
+/* ── 对话 ── */
+function renderChat(raw,activities=[]){
+  const box=$('#chatLog'), follow=nearChatBottom()
+  if(!raw){ box.innerHTML='<div class="empty">还没有对话。先在下面写第一句话。</div>'; return }
+  const parts=String(raw).split(/^## /m).map(x=>x.trim()).filter(Boolean)
+  let turnIndex=0
+  box.innerHTML=parts.map(p=>{
+    const m=/^([\dT:.\-]+Z?) · (.+?)\n\n?([\s\S]*)$/.exec(p)
+    if(!m) return `<article class="note"><header><span>·</span></header><p>${esc(p)}</p></article>`
+    const who=m[2].includes('创作者')?'note-user':''
+    const time=m[1].replace('T',' ').slice(5,19)
+    const items=who ? activities.filter(a=>a.turnIndex===turnIndex) : []
+    if(who) turnIndex++
+    return `<article class="note ${who}"><header><span>${esc(m[2])}</span><time>${esc(time)}</time></header><p>${esc(m[3].trim())}</p>${items.length?`<div class="activity-list">${items.map(a=>`<div class="activity-item">${esc(a.text)}</div>`).join('')}</div>`:''}</article>`
+  }).join('')||'<div class="empty">还没有对话。</div>'
+  if(follow) box.scrollTop=box.scrollHeight
+}
+async function loadChat(){
+  if(state.streamingChat) return
+  const id=state.threadId
+  try{ const h=await api('/bohack/api/chat'); if(id===state.threadId) renderChat(h.raw,h.activities||[]) }catch(e){ log('对话记录读取失败：'+e.message,'e') }
+}
+$('#btnChat').addEventListener('click',async()=>{
+  if(state.busy) return
+  const input=$('#chatInput'), text=input.value.trim()
+  if(!text){ chatMsg('先写点什么。','warnbox'); return }
+  const before=[...$('#chatLog').querySelectorAll('.note-user p')].filter(p=>p.textContent.trim()===text).length
+  input.value=''; const userNote=appendChatNote('创作者',text,'note-user'); state.streamingChat=true
+  busy(true,'需求助手思考中'); chatMsg('')
+  let succeeded=false
+  try{
+    const r=await streamApi('/bohack/api/chat',{text},progressNotes(userNote))
+    succeeded=true
+    log(`需求助手回复（${(r.reply||'').length} 字）`,'s'); chatMsg(r.productionError?esc(r.productionError.message):r.generationError?esc(r.generationError.message||r.generationError):'', 'errbox')
+    await loadThreads()
+    if(r.production){ const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
+    if(r.generation){ const tab=$('[data-tab=bp]'); tab.disabled=false; tab.click() }
+  }catch(e){
+    log('需求助手失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox')
+    try{
+      const h=await api('/bohack/api/chat')
+      if(countUserMessage(h.raw,text)<=before && !input.value) input.value=text
+      renderChat(h.raw,h.activities||[])
+    }catch(historyError){ chatMsg(esc(e.message+'；无法核对记录，请检查后再重试。'),'errbox') }
+  }finally{
+    state.streamingChat=false; busy(false)
+    if(succeeded) await loadChat()
+    refresh(); loadAssets()
+  }
+})
+$('#chatInput').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)) $('#btnChat').click()
+})
+
+/* ── 拖放上传（真上传：落 sources/ + 登记资产） ── */
+const dz=$('#dropzone')
+;['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('hover')}))
+;['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('hover')}))
+dz.addEventListener('drop',async e=>{
+  for(const f of e.dataTransfer.files){ await uploadFile(f) }
+})
+async function uploadFile(f){
+  if(f.size>10*1024*1024){ chatMsg(`「${esc(f.name)}」超过 10MB，无法上传。`,'warnbox'); return }
+  chatMsg(`正在上传「${esc(f.name)}」…`,'warnbox')
+  busy(true,'上传资料')
+  try{
+    const buf=new Uint8Array(await f.arrayBuffer())
+    let bin=''; for(let i=0;i<buf.length;i+=0x8000) bin+=String.fromCharCode.apply(null,buf.subarray(i,i+0x8000))
+    const r=await api('/bohack/api/upload',{name:f.name,dataBase64:btoa(bin)})
+    log(`资料已上传：${r.asset.name}（unvetted）`,'s')
+    chatMsg(`已上传 <code>${esc(r.asset.path)}</code>。`)
+  }catch(e){ log('上传失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+  finally{ busy(false); loadAssets() }
+}
+
+/* ── 资产 ── */
+function trustTag(t){ return t==='vetted'?'<span class="tag vetted">已把关</span>'
+  : t==='candidate'?'<span class="tag candidate">候选</span>'
+  : '<span class="tag unvetted">未核</span>' }
+function renderAssets(list){
+  const box=$('#assetList')
+  if(!list?.length){ box.innerHTML='<div class="empty">还没有资料。可以将文件拖到对话区上传。</div>'; return }
+  const icon=t=>t==='image'?'🖼️':t==='link'?'🔗':t==='index'?'🗂️':'📄'
+  box.innerHTML=list.map(a=>`
+    <div class="asset">
+      <span class="ic">${icon(a.type)}</span>
+      <div style="min-width:0">
+        <div class="name">${esc(a.name)} ${trustTag(a.trust)}</div>
+        <div class="desc">${esc(a.path)}${a.note?' · '+esc(a.note):''}${a.addedBy?' · 来自'+esc(a.addedBy):''}</div>
+      </div>
+      <div class="ops">
+        ${a.trust!=='vetted'?`<button class="sm" data-approve="${esc(a.id)}">通过</button>`:''}
+        <button class="sm" data-del="${esc(a.id)}">删除</button>
+      </div>
+    </div>`).join('')
+  box.querySelectorAll('[data-approve]').forEach(b=>b.addEventListener('click',async()=>{
+    try{ await api('/bohack/api/assets-update',{id:b.dataset.approve,action:'approve'}); log('资料已通过：'+b.dataset.approve,'s'); loadAssets() }
+    catch(e){ log('通过失败：'+e.message,'e') }
+  }))
+  box.querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click',async()=>{
+    if(!confirm('删除这条资料登记？原文件会保留。')) return
+    try{ await api('/bohack/api/assets-update',{id:b.dataset.del,action:'delete'}); log('资料登记已删除：'+b.dataset.del,'s'); loadAssets() }
+    catch(e){ log('删除失败：'+e.message,'e') }
+  }))
+}
+async function loadAssets(){
+  const id=state.threadId
+  try{ const r=await api('/bohack/api/assets'); if(id===state.threadId){ state.assets=r.assets; renderAssets(r.assets) } }
+  catch(e){ log('资料读取失败：'+e.message,'e') }
+}
+
+/* ── 需求单 ── */
+function renderRequirement(raw){
+  const box=$('#reqDoc')
+  if(!raw||!raw.trim()){ box.innerHTML='<div class="empty">需求单为空。在左侧写下第一句话，助手会开始整理。</div>'; return }
+  const out=[]
+  for(const ln of String(raw).split('\n')){
+    const t=esc(ln)
+    if(/^### /.test(ln)) out.push(`<h3>${t.slice(4)}</h3>`)
+    else if(/^## /.test(ln)) out.push(`<h2>${t.slice(3)}</h2>`)
+    else if(/^# /.test(ln)) out.push(`<h1>${t.slice(2)}</h1>`)
+    else if(/^> /.test(ln)) out.push(`<blockquote>${t.slice(2)}</blockquote>`)
+    else if(/^[-*] /.test(ln)) out.push(`<li>${t.slice(2)}</li>`)
+    else if(/^\d+\. /.test(ln)) out.push(`<li>${t.replace(/^\d+\. /,'')}</li>`)
+    else if(t.trim()==='') out.push('')
+    else out.push(`<p style="margin:2px 0">${t}</p>`)
+  }
+  box.innerHTML=out.join('\n')
+}
+
+/* ── 蓝图（预览级控制 / 手动级控制） ── */
+function leafHTML(sec, s, manual){
+  const locked=(s.locked||[]).includes(sec.id)
+  const cls=`leaf ${sec.confirmed?'done':''} ${locked?'locked':''}`
+  const badge=(sec.confirmed?'<span class="badge on">已确认</span>':'<span class="badge">待确认</span>')
+    +(locked?'<span class="badge gold">🔒 已锁定</span>':'')
+  const head=`<div class="leaf-head"><span class="sid">${esc(sec.id)}</span><span class="stitle">${esc(sec.title)}</span><span style="flex:1"></span>${badge}</div>
+    <div class="intent">${esc(sec.intent||'（缺）')}</div>
+    <div class="facts">关键事实：${sec.facts?.length?sec.facts.map(esc).join('；'):'（缺）'}</div>
+    <div class="intent" style="color:var(--faded)">画面意图：${esc(sec.visual||'（缺）')}</div>`
+  const ops=manual
+    ? `<div class="ops">
+        <button class="sm ghost" data-act="edit" data-id="${esc(sec.id)}">改这段</button>
+        ${sec.confirmed?'':`<button class="sm ghost" data-act="confirm" data-id="${esc(sec.id)}">确认这段</button>`}
+        <button class="sm ghost" data-act="lock" data-id="${esc(sec.id)}" data-on="${locked?'0':'1'}">${locked?'解锁':'🔒 锁定'}</button>
+      </div>`
+    : `<div class="ops">
+        ${sec.confirmed?'':`<button class="sm ghost" data-act="confirm" data-id="${esc(sec.id)}">确认这段</button>`}
+        <button class="sm ghost" data-act="lock" data-id="${esc(sec.id)}" data-on="${locked?'0':'1'}">${locked?'解锁':'🔒 锁定'}</button>
+      </div>`
+  return `<div class="${cls}" data-leaf="${esc(sec.id)}">${head}<div class="editarea">${ops}</div></div>`
+}
+function renderBlueprint(){
+  const s=state.status
+  const prev=$('#bpPreview'), man=$('#bpManual')
+  if(!s?.sections?.length){
+    prev.style.display=''; man.style.display='none'
+    prev.innerHTML=`<div class="empty">还没有蓝图。在对话里说「开蓝图」，或点下面按钮。<br><br><button class="primary" id="btnGenerate">起草蓝图</button></div>`
+    man.innerHTML=''; $('#bpMeta').innerHTML='<span class="badge">蓝图 · 未生成</span>'
+    const g=$('#btnGenerate'); if(g) g.addEventListener('click',doGenerate)
+    return
+  }
+  $('#bpMeta').innerHTML=`<span class="badge on">蓝图 v${s.currentVersion} · ${s.sections.length} 段</span>
+    <span class="badge">依据当前需求单</span>
+    ${s.lastRun?`<span class="badge ${s.lastRun.realCall?'gold':''}">${esc(s.lastRun.engineLabel||'')}</span>`:''}`
+  const leaves=s.sections.map(sec=>leafHTML(sec,s,state.manual)).join('')
+  if(state.manual){
+    prev.style.display='none'; man.style.display=''
+    man.innerHTML=`<div class="manual-banner">可以直接编辑段落，或留言后按反馈修改。重新起草时会保留锁定的段落。</div>
+      ${leaves}
+      <div class="hand">
+        <h3>蓝图修改意见</h3>
+        <textarea id="noteText" placeholder="例：B03 和 B04 顺序对调；B05 末尾加一句回扣"></textarea>
+        <div class="ops" style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button class="sm primary" id="btnNote">保存意见</button>
+          <button class="sm ghost" id="btnRevise">按意见修改</button>
+          <button class="sm ghost" id="btnFresh">重新起草</button>
+          <button class="sm ghost" id="btnFinalize">确认定稿</button>
+          <button class="sm ghost" id="btnRefresh">刷新</button>
+        </div>
+        <div class="kv" style="margin-top:8px"><span>修改意见：${s.hasFeedback?'已有':'暂无'}</span></div>
+      </div>
+      <details style="margin-top:10px"><summary>修改与留言记录</summary><div id="adjustLog" class="hint"></div></details>
+      <details style="margin-top:4px"><summary>运行日志</summary><div id="runLog" style="font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.6;color:var(--ink-soft);background:rgba(28,25,21,.05);border-radius:3px;padding:10px;max-height:170px;overflow:auto;white-space:pre-wrap"><span class="t">就绪。</span></div></details>`
+    man.querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click',()=>beginEdit(b.dataset.id)))
+    man.querySelectorAll('[data-act="confirm"]').forEach(b=>b.addEventListener('click',()=>doConfirm(b.dataset.id)))
+    man.querySelectorAll('[data-act="lock"]').forEach(b=>b.addEventListener('click',()=>doLock(b.dataset.id,b.dataset.on==='1')))
+    $('#btnNote').addEventListener('click',doNote)
+    $('#btnRevise').addEventListener('click',doRevise)
+    $('#btnFresh').addEventListener('click',doFresh)
+    $('#btnFinalize').addEventListener('click',doFinalize)
+    $('#btnRefresh').addEventListener('click',()=>{refresh();loadChat();loadAssets();loadAdjustments()})
+    loadAdjustments()
+  } else {
+    man.style.display='none'; prev.style.display=''
+    prev.innerHTML=leaves
+    prev.querySelectorAll('[data-act="confirm"]').forEach(b=>b.addEventListener('click',()=>doConfirm(b.dataset.id)))
+    prev.querySelectorAll('[data-act="lock"]').forEach(b=>b.addEventListener('click',()=>doLock(b.dataset.id,b.dataset.on==='1')))
+  }
+}
+function beginEdit(id){
+  const s=state.status; const sec=s?.sections?.find(x=>x.id===id); if(!sec) return
+  const card=$(`#bpManual [data-leaf="${id}"] .editarea`); if(!card) return
+  card.innerHTML=`
+    <textarea id="edTitle" style="min-height:30px">${esc(sec.title)}</textarea>
+    <textarea id="edIntent" placeholder="讲什么">${esc(sec.intent||'')}</textarea>
+    <textarea id="edFacts" placeholder="关键事实（每行一条）">${esc((sec.facts||[]).join('\n'))}</textarea>
+    <textarea id="edVisual" placeholder="画面意图">${esc(sec.visual||'')}</textarea>
+    <textarea id="edNarration" placeholder="旁白">${esc(sec.narration||'')}</textarea>
+    <div class="ops"><button class="sm primary" id="edSave">保存新版本</button><button class="sm ghost" id="edCancel">取消</button></div>`
+  $('#edSave').addEventListener('click',async()=>{
+    busy(true,'保存修改')
+    try{
+      const r=await api('/bohack/api/section',{section:id,fields:{
+        title:$('#edTitle').value, intent:$('#edIntent').value,
+        facts:$('#edFacts').value, visual:$('#edVisual').value, narration:$('#edNarration').value,
+      }})
+      card.replaceChildren()
+      log(`${id} 已保存为 v${r.version}`,r.sessionNotified?'s':'')
+      chatMsg(`${id} 已保存为 v${r.version}。`)
+    }catch(e){ log('手改保存失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+    finally{ busy(false) }
+  })
+  $('#edCancel').addEventListener('click',()=>renderBlueprint())
+}
+async function doConfirm(id){
+  try{ await api('/bohack/api/confirm',{section:id}); log('已确认段 '+id,'s'); refresh() }
+  catch(e){ log('确认失败：'+e.message,'e') }
+}
+async function doLock(id,on){
+  try{
+    const r=await api('/bohack/api/lock',{section:id,on})
+    log(`${on?'锁定':'解锁'} ${id}（v${r.version}）`,on?'s':'')
+    refresh()
+  }catch(e){ log('锁定失败：'+e.message,'e') }
+}
+async function doNote(){
+  const text=$('#noteText')?.value.trim(); if(!text) return
+  busy(true,'保存意见')
+  try{
+    const r=await api('/bohack/api/note',{text})
+    $('#noteText').value=''
+    log(r.delivered?'意见已保存':'意见已记录',r.delivered?'s':'')
+    chatMsg(r.delivered?'意见已保存。':'意见已记录，下次起草或修改时会带上。')
+  }catch(e){ log('留言失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+  finally{ busy(false) }
+}
+async function doGenerate(){
+  if(state.busy) return
+  const progress=progressNotes(); state.streamingChat=true
+  busy(true,'正在起草蓝图')
+  try{
+    const r=await streamApi('/bohack/api/generate',{engine:'agent'},progress)
+    log(`v${r.version} 起草完成 · ${r.engineLabel} · 校验${r.validation.ok?'通过':'未通过'}`,'s')
+    chatMsg(`蓝图 v${r.version} 已起草，共 ${r.sections.length} 段。`)
+  }catch(e){ log('起草失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+  finally{ progress.clear(); state.streamingChat=false; busy(false); loadChat() }
+}
+async function doRevise(){
+  busy(true,'按意见修改')
+  try{ const r=await api('/bohack/api/revise',{engine:'agent'}); log(`v${r.version} 修改完成`,'s'); chatMsg(`蓝图已修改为 v${r.version}。`) }
+  catch(e){ log('修改失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+  finally{ busy(false) }
+}
+async function doFresh(){
+  if(state.busy) return
+  if(!confirm('根据当前需求单重新起草一版蓝图？旧版本会保留。')) return
+  const progress=progressNotes(); state.streamingChat=true
+  busy(true,'重新起草蓝图')
+  try{ const r=await streamApi('/bohack/api/generate',{engine:'agent',fresh:true},progress); log(`重新起草完成：v${r.version}`,'s'); chatMsg(`已重新起草蓝图 v${r.version}。`) }
+  catch(e){ log('重新起草失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+  finally{ progress.clear(); state.streamingChat=false; busy(false); loadChat() }
+}
+async function doFinalize(){
+  busy(true,'定稿')
+  try{ const r=await api('/bohack/api/finalize',{}); log(`定稿完成：${r.file}`,'s'); chatMsg(`蓝图已定稿：<code>${esc(r.file)}</code>。`) }
+  catch(e){ log('定稿失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+  finally{ busy(false) }
+}
+async function loadAdjustments(){
+  const id=state.threadId
+  try{ const r=await api('/bohack/api/adjustments')
+    const el=$('#adjustLog'); if(el && id===state.threadId) el.innerHTML=r.raw?esc(r.raw.slice(-1200)).replace(/\n/g,'<br>'):'（无）'
+  }catch(e){ /* 面板可能未开 */ }
+}
+
+/* ── 状态轮询 ── */
+async function refresh(){
+  const id=state.threadId
+  try{
+    const [s,req]=await Promise.all([api('/bohack/api/status'),api('/bohack/api/requirement')])
+    if(id!==state.threadId) return
+    renderRequirement(req.raw)
+    state.status=s
+    $('#wsName').textContent=s.requirement?.title||'当前创作'
+    const badge=$('#stageBadge')
+    if(!state.busy){
+      const fin=s.hasDelivery
+      badge.textContent=fin?'已定稿':(s.currentVersion?`蓝图 v${s.currentVersion}`:'整理需求中')
+      badge.style.borderColor=fin?'var(--water)':''
+      badge.style.color=fin?'var(--water)':''
+    }
+    if (!$('#edTitle') && !$('#noteText')?.value) renderBlueprint()
+    if(state.busy) $$('button').forEach(b=>{ if(b.id!=='btnRefresh') b.disabled=true })
+    $('#filmBp').textContent=s.currentVersion?`蓝图 v${s.currentVersion}（${s.sections.length} 段）`:'—'
+    $('#filmState').textContent=s.finalized?.version===s.currentVersion && s.stage==='finalized'?'已定稿 ✓':'未定稿'
+    renderFilm(s)
+    renderValidation(s.validation)
+  }catch(e){ console.warn('状态读取失败：',e.message) }
+}
+function renderFilm(s){
+  const p=s.production, el=$('#productionStatus'), player=$('#filmPlayer')
+  $('#btnProduction').disabled=state.busy || p?.status==='running'
+  el.textContent=!p?'尚未开始制作。':p.status==='running'?`蓝图 ${p.version}：${p.phase}…`:p.status==='completed'?`蓝图 ${p.version} 制作完成，请观看并核对。`: `制作${p.status==='interrupted'?'中断':'失败'}：${p.error||'未知错误'}`
+  if(p?.status==='completed'){
+    if(player.dataset.id!==p.id || player.dataset.thread!==state.threadId){
+      const base='/bohack/api/production-file?threadId='+encodeURIComponent(state.threadId)+'&kind='
+      player.innerHTML=`<video controls preload="metadata" style="width:100%" src="${base}video"></video><p><a href="${base}video" download="final.mp4">下载成片</a> · <a href="${base}mapping" download="mapping.json">下载段落映射</a></p>`
+      player.dataset.id=p.id; player.dataset.thread=state.threadId
+    }
+  } else { player.replaceChildren(); player.dataset.id='' }
+}
+$('#btnProduction').addEventListener('click',async()=>{
+  try { await api('/bohack/api/production',{}); await refresh() }
+  catch(e) { $('#productionStatus').textContent='无法开始制作：'+e.message }
+})
+function renderValidation(v){
+  if(!v) return
+  const t=v.ok?`校验通过${v.warnings?.length?`（提醒 ${v.warnings.length} 条）`:''}`
+    :`校验未通过：${(v.errors||[]).slice(0,2).join('；')}`
+  log('校验：'+t, v.ok?'':'e')
+}
+$('#btnRefresh')?.addEventListener('click',()=>{refresh();loadChat();loadAssets()})
+setInterval(()=>{ if(state.threadId && !state.busy) refresh() },15000)
+
+/* ── 启动 ── */
+;(async function init(){
+  try{
+    await loadThreads()
+    let id=new URLSearchParams(location.search).get('thread') || localStorage.getItem('bohackThreadId')
+    if(!state.threads.some(t=>t.id===id)){
+      const r=await api('/bohack/api/threads',{}); await loadThreads(); id=r.thread.id
+    }
+    $('#threadSelect').value=id
+    await selectThread(id)
+  }catch(e){ chatMsg(esc(e.message),'errbox'); return }
+  try{
+    const h=await api('/bohack/api/health')
+    log(`服务就绪 · 引擎 ${h.engine?.agents?'可用':'缺失'}`)
+  }catch(e){ console.warn('健康检查失败：',e.message) }
+})()
+</script>
+</body>
+</html>

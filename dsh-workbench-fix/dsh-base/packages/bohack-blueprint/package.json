@@ -1,0 +1,23 @@
+{
+  "name": "@bohack/blueprint",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Knowledge-video blueprint workbench: a Cordis service plus a temporary /bohack Web UI.",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "lib/",
+    "scripts/export-production.js",
+    "web/"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

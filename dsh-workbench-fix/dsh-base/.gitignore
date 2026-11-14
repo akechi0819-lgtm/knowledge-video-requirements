@@ -1,0 +1,35 @@
+# ── 依赖与本机运行时（绝不入库）────────────────────────────────
+node_modules/
+.dsh-home/*
+!.dsh-home/profiles/
+.dsh-home/profiles/*
+!.dsh-home/profiles/bohack/
+.dsh-home/profiles/bohack/*
+!.dsh-home/profiles/bohack/package.json
+!.dsh-home/profiles/bohack/cordis.yml
+!.dsh-home/profiles/bohack/cordis.patch.yml
+!.dsh-home/profiles/bohack/pnpm-workspace.yaml
+!.dsh-home/profiles/workbench/
+.dsh-home/profiles/workbench/*
+!.dsh-home/profiles/workbench/package.json
+!.dsh-home/profiles/workbench/cordis.yml
+!.dsh-home/profiles/workbench/cordis.patch.yml
+!.dsh-home/profiles/workbench/pnpm-workspace.yaml
+
+# .credentials.yaml / sessions / storages / .anonymous-user-id 一律不入库
+# （上面 .dsh-home/* 已覆盖；这里显式再钉一次，防止将来放宽规则）
+.dsh-home/.credentials.yaml
+.dsh-home/sessions/
+.dsh-home/storages/
+
+# ── 运行日志（可再生成）──────────────────────────────────────
+workspace/runs/*
+workspace/outbox/状态.json
+
+# ── 本机临时诊断文件 ─────────────────────────────────────────
+.bohack-session-debug.jsonl
+*.log
+.DS_Store
+Thumbs.db
+
+workspace/threads/

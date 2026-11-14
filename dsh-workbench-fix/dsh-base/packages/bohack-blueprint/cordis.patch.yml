@@ -1,0 +1,66 @@
+# @bohack/blueprint — bundle layer, applied after dsh-base + dsh-web-app.
+# Both rows are new ids; nothing here overrides a shipped row.
+- insert:
+    # A dedicated agent preset. It composes ONLY what the blueprint agent needs:
+    # a persona (short hard constraints), the skill provider + model-facing skill
+    # tool so SKILL.md can be loaded, and the web tools — available but masked
+    # OFF by default; a run opts in per-request (web: true) and the engine lifts
+    # the mask for that turn only. bash / pwsh / jobs / schedule / subagent /
+    # goal / plan-mode are never composed; the engine deny mask also blocks
+    # command execution in every mode.
+    - id: preset-blueprint
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: blueprint
+        order: 9
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                你是「知识视频蓝图编辑」，目标不是格式合格，而是内容够得上科普视频。
+                开工前先调用 skill 工具加载 blueprint 的完整规则与方法论（catalog 里只有摘要，不是规则正文）。
+                方法论是工具箱不是模板：先按需求判断观众、时长与形态，再决定怎么用；skill 与需求冲突时一律以需求为准。
+                每段必须给出能被观众复述的具体结论，以及 1–3 条具体关键事实，
+                内容可以是年代、地点、出土遗存、可量化变化、机制、文献器物或事件节点。
+                严禁「待核对」「以核对后的资料为准」「本段只讲」「观众应能复述」这类关于写法的说明书；
+                不确定的地方用区间表述并写进备注，正文照写具体事实。
+                回答标题里那个问题的段落是重头戏，必须拆成多段，知识主体占全片一半以上段落。
+                段落编号 B01…B0N 稳定，格式为「### B01｜标题」，插段用 B03a 后缀、不重排。
+                只写内容大纲，保留需求里明确提出的呈现要求与表述边界，不写分镜、动画、代码或逐帧动作。
+                必须调用 write_blueprint 一次性提交结构化蓝图；工具做格式与内容双重校验，
+                失败时按 errors 逐条修正后重新提交。
+                联网规则：默认不检索，先凭自身知识把事实写具体；仅当本次运行明确允许检索时，
+                才用 web_search/web_fetch 定向补充写不具体、没把握的具体知识，
+                检索到的事实直接写进关键事实，来源出处写进备注；任何情况下不执行命令。
+          - id: skill-fs
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          # web_search / web_fetch：组合进来供「按次允许检索」用；引擎的
+          # deny 掩码默认把 web_* 拦掉，只有该次运行 web:true 才放开。
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              search: true
+              fetch: true
+              searchTimeoutMs: 60000
+
+    # The product service + temporary UI. One plugin registers ctx.bohack and
+    # the /bohack prefix route, so there is exactly one row for this package.
+    - id: bohack
+      name: '@bohack/blueprint'
+      config:
+        workspace: ./workspace
+        allowWebResearch: false
+        preset: blueprint
+        # 质量关键任务用官方更强模型（/models 返回 deepseek-flash 与
+        # deepseek-v4-pro）。改回 deepseek-flash 可省钱，但内容会明显变浅。
+        provider: deepseek-official
+        model: deepseek-v4-pro
+        agentTimeoutMs: 300000
+        quality:
+          facts: false
+        # Turn on only when diagnosing a model transport failure; logs fetch
+        # status/errors for DeepSeek endpoints to stderr. Never prints keys.
+        debugNetwork: false

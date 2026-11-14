@@ -1,0 +1,10 @@
+{
+  "name": "video-generation-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Blueprint-driven deterministic video pipeline: HTML/SVG frames + headless Edge + ffmpeg + edge-tts, with forced BGM mix and QA",
+  "dependencies": {
+    "playwright-core": "^1.65.1"
+  }
+}
