@@ -545,10 +545,11 @@ export function createEngine(ctx, config = {}) {
     return readFileSync(file, 'utf8')
   }
 
-  function buildPrompt({ action, requirement, requirementText, rulesText, previousDoc, feedbackText, feedback, version, textAssets, style }) {
+  function buildPrompt({ action, requirement, requirementText, rulesText, previousDoc, feedbackText, feedback, version, textAssets, style, skill }) {
     const parts = [SHORT_RULES, '']
-    const skill = skillText()
-    if (skill) parts.push('## 技能全文：blueprint（内容方法论 · 必须遵守，这不是摘要）', '', skill, '')
+    const blueprintSkill = skillText()
+    if (blueprintSkill) parts.push('## 技能全文：blueprint（内容方法论 · 必须遵守，这不是摘要）', '', blueprintSkill, '')
+    if (skill) parts.push('## 默认通用制作方法', '', '按当前需求采用适用方法；冲突时以创作者要求和所选视觉风格为准，不执行外部操作。', '', skill.content, '')
     const q = qualityPolicy()
     if (rulesText) parts.push('## 契约（与校验器一致）', '', rulesText.slice(0, 9000), '')
     if (q?.facts) parts.push('## 本片质量门槛（校验器会硬查）', '', [
@@ -716,7 +717,7 @@ export function createEngine(ctx, config = {}) {
   }
 
   async function produce(args) {
-    const { action, requirement, requirementText, rulesText, previousDoc, feedbackText, feedback, version, textAssets, style, onProgress } = args
+    const { action, requirement, requirementText, rulesText, previousDoc, feedbackText, feedback, version, textAssets, style, skill, onProgress } = args
     capture.onProgress = onProgress
     capture.startedAt = Date.now(); capture.lastThinkingStatus = 0; capture.draftingReported = false
     onProgress?.({ type: 'status', text: '正在启动蓝图会话' })
@@ -739,7 +740,7 @@ export function createEngine(ctx, config = {}) {
     diag.webResearch = web
     setWebMode(web)
 
-    const prompt = buildPrompt({ action, requirement, requirementText, rulesText, previousDoc, feedbackText, feedback, version, textAssets, style })
+    const prompt = buildPrompt({ action, requirement, requirementText, rulesText, previousDoc, feedbackText, feedback, version, textAssets, style, skill })
     capture.markdown = null; capture.submitted = false; capture.sections = 0
 
     const drive = async (text) => {

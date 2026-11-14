@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
 const builtins = Object.freeze([
-  { id: 'general', name: '通用知识讲解', description: '以清楚、易读的方式讲解知识，具体画面与节奏由本片蓝图决定。', source: { kind: 'builtin', label: '工作台内置' } },
+  { id: 'general', name: '简洁知识图解', description: '使用清晰的主体轮廓、大块留白和少量强调色，用短标签说明关系，按蓝图逐步呈现变化。', source: { kind: 'builtin', label: '工作台内置' } },
   { id: 'editorial', name: '杂志式图文', description: '用鲜明标题、留白和图文组合组织信息，节奏沉稳，重点清晰。', source: { kind: 'builtin', label: '工作台内置' } },
   { id: 'andy-pixel-quest', name: '像素闯关：地图与状态栏（Andy）', description: '以深靛色与亮黄色为主，使用清晰的像素边缘和有限色板。用冒险地图组织关卡，逐关呈现题目、选择与结果；按讲述内容安排进度或状态栏，最终汇总关键收获。地图和状态栏是可调整的设计建议，按题目制作。', source: { kind: 'builtin', label: '本地 .agents/skills/andy-vibe-knowledge/references/03-visual-systems.md 与 01-templates.md' } },
   { id: 'heychengc-concrete', name: '具象动态图解（HeyChengC 参考）', description: '先找到观众认得出的实物或场景，让讲述中的动作在画面中发生；先展示例子，再解释结论。让同一场景和道具跨句延续，每次突出一个变化；提问或结论可留白，不强配图。', source: { kind: 'builtin', label: '本地 .agents/skills/vibe-knowledge-film/SKILL.md（具象讲解规则）' } },

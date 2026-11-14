@@ -225,7 +225,8 @@ button:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible
     <div class="side-tabs">
       <button class="tab on" data-tab="req">需求单</button>
       <button class="tab" data-tab="assets">资料</button>
-      <button class="tab" data-tab="styles">设置</button>
+      <button class="tab" data-tab="styles">风格 Skill 管理</button>
+      <button class="tab" data-tab="settings">设置</button>
       <button class="tab" data-tab="bp">蓝图</button>
       <button class="tab" data-tab="film">成片</button>
       <span class="push"></span>
@@ -242,17 +243,20 @@ button:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible
         <p class="hint" style="margin-bottom:10px">资料的核验状态显示在标签中。「通过」表示认可其作为事实依据；删除只移除登记，不删除文件。</p>
         <div id="assetList"><div class="empty">还没有资料。可以将文件拖到对话区上传。</div></div>
       </div>
-      <div class="pane" id="pane-styles">
-        <p class="hint">在这里管理个人风格库；蓝图定稿后，在成片页选择本次风格。风格资料仅作为参考。</p>
+      <div class="pane" id="pane-settings">
         <details style="margin:12px 0">
           <summary>项目通用模型设置</summary>
           <p class="hint">供视频风格学习与通用画面规划使用。接口填写完整的 chat/completions 地址；本机模型可不填密钥。</p>
-          <input id="projectModelEndpoint" placeholder="接口地址，例如 http://127.0.0.1:11434/v1/chat/completions" style="width:100%;margin:6px 0">
+          <input id="projectModelEndpoint" placeholder="模型服务的 chat/completions 接口地址" style="width:100%;margin:6px 0">
           <input id="projectModelName" placeholder="模型名称" style="width:100%;margin:6px 0">
           <input id="projectModelKey" type="password" autocomplete="new-password" placeholder="密钥（保留原值请留空）" style="width:100%;margin:6px 0">
           <button class="sm primary" id="projectModelSave">保存模型设置</button>
           <p class="hint" id="projectModelMessage"></p>
         </details>
+      </div>
+      <div class="pane" id="pane-styles">
+        <p class="hint">在这里管理个人风格库；蓝图定稿后，在成片页选择本次风格。风格资料仅作为参考。</p>
+
         <div id="styleList" style="margin:12px 0"></div>
         <details>
           <summary>导入风格正文</summary>
@@ -847,7 +851,7 @@ function renderFilm(s){
     const current=visual?.status==='selected'?`当前风格：${esc(visual.style?.name || '')}`:visual?.status==='legacy'?'沿用旧定稿的原有风格':'请选择本次成片的视觉风格。'
     const examples={'andy-pixel-quest':'andy.mp4','heychengc-concrete':'hey.mp4'}
     const choices=(state.styleLibrary||[]).map(item=>`<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><button type="button" class="sm ${visual?.status==='selected' && visual.style?.id===item.id?'primary':'ghost'}" data-film-style="${esc(item.id)}">${esc(item.name)}</button>${examples[item.id]?`<a href="/bohack/style-previews/${examples[item.id]}" target="_blank" rel="noopener">看参考样片</a>`:''}</div>`).join(' ')
-    styleBox.innerHTML=`<p class="hint">${current}</p><div style="display:flex;gap:8px;flex-wrap:wrap">${choices}</div><p class="hint">风格库可在设置中管理。</p>`
+    styleBox.innerHTML=`<p class="hint">${current}</p><div style="display:flex;gap:8px;flex-wrap:wrap">${choices}</div><p class="hint">风格库可在风格页管理。</p>`
     styleBox.querySelectorAll('[data-film-style]').forEach(button=>button.addEventListener('click',async()=>{
       const thread=state.threadId, version=s.currentVersion; button.disabled=true
       try { await api('/bohack/api/styles-select',{id:button.dataset.filmStyle,version}); if(thread===state.threadId) await refresh() }

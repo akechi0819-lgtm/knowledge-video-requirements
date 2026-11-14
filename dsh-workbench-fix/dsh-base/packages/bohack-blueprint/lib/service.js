@@ -12,6 +12,7 @@ import { readFile, writeFile, readdir, mkdir, stat, appendFile } from 'node:fs/p
 import { createProduction } from './production.js'
 import { createProjectModel } from './project-model.js'
 import { createStyles } from './styles.js'
+import { defaultProcessGuidance } from './process-guidance.js'
 import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import {
@@ -256,6 +257,7 @@ export function createService(ctx, config = {}) {
     let rulesText = ''
     try { rulesText = await readFile(path.join(dirs.rules, 'blueprint.md'), 'utf8') } catch { /* optional */ }
 
+    const skill = defaultProcessGuidance()
     const n = await latestVersion()
     const next = n + 1
     const state = await getState()
@@ -271,7 +273,7 @@ export function createService(ctx, config = {}) {
     let result
     try {
       result = await engine.produce({
-        action, requirement, requirementText, rulesText, previousDoc,
+        action, requirement, requirementText, rulesText, previousDoc, skill,
         textAssets: (await readAssetLines()).filter(a => a.type === 'text'),
         feedbackText, feedback: state.pendingFeedback || null,
         version: next, config, options, onProgress,
@@ -311,6 +313,7 @@ export function createService(ctx, config = {}) {
     }
     const canonical = renderBlueprint(doc)
     await writeFile(versionPath(next), canonical, 'utf8')
+    await writeFile(path.join(dirs.outbox, `蓝图_v${next}.技能.json`), JSON.stringify(skill, null, 2) + '\n')
     await writeFile(visualPath(next), JSON.stringify({ status: 'pending', style: null }, null, 2) + '\n', 'utf8')
 
     const finalCheck = validateBlueprint(parseBlueprint(canonical), { quality: config.quality })
@@ -647,7 +650,7 @@ export function createService(ctx, config = {}) {
         await finalize()
         const visual = await visualStyle(initialVersion)
         if (visual?.status === 'pending') {
-          productionError = { code: 'STYLE_REQUIRED', message: '蓝图已定稿，请在成片页选择视觉参考（也可选择通用风格），再开始制作。' }
+          productionError = { code: 'STYLE_REQUIRED', message: '蓝图已定稿，请在成片页选择视觉参考，再开始制作。' }
           reply = productionError.message
         } else {
           onProgress?.({ type: 'status', text: '已确认蓝图，正在启动成片制作' })

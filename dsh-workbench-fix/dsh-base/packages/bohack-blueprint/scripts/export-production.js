@@ -53,7 +53,12 @@ export async function exportProduction(workspace) {
     catch (e) { if (e.code !== 'ENOENT') throw e }
   }
 
+  let skill = null
+  try { skill = JSON.parse(await readFile(path.join(outbox, `蓝图_v${n}.技能.json`), 'utf8')) }
+  catch (e) { if (e.code !== 'ENOENT') throw e }
+
   return {
+    skill,
     status: '准备制作', version: `v${n}`, topic: doc.topic,
     userRequirements: doc.userRequirements, notes: doc.notes.trim(),
     targetDurationSeconds: requestedDuration(doc.userRequirements),
