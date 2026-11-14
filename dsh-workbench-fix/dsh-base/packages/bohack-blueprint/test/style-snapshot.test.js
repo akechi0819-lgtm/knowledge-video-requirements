@@ -19,12 +19,15 @@ test('visual selection follows finalized blueprint versions', async () => {
     const engine = { async produce(args) { calls.push(args); return {markdown,engine:'test'} }, async note() {return {delivered:true}} }
     await service.generate({}, engine)
     assert.equal(calls[0].style, undefined)
+    assert.equal(calls[0].skill.name, '通用制作方法')
+    assert.match(calls[0].skill.content, /直观演示/)
     assert.equal((await service.status()).visualStyle.status, 'pending')
     await assert.rejects(service.selectVisualStyle({id:'general',version:1}), /先确认当前蓝图/)
     await service.confirm({all:true}); await service.finalize()
     await assert.rejects(exportProduction(workspace), /选择视觉参考/)
     await service.selectVisualStyle({id:'general',version:1})
     assert.equal((await exportProduction(workspace)).style.id, 'general')
+    assert.equal((await exportProduction(workspace)).skill.name, '通用制作方法')
     await service.selectVisualStyle({id:'editorial',version:1})
     assert.equal((await exportProduction(workspace)).style.id, 'editorial')
     const custom = (await service.styles.importStyle({name:'自定义',description:'暖色',source:{kind:'text',label:'资料'}})).style
@@ -40,6 +43,7 @@ test('visual selection follows finalized blueprint versions', async () => {
     await assert.rejects(exportProduction(workspace), /选择视觉参考/)
     await service.selectVisualStyle({id:'general',version:2})
     assert.equal((await exportProduction(workspace)).style.id, 'general')
+    assert.equal((await exportProduction(workspace)).skill.name, '通用制作方法')
     await service.revise({}, engine)
     assert.equal((await service.status()).visualStyle.status, 'pending')
     assert.equal(calls[1].style, undefined)

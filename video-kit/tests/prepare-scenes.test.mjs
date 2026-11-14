@@ -46,7 +46,7 @@ const base = () => ({ status: '准备制作', topic: '潮汐', userRequirements:
     facts: ['月球影响海水'], visual: '月球与海洋', narration: '月球影响潮汐。', notes: null, gaps: [] }] });
 
 test('preserves narration and confines model output to data', async () => {
-  const input = base(); input.style = { id:'editorial', name:'杂志式图文', description:'暖色与留白', source:{kind:'text',label:'资料'} };
+  const input = base(); input.skill = { name:'通用制作方法', content:'直观演示' }; input.style = { id:'editorial', name:'杂志式图文', description:'暖色与留白', source:{kind:'text',label:'资料'} };
   const result = await runCase(input);
   try {
     assert.equal(result.code, 0, result.stderr);
@@ -59,6 +59,8 @@ test('preserves narration and confines model output to data', async () => {
     assert.equal(sent.notes, null);
     assert.deepEqual(sent.gaps, []);
     assert.deepEqual(sent.visualStyle, { name:'杂志式图文', description:'暖色与留白' });
+    assert.deepEqual(sent.skillGuidance, input.skill);
+    assert.match(result.requests[0].messages[0].content, /已确认蓝图/);
     const data = JSON.parse(await readFile(join(result.output, 'S01.scene.json')));
     assert.equal(data.script, undefined);
     assert.equal(data.layers[0].onclick, undefined);
