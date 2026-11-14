@@ -291,7 +291,6 @@ input[type=file],input[type=checkbox]{box-shadow:none;background:transparent;pad
               <p id="productionStatus" class="film-action-status" role="status" aria-live="polite"></p>
             </div>
             <div id="filmStyles"></div>
-            <section id="filmAssets" aria-label="动画素材"></section>
           </div>
         </div>
       </div>
@@ -610,7 +609,12 @@ $('#btnChat').addEventListener('click',async()=>{
     succeeded=true
     log(`需求助手回复（${(r.reply||'').length} 字）`,'s'); chatMsg(r.productionError?esc(r.productionError.message):r.generationError?esc(r.generationError.message||r.generationError):'', 'errbox')
     await loadThreads()
-    if(r.production || r.confirmation || r.productionError){ const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
+    if(r.production || r.confirmation || r.chooseRestyle || r.productionError){ const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
+    if(r.chooseRestyle){
+      await refresh()
+      const gallery=$('#filmStyles')
+      gallery.scrollIntoView({block:'nearest'})
+    }
     if(r.generation){ const tab=$('[data-tab=bp]'); tab.disabled=false; tab.click() }
   }catch(e){
     log('需求助手失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox')
@@ -927,7 +931,6 @@ async function refresh(){
   }catch(e){ console.warn('状态读取失败：',e.message) }
 }
 let productionRequest=null, productionFailure=null
-let filmRender=0
 function styleItems(list){
   return (list||[]).filter(item => item.kind === 'style' || (!item.kind && !String(item.id||'').startsWith('repo-skill:')))
 }
@@ -986,9 +989,7 @@ function productionNote(s){
   const p=s.production
   if(!p) return '将使用「'+(s.visualStyle?.style?.name || '简洁知识图解')+'」生成素材并制作成片。'
   if(p.status==='running') return ''
-  if(p.status==='completed') return p.source==='external'
-    ? `蓝图 ${p.version}：${p.model} 独立制作成片已归档。`
-    : '制作完成，请按段观看并核对。若要换风格，选好后点击下方按钮重新制作。'
+  if(p.status==='completed') return ''
   return `制作${p.status==='interrupted'?'中断':'失败'}：${window.BohackFilm.failureMessage(p.error)}`
 }
 function updateProductionAction(s){
@@ -1000,22 +1001,6 @@ function updateProductionAction(s){
   const error=productionFailure?.thread===state.threadId && productionFailure.version===s.currentVersion && !reason ? productionFailure.message : ''
   setProductionStatus(error || reason || productionNote(s), error || failed ? 'error' : '')
 }
-async function renderFilmAssets(s, ready, generation){
-  const box=$('#filmAssets'), thread=state.threadId
-  const makingAssets=s.production?.status==='running' && s.production.phase==='生成素材'
-  if(!ready || !s.blueprintAssets?.length || (s.production?.status==='running' && !makingAssets)){box.replaceChildren(); return}
-  const current=()=>generation===filmRender && state.threadId===thread
-  try {
-    const data=await api('/bohack/api/generated-assets?version='+s.currentVersion)
-    if(!current()) return
-    const previews=data.assets.filter(a=>a.previewUrl)
-    if(makingAssets){
-      $('#filmHeadline').textContent=`正在生成动画素材，已就绪 ${previews.length} / ${data.assets.length} 项。`
-      return
-    }
-    box.innerHTML=previews.length?'<h3>已生成素材</h3>'+previews.map(a=>`<figure class="leaf"><img src="${esc(a.previewUrl)}" alt="" width="120" height="90" style="object-fit:contain"><figcaption>${esc(a.name)}</figcaption></figure>`).join(''):''
-  }catch(e){if(current()) box.textContent='无法读取素材预览：'+e.message}
-}
 function styleSummary(item){
   return item?.summary || (item?.description||'').split(/[。！？\n]/).find(Boolean) || ''
 }
@@ -1023,6 +1008,20 @@ function bindFilmStyleCards(styleBox, s){
   styleBox.querySelectorAll('[data-film-style]').forEach(button=>button.addEventListener('click',async()=>{
     const thread=state.threadId, version=s.currentVersion, item=styleItems(state.styleLibrary).find(x=>x.id===button.dataset.filmStyle)
     const name=item?.name || '所选风格'
+    if(s.pendingRestyle){
+      if(state.busy) return
+      busy(true,'正在启动重绘')
+      try{
+        const r=await api('/bohack/api/chat',{text:`换成「${name}」重新制作`},thread)
+        if(state.threadId===thread){
+          if(r.productionError) chatMsg(esc(r.productionError.message),'errbox')
+          state.pickingStyle=!!r.chooseRestyle
+          await loadChat()
+        }
+      }catch(e){chatMsg(esc(e.message),'errbox')}
+      finally{busy(false)}
+      return
+    }
     button.disabled=true
     state.pickingStyle=true
     setProductionStatus(`正在切换到『${name}』…`)
@@ -1074,7 +1073,7 @@ function renderFilmStyles(s){
     return
   }
   const needsPick=!visual || visual.status==='pending' || visual.status==='legacy'
-  const showGallery=needsPick || state.pickingStyle
+  const showGallery=needsPick || state.pickingStyle || !!s.pendingRestyle
   if(!showGallery){
     const item=styleItems(state.styleLibrary).find(x=>x.id===visual.style?.id) || visual.style || {}
     const change=s.production?.status==='running'?'':`<button type="button" class="ghost" data-pick-style>更换风格</button>`
@@ -1084,12 +1083,12 @@ function renderFilmStyles(s){
     })
     return
   }
-  const collapse=visual?.status==='selected'?`<button type="button" class="ghost" data-collapse-style>收起</button>`:''
+  const collapse=!s.pendingRestyle && visual?.status==='selected'?`<button type="button" class="ghost" data-collapse-style>收起</button>`:''
   const choices=styleItems(state.styleLibrary).map(item=>{
     const on=visual?.status==='selected' && visual.style?.id===item.id
     return `<button type="button" class="style-card${on?' is-on':''}" data-film-style="${esc(item.id)}" aria-pressed="${on?'true':'false'}"><div class="style-preview">${stylePreviewHtml(item)}</div><span class="style-caption"><span class="style-name">${esc(item.name)}</span><span class="style-desc">${esc(styleSummary(item))}</span></span></button>`
   }).join('')
-  const gallery=`<div class="style-gallery"><div class="style-gallery-body"><div class="style-pick-head"><h3>选择视觉风格</h3>${collapse}</div>`+(choices?`<div class="style-grid">${choices}</div>`:'<p class="hint">还没有可选择的视觉风格。</p>')+`</div></div>`
+  const gallery=`<div class="style-gallery"><div class="style-gallery-body"><div class="style-pick-head"><h3>${s.pendingRestyle?'选择风格并重绘':'选择视觉风格'}</h3>${collapse}</div>`+(choices?`<div class="style-grid">${choices}</div>`:'<p class="hint">还没有可选择的视觉风格。</p>')+`</div></div>`
   commitFilmStyles(styleBox,gallery,'gallery',()=>{
     bindStylePreviewMedia(styleBox)
     styleBox.querySelector('[data-collapse-style]')?.addEventListener('click',()=>{ state.pickingStyle=false; renderFilm(state.status) })
@@ -1097,12 +1096,15 @@ function renderFilmStyles(s){
   })
 }
 function renderFilm(s){
-  const finalized=s.finalized?.version===s.currentVersion && s.stage==='finalized'
-  const visual=s.visualStyle
   renderFilmStyles(s)
   updateProductionAction(s)
-  renderFilmAssets(s,finalized && visual && visual.status!=='pending',++filmRender)
   window.BohackFilm.render(s,{threadId:state.threadId})
+  if(s.production?.status==='running' && s.production.phase==='生成素材' && s.blueprintAssets?.length){
+    const thread=state.threadId
+    api('/bohack/api/generated-assets?version='+s.currentVersion,undefined,thread).then(({assets})=>{
+      if(state.threadId===thread && state.status===s) $('#filmHeadline').textContent=`正在生成动画素材，已就绪 ${assets.filter(a=>a.revision).length} / ${assets.length} 项。`
+    }).catch(e=>console.warn('素材进度读取失败：',e.message))
+  }
   scheduleRefresh()
 }
 $('#btnProduction').addEventListener('click',async()=>{

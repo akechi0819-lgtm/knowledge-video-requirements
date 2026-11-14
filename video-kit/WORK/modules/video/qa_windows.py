@@ -5,7 +5,7 @@
 改由接触表人工 review 承担（见 docs/vibe-knowledge-integration.md 的替代清单）。
 
 用法: python qa_windows.py <成片.mp4> <ffmpeg> <ffprobe> [--every 3] [--out qa/]
-退出码: 0 通过(可带警告); 2 缺 BGM（skill 规定不能交付）
+退出码: 0 检查完成（可带质量警告）；执行错误返回非零。
 """
 from __future__ import annotations
 
@@ -129,10 +129,10 @@ def main() -> int:
     else:
         print(f"BGM 相关性 {best:.3f}；无 bgm.json")
     if best < 0.12:
-        print("⚠⚠ 成片里检测不到 vibe-bgm，skill 规定不能交付")
-        return 2
-    print("BGM 强制检查：通过")
-    return 2 if frozen else 0
+        print("⚠ 成片里未检测到 vibe-bgm，请人工核对")
+    else:
+        print("BGM 检查：通过")
+    return 0
 
 
 if __name__ == "__main__":

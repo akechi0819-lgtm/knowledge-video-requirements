@@ -42,8 +42,26 @@ test('素材生成、确认、单项重建及风格变更均隔离版本与生�
     await assert.rejects(assets.approvedFiles(args), /尚未确认/)
     assert.equal((await assets.status({ ...args, style: { name: '像素' } })).assets[1].status, 'pending')
     assert.equal((await assets.status({ ...args, version: 2 })).assets[1].status, 'pending')
-    assert.throws(() => renderAsset([...shapes.slice(0, 4), { ...shapes[4], d: 'M 0 0" onload="evil' }]), /无效/)
+    assert.doesNotMatch(renderAsset([...shapes.slice(0, 4), { ...shapes[4], d: 'M 0 0" onload="evil' }]), /onload/)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('素材脏图元反馈修正，修正仍无效时保留安全图元', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'asset-repair-test-'))
+  try {
+    const requests = []
+    const good = {d:'M0 0 L5 5',fill:'#abc',stroke:'red',width:20}
+    const bad = {...good, d:'M0 0" onload="evil'}
+    const assets = createGeneratedAssets(root, {settings:{load:async()=>({model:{baseUrl:'http://localhost',model:'test'}})}, request:async (_url, options) => {
+      requests.push(JSON.parse(options.body)); return {ok:true,json:async()=>({choices:[{message:{content:JSON.stringify({shapes:requests.length === 1 ? [good,bad] : [bad]})}}]})}
+    }})
+    const args = {version:1,doc:{assets:[{id:'a',name:'书',type:'prop',description:'书',sections:['B01']}]},style:null}
+    const result = await assets.generate(args)
+    assert.equal(requests.length, 2)
+    assert.match(requests[1].messages.at(-1).content, /部分图元/)
+    const svg = await readFile(await assets.file({...args,id:'a',revision:result.assets[0].revision}), 'utf8')
+    assert.match(svg, /stroke-width="20"/); assert.doesNotMatch(svg, /onload/)
+  } finally { await rm(root,{recursive:true,force:true}) }
 })
 
 

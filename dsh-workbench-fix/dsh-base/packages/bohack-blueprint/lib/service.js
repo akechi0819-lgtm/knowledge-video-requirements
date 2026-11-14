@@ -457,7 +457,7 @@ export function createService(ctx, config = {}) {
       hasFeedback: await exists(feedbackPath()),
       blueprintSkill: n ? (await readJson(path.join(dirs.outbox, `蓝图_v${n}.技能.json`), null))?.name || null : null,
       hasDelivery: await exists(deliveryPath()),
-      pendingFeedback: state.pendingFeedback || null,
+      pendingFeedback: state.pendingFeedback || null, pendingRestyle: state.pendingRestyle?.version === n ? state.pendingRestyle : null,
       finalized: state.finalized || null, visualStyle: await visualStyle(n),
       locked: (state.locked || {})[`v${n}`] || [],
       confirmed: state.confirmed?.[`v${n}`] || [],
@@ -657,9 +657,22 @@ export function createService(ctx, config = {}) {
     const initialVersion = await latestVersion()
     const stateBeforeAction = await getState()
     const alreadyFinalized = stateBeforeAction.stage === 'finalized' && stateBeforeAction.finalized?.version === initialVersion
+    const restyleText = message.replace(/[“”「」『』"]/g, '')
+    const restyleAffirmative = affirmative(restyleText)
+    const pendingRestyle = alreadyFinalized && stateBeforeAction.pendingRestyle?.version === initialVersion
+    const cancelRestyle = pendingRestyle && /^(?:算了|取消(?:重绘|重制|制作|换画风|换风格)?|不用了|不重绘了|不重做了)[吧了。！!，,\s]*$/.test(restyleText)
+    const restyleRequest = alreadyFinalized && restyleAffirmative && /(?:换|更换|修改|改).{0,12}(?:画风|风格)|(?:重绘|重新制作).{0,8}(?:画风|风格)|(?:换成|改成)|(?:用.{1,80}(?:重绘|重做|重新做|重新画)|(?:重绘|重做|重新做|重新画).{0,80}用)/.test(restyleText)
+    const availableStyles = (restyleRequest || pendingRestyle) ? (await styles.list()).styles.filter(item => item.kind === 'style') : []
+    const exactMatches = availableStyles.filter(item => restyleText.includes(item.name) || restyleText.includes(item.id))
+    const matches = exactMatches.length ? exactMatches : availableStyles.filter(item => {
+      const aliases = [...item.name.split(/[：:（(]/).map(part => part.trim()), item.name.slice(0, 2)]
+      return aliases.some(alias => alias.length >= 2 && restyleText.includes(alias))
+    })
+    const styleChoice = matches.length === 1 ? matches[0] : null
+    const restyleAction = restyleRequest || (pendingRestyle && restyleAffirmative && styleChoice && restyleText.length <= styleChoice.name.length + 8)
     const produce = productionCommand(message, alreadyFinalized)
     const confirmAll = confirmAllRequest(message)
-    const directAction = initialVersion && (produce || confirmAll)
+    const directAction = initialVersion && (produce || confirmAll || restyleAction || cancelRestyle)
     const t0 = Date.now()
     const historyText = await readFile(dialoguePath(), 'utf8').catch(() => '')
     const activities = []
@@ -682,9 +695,31 @@ export function createService(ctx, config = {}) {
       try { await saveRequirement(raw, turn.replaceBaseline === true) }
       catch (e) { if (e.code !== 'BASELINE_LOCKED') throw e; saveError = e; reply = e.message }
     } else if (turn?.requirementChanged && !await latestVersion()) await setState({ requirementDirty: true })
-    let production = null, productionError = null, confirmation = null
+    let production = null, productionError = null, confirmation = null, chooseRestyle = false
     const semanticProduce = turn?.productionRequested && (explicitProductionApproval(message) || (alreadyFinalized && affirmative(message) && /(?:制作|生成|做|出).{0,8}(?:成片|视频|出来|起来)|(?:开始|直接).{0,6}(?:制作|做)/.test(message)))
-    if (turn?.productionRequested || produce || confirmAll) {
+    if (cancelRestyle) {
+      await setState({ pendingRestyle: null })
+      reply = '已取消重绘。'
+    } else if (restyleAction) {
+      try {
+        if (!styleChoice) {
+          await setState({ pendingRestyle: { version: initialVersion } })
+          chooseRestyle = true
+          reply = matches.length > 1 ? '匹配到多个画风，请选择具体的视觉风格。' : '请选择要用于重绘的视觉风格。'
+        } else {
+          if (initialVersion !== await latestVersion()) throw new ServiceError('蓝图版本已变化，请重新选择画风。', 'STALE_VERSION')
+          if ((await productionService.status())?.status === 'running') throw new ServiceError('当前制作仍在进行，请完成后再重绘。', 'PRODUCTION_RUNNING')
+          await selectVisualStyle({ id: styleChoice.id, version: initialVersion })
+          await setState({ pendingRestyle: null })
+          onProgress?.({ type: 'status', text: `已选择${styleChoice.name}，正在启动重制` })
+          production = await productionService.start()
+          reply = `已选择「${styleChoice.name}」，重制已启动。可在成片页查看进度。`
+        }
+      } catch (e) {
+        productionError = { code: e.code || 'PRODUCTION_FAILED', message: String(e.message || e) }
+        reply = `${styleChoice && (await visualStyle(initialVersion))?.style?.id === styleChoice.id ? `已选择「${styleChoice.name}」，` : ''}重制未启动：${productionError.message}`
+      }
+    } else if (turn?.productionRequested || produce || confirmAll) {
       try {
         if (!produce && !confirmAll && !semanticProduce) throw new ServiceError('请明确确认当前蓝图全部段落，并明确要求开始制作成片。', 'CONFIRMATION_REQUIRED')
         const mentionedVersions = [...message.matchAll(/v(\d+)/gi)].map(m => Number(m[1]))
@@ -727,7 +762,7 @@ export function createService(ctx, config = {}) {
         generation = await generate({}, engine, onProgress)
       } catch (e) { generationError = { code: e.code || 'ENGINE_FAILED', message: String(e.message || e) } }
     }
-    return { ok: true, reply, generation, generationError, production, productionError, confirmation, finalized: (await getState()).stage === 'finalized', sessionId: engine.chatSessionId || null, at: now() }
+    return { ok: true, reply, generation, generationError, production, productionError, confirmation, chooseRestyle, finalized: (await getState()).stage === 'finalized', sessionId: engine.chatSessionId || null, at: now() }
   }
 
   async function chatHistory() {

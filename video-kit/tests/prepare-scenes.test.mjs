@@ -17,10 +17,11 @@ const scene = {
   script: 'evil()',
 };
 
-async function runCase(production, modelScene = scene, imageBytes = null, assetFiles = {}, model = 'test') {
+async function runCase(production, modelScene = scene, imageBytes = null, assetFiles = {}, model = 'test', reuse = false) {
   const dir = await mkdtemp(join(tmpdir(), 'prepare-scenes-test-'));
   const input = join(dir, 'input.json');
   const output = join(dir, 'out');
+  if (reuse) { await mkdir(join(dir, 'reuse')); await writeFile(join(dir, 'reuse/S01.html'), 'reused html'); await writeFile(join(dir, 'reuse/S01.scene.json'), '{}'); }
   await writeFile(input, JSON.stringify(production));
   if (imageBytes) { await mkdir(join(dir, 'images')); await writeFile(join(dir, 'images/S01.png'), imageBytes); }
   if (Object.keys(assetFiles).length) { await mkdir(join(dir, 'assets')); for (const [name, contents] of Object.entries(assetFiles)) await writeFile(join(dir, 'assets', name), contents); }
@@ -35,7 +36,7 @@ async function runCase(production, modelScene = scene, imageBytes = null, assetF
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const child = spawn(process.execPath, [script, '--input', input, '--output', output,
     '--endpoint', `http://127.0.0.1:${server.address().port}/v1/chat/completions`,
-    '--model', model], { env: { ...process.env, SCENE_API_KEY: 'test' } });
+    '--model', model], { env: { ...process.env, SCENE_API_KEY: 'test', VIDEO_SCENE_REUSE_DIR: reuse ? join(dir, 'reuse') : '' } });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk; });
   const code = await new Promise(resolve => child.on('close', resolve));
@@ -46,6 +47,17 @@ async function runCase(production, modelScene = scene, imageBytes = null, assetF
 const base = () => ({ status: '准备制作', topic: '潮汐', userRequirements: ['简洁'], notes: null,
   sections: [{ id: 'S01', blueprintId: 'B03', title: '月球', intent: '理解潮汐',
     facts: ['月球影响海水'], visual: '月球与海洋', narration: '月球影响潮汐。', notes: null, gaps: [] }] });
+
+test('reuses complete supplied sections and generates only the remaining sections', async () => {
+  const input = base(); input.sections.push({...input.sections[0],id:'S02',blueprintId:'B04'});
+  const result = await runCase(input, scene, null, {}, 'test', true);
+  try {
+    assert.equal(result.code, 0, result.stderr); assert.equal(result.requests.length, 1);
+    assert.equal(await readFile(join(result.output, 'S01.html'), 'utf8'), 'reused html');
+    const prepared = JSON.parse(await readFile(join(result.output, 'production.json')));
+    assert.deepEqual(prepared.sections.map(s => s.scene), ['S01.html','S02.html']);
+  } finally { await rm(result.dir, {recursive:true,force:true}); }
+});
 
 test('MiMo 场景制作请求关闭思考', async () => {
   const result = await runCase(base(), scene, null, {}, 'mimo-v2.6-pro');
@@ -100,7 +112,7 @@ test('rejects unsupported model layer types', async () => {
   } finally { await rm(result.dir, { recursive: true, force: true }); }
 });
 
-test('line 接受向左向上的位移，但终点必须在内容区，其他图层不接受负宽高', async () => {
+test('线条和图层可越界移动，负尺寸形状自动归正，字幕区被裁切', async () => {
   const line = {type:'line', x:500, y:300, width:-300, height:-200, fill:'#112233', start:0, end:1};
   const result = await runCase(base(), {background:'#ffffff',layers:[line]});
   try {
@@ -108,11 +120,21 @@ test('line 接受向左向上的位移，但终点必须在内容区，其他图
     assert.deepEqual(JSON.parse(await readFile(join(result.output, 'S01.scene.json'))).layers[0], line);
     assert.match(result.requests[0].messages[0].content, /可为负数/);
   } finally { await rm(result.dir, {recursive:true, force:true}); }
-  for (const layer of [{...line, width:-501}, {...line, height:-301}, {...line, type:'rect'}]) {
-    const bad = await runCase(base(), {background:'#ffffff',layers:[layer]});
-    try { assert.notEqual(bad.code, 0); assert.match(bad.stderr, /layers\[0\].*(终点|width)/); }
-    finally { await rm(bad.dir, {recursive:true, force:true}); }
-  }
+  const oversized = {type:'rect',x:-100,y:950,width:2200,height:1000,fill:'#112233',start:0,end:1,motion:{toX:2100,toY:-400}};
+  const text = {type:'text',x:0,y:0,width:1,height:150,fill:'#112233',text:'字'.repeat(121),start:0,end:1};
+  const outside = await runCase(base(), {background:'#ffffff',layers:[{...line,width:-501,height:-301},oversized,...Array(30).fill(text)]});
+  try {
+    assert.equal(outside.code, 0, outside.stderr);
+    const data = JSON.parse(await readFile(join(outside.output, 'S01.scene.json')));
+    assert.deepEqual(data.layers[1], oversized);
+    assert.equal(data.layers.length, 32);
+    const html = await readFile(join(outside.output, 'S01.html'), 'utf8');
+    assert.match(html, /<clipPath id="content-clip"><rect x="0" y="0" width="1920" height="900"\/><\/clipPath>/);
+    assert.match(html, /content.appendChild\(e\)/);
+  } finally { await rm(outside.dir, {recursive:true, force:true}); }
+  const bad = await runCase(base(), {background:'#ffffff',layers:[{...line,type:'rect'}]});
+  try { assert.equal(bad.code, 0, bad.stderr); const data = JSON.parse(await readFile(join(bad.output, 'S01.scene.json'))); assert.equal(data.layers[0].x,200); assert.equal(data.layers[0].width,300); }
+  finally { await rm(bad.dir, {recursive:true, force:true}); }
 });
 
 test('null section is rejected before any request', async () => {
@@ -201,11 +223,11 @@ test('rejects a model reference to an asset outside the section', async () => {
 });
 
 
-test('rejects omitted planned assets', async () => {
+test('fills omitted planned assets from the approved section', async () => {
   const input = base();
   input.sections[0].assets = [{id:'traveler',name:'旅行者',type:'character',image:'assets/traveler.svg'}];
   const result = await runCase(input, scene, null, {'traveler.svg':'<svg xmlns="http://www.w3.org/2000/svg"/>'});
-  try { assert.notEqual(result.code, 0); assert.match(result.stderr, /缺少 assetId 为 traveler/); }
+  try { assert.equal(result.code, 0, result.stderr); const data=JSON.parse(await readFile(join(result.output,'S01.scene.json'))); assert.equal(data.layers.at(-1).assetId,'traveler'); }
   finally { await rm(result.dir, {recursive:true, force:true}); }
 });
 
@@ -225,7 +247,19 @@ test('preserves asset rotation and orbit and rejects invalid pivots', async () =
     const html = await readFile(join(result.output, 'S01.html'), 'utf8');
     assert.match(html, /orbitTransform \+ selfTransform/);
   } finally { await rm(result.dir, {recursive:true, force:true}); }
-  const bad = await runCase(input, {background:'#000000',layers:[{...layer, orbit:{cx:2000,cy:450,from:0,to:360}}]}, null, {'moon.svg':svg});
+  const bad = await runCase(input, {background:'#000000',layers:[{...layer, orbit:{cx:null,cy:450,from:0,to:360}}]}, null, {'moon.svg':svg});
   try { assert.notEqual(bad.code, 0); assert.match(bad.stderr, /layers\[0\].*orbit/); }
   finally { await rm(bad.dir, {recursive:true, force:true}); }
+});
+
+test('修正两轮仍含无效图层时保留有效图层并记录提醒', async () => {
+  const partial = {...scene, layers:[...scene.layers, {type:'script'}]};
+  const result = await runCase(base(), partial);
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.requests.length, 2);
+    const data = JSON.parse(await readFile(join(result.output,'S01.scene.json')));
+    assert.equal(data.layers.length, 1);
+    assert.ok(data.warning);
+  } finally { await rm(result.dir, {recursive:true, force:true}); }
 });

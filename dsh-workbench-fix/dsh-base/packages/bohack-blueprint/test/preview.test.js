@@ -24,7 +24,22 @@ for (const [topic, paths] of [
 })
 test('invalid markup in model geometry is rejected', async () => {
   const request = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ scenes: [{ id: 'B01', shapes: Array(5).fill(shape('M0 0" onload="alert(1)')) }] }) } }] }) })
-  await assert.rejects(generatePreview([{ id: 'B01' }], settings, request), /图元无效/)
+  await assert.rejects(generatePreview([{ id: 'B01' }], settings, request), /没有可用图元/)
+})
+test('预览修正脏图元并显示安全颜色，保留有效部分', async () => {
+  const calls = []
+  const valid = {d:'M0 0 L10 10',fill:'#abc',stroke:'blue',width:20}
+  const invalid = {...valid, fill:'red" onload="evil'}
+  const request = async (_url, options) => {
+    calls.push(JSON.parse(options.body))
+    return {ok:true,json:async()=>({choices:[{message:{content:JSON.stringify({scenes:[{id:'B01',shapes:calls.length === 1 ? [valid,invalid] : [invalid]}]})}}]})}
+  }
+  const sections = [{id:'B01',title:'测试'}]
+  const result = await generatePreview(sections, settings, request)
+  assert.equal(calls.length, 2); assert.match(calls[1].messages.at(-1).content, /部分场景编号或图元无效/)
+  assert.deepEqual(result[0].shapes, [valid])
+  const html = context.renderBlueprintPreview(sections, result)
+  assert.match(html, /fill="#abc"/); assert.match(html, /stroke="blue"/); assert.doesNotMatch(html, /onload/)
 })
 test('MiMo 预览关闭思考并允许超过 90 秒，响应超时明确报错', async () => {
   const original = AbortSignal.timeout

@@ -13,7 +13,8 @@ export function createProduction(workspace, config = {}) {
   const stateFile = path.join(root, 'status.json')
   const kit = path.resolve(config.videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
   let active = false
-  async function save(state) { const temp = path.join(root, `.status-${randomUUID()}.tmp`); await writeFile(temp, JSON.stringify(state, null, 2) + '\n'); await rename(temp, stateFile) }
+  let generation = 0
+  async function save(state) { const temp = path.join(root, `.status-${randomUUID()}.tmp`); await writeFile(temp, JSON.stringify(state, null, 2) + '\n'); await rename(temp, stateFile); if (state.status === 'completed') await writeFile(path.join(root, state.id, 'completed.json'), JSON.stringify(state) + '\n') }
   async function exists(file) {
     try { await stat(file); return true } catch (e) { if (e.code === 'ENOENT') return false; throw e }
   }
@@ -88,9 +89,12 @@ export function createProduction(workspace, config = {}) {
     }
   }
   async function status() {
+    const activeAtRead = active, generationAtRead = generation
     let state
     try { state = JSON.parse(await readFile(stateFile, 'utf8')) } catch (e) { if (e.code === 'ENOENT') return null; throw e }
-    if (state.status === 'running' && !active) { state.status = 'interrupted'; state.error = '工作台已重启，制作中断，请重新制作。'; await save(state) }
+    if (state.status === 'running' && !activeAtRead && !active && generationAtRead === generation) {
+      state.status = 'interrupted'; state.error = '工作台已重启，制作中断，请重新制作。'
+    }
     return decorate(state)
   }
   function run(script, args, env = process.env) {
@@ -104,25 +108,61 @@ export function createProduction(workspace, config = {}) {
   }
   async function reusableScenes(production, dir) {
     const files = [...new Set(production.sections.flatMap(s => [s.image, ...(s.assets || []).map(a => a.image)].filter(Boolean)))]
+    let best = null
     for (const id of (await readdir(root)).filter(name => /^[0-9a-f-]{36}$/.test(name) && name !== path.basename(dir)).reverse()) {
       const previous = path.join(root, id), scenes = path.join(previous, 'scenes')
       try {
         const input = JSON.parse(await readFile(path.join(previous, 'production.json'), 'utf8'))
         if (!isDeepStrictEqual(input, production)) continue
-        const prepared = JSON.parse(await readFile(path.join(scenes, 'production.json'), 'utf8'))
-        const restored = { ...prepared, sections: prepared.sections.map(({ scene, ...section }) => section) }
-        if (!isDeepStrictEqual(restored, production)) continue
-        for (const section of prepared.sections) {
-          if (section.scene !== `${section.id}.html`) throw new Error('invalid scene')
-          if (!(await readFile(path.join(scenes, section.scene))).length || !(await readFile(path.join(scenes, `${section.id}.scene.json`))).length) throw new Error('empty scene')
-          JSON.parse(await readFile(path.join(scenes, `${section.id}.scene.json`), 'utf8'))
-        }
         for (const file of files) if (!(await readFile(path.join(previous, file))).equals(await readFile(path.join(dir, file)))) throw new Error('changed asset')
-        return { id, scenes }
+        const sections = []
+        for (const section of production.sections) {
+          if (!/^[A-Za-z0-9_-]+$/.test(section.id)) continue
+          try {
+            const html = await readFile(path.join(scenes, `${section.id}.html`))
+            const json = await readFile(path.join(scenes, `${section.id}.scene.json`))
+            if (html.length && json.length) { JSON.parse(json.toString()); sections.push(section.id) }
+          } catch (e) { if (e.code && e.code !== 'ENOENT') throw e }
+        }
+        if (!sections.length) continue
+        let complete = false
+        if (sections.length === production.sections.length) {
+          try {
+            const prepared = JSON.parse(await readFile(path.join(scenes, 'production.json'), 'utf8'))
+            complete = prepared.sections.every(s => s.scene === `${s.id}.html`) && isDeepStrictEqual({ ...prepared, sections: prepared.sections.map(({ scene, ...section }) => section) }, production)
+          } catch (e) { if (e.code && e.code !== 'ENOENT') throw e }
+        }
+        if (complete) return { id, scenes, sections, complete }
+        if (!best || sections.length > best.sections.length) best = { id, scenes, sections, complete }
       } catch (e) {
         if (e.code && e.code !== 'ENOENT') throw e
         // Missing or incomplete scene outputs are not reusable.
       }
+    }
+    return best
+  }
+  async function reusableAudio(production, prior) {
+    const candidates = []
+    if (prior?.status === 'completed') candidates.push(prior)
+    for (const id of (await readdir(root)).filter(name => /^[0-9a-f-]{36}$/.test(name))) {
+      try { candidates.push(JSON.parse(await readFile(path.join(root, id, 'completed.json'), 'utf8'))) }
+      catch (e) { if (e.code !== 'ENOENT') throw e }
+    }
+    candidates.sort ( (a, b) => (b.completedAt || '').localeCompare(a.completedAt || '') )
+    const narration = production.sections.map(({ id, narration }) => ({ id, narration }))
+    for (const candidate of candidates) {
+      if (candidate.status !== 'completed' || !/^[0-9a-f-]{36}$/.test(candidate.id || '')) continue
+      const dir = path.join(root, candidate.id)
+      try {
+        const previous = JSON.parse(await readFile(path.join(dir, 'production.json'), 'utf8'))
+        if (!isDeepStrictEqual(previous.sections.map(({ id, narration }) => ({ id, narration })), narration)) continue
+        const audio = path.join(dir, 'film', 'audio')
+        for (const { id } of narration) {
+          if (!/^[A-Za-z0-9_-]+$/.test(id) || !(await stat(path.join(audio, `${id}.mp3`))).size) throw new Error('missing audio')
+          JSON.parse(await readFile(path.join(audio, `${id}.json`), 'utf8'))
+        }
+        return { id: candidate.id, audio }
+      } catch (e) { if (e.code && e.code !== 'ENOENT') throw e }
     }
     return null
   }
@@ -157,12 +197,15 @@ export function createProduction(workspace, config = {}) {
   async function start() {
     if (active) throw new Error('本创作已有制作任务正在运行')
     active = true
+    generation++
     try {
       const saved = await config.settings?.load() || {}
       await config.ensureVisual?.()
       const production = await exportProduction(workspace)
       const missing = production.sections.filter(s => !s.narration?.trim()).map(s => s.blueprintId)
       if (missing.length) throw new Error(`缺少旁白：${missing.join('、')}；请补充后重新确认并定稿。`)
+      let prior = null
+      try { prior = JSON.parse(await readFile(stateFile, 'utf8')) } catch (e) { if (e.code !== 'ENOENT') throw e }
       let sceneConfig = null
       try { sceneConfig = JSON.parse(await readFile(path.join(workspace, 'hotpot-demo-scene.json'), 'utf8')) }
       catch (e) { if (e.code !== 'ENOENT') throw e }
@@ -204,15 +247,24 @@ export function createProduction(workspace, config = {}) {
           const scenes = path.join(dir, 'scenes'), film = path.join(dir, 'film')
           const sceneArgs = ['--input', path.join(dir, 'production.json'), '--output', scenes]
           const reused = sceneConfig ? null : await reusableScenes(production, dir)
-          if (reused) { await cp(reused.scenes, scenes, { recursive: true }); state.reusedScenesFrom = reused.id; await save(state) }
+          if (reused?.complete) { await cp(reused.scenes, scenes, { recursive: true }); state.reusedScenesFrom = reused.id; await save(state) }
           else if (sceneConfig) await run('scripts/hotpot-scenes.mjs', sceneArgs)
-          else await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', endpoint, '--model', model], { ...process.env, SCENE_API_KEY: key || '' })
+          else {
+            let reuseDir = ''
+            if (reused) {
+              reuseDir = path.join(dir, 'reused-scenes'); await mkdir(reuseDir)
+              for (const id of reused.sections) for (const suffix of ['.html', '.scene.json']) await copyFile(path.join(reused.scenes, id + suffix), path.join(reuseDir, id + suffix))
+              state.reusedScenesFrom = reused.id; state.reusedSceneSections = reused.sections; await save(state)
+            }
+            await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', endpoint, '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir })
+          }
           state.phase = '配音与渲染'; await save(state)
+          const audio = await reusableAudio(production, prior)
           const args = ['--prepared', path.join(scenes, 'production.json'), '--out', film]
           if (saved.tts?.voice) args.push('--voice', `api:${saved.tts.voice}`)
           else if (process.env.VIDEO_VOICE) args.push('--voice', process.env.VIDEO_VOICE)
           else if (process.env.VOICE_NAME) args.push('--voice', `api:${process.env.VOICE_NAME}`)
-          await run('WORK/modules/video/pipeline.mjs', args, { ...process.env, ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: saved.tts.baseUrl } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
+          await run('WORK/modules/video/pipeline.mjs', args, { ...process.env, VIDEO_TTS_CACHE_DIR: audio?.audio || '', ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: saved.tts.baseUrl } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
           state.phase = '自动质检'; await save(state)
           await run('WORK/modules/video/verify.mjs', [path.join(film, 'mapping.json')])
           await Promise.all([stat(path.join(film, 'final.mp4')), readFile(path.join(film, 'mapping.json'), 'utf8').then(JSON.parse)])

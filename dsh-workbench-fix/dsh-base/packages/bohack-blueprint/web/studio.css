@@ -367,6 +367,20 @@ button:focus-visible,summary:focus-visible,a:focus-visible,select:focus-visible,
   .entry-tile-hero{grid-column:1 / span 2;grid-row:1 / span 2}
 }
 
+/* 完成态由整个内容区滚动，播放器保持完整画幅。 */
+.app.film-focus .side-body:has(#pane-film.is-completed){overflow-y:auto;display:block}
+.app.film-focus #pane-film.on.is-completed{display:block}
+.app.film-focus #pane-film.is-completed .film-stage{display:flex;overflow:visible}
+.app.film-focus #pane-film.is-completed .film-layout{display:grid;grid-template-columns:minmax(0,1fr) 188px;grid-template-rows:auto;flex:none;overflow:visible;align-items:start}
+.app.film-focus #pane-film.is-completed .film-main{overflow:visible}
+.app.film-focus #pane-film.is-completed .player{height:auto;max-height:none;aspect-ratio:16/9}
+.app.film-focus #pane-film.is-completed .film-rail{max-height:none;overflow:visible;mask-image:none}
+.app.film-focus #pane-film.is-completed #filmPrep,
+.app.film-focus #pane-film.is-completed #filmStyles{display:block;max-height:none;overflow:visible}
+.app.film-focus #pane-film.is-completed .style-current .style-preview,
+.app.film-focus #pane-film.is-completed .style-current-copy span{display:none}
+.app.film-focus #pane-film.is-completed .film-action{margin-top:0;padding-top:12px}
+
 .ws-dialog .ws-actions{position:sticky;bottom:0;background:linear-gradient(transparent, rgba(11,13,19,.92) 36%);border-top:0;padding:16px 0 4px;z-index:1}
 .ws-dialog .ws-field input[type=checkbox]{display:inline-block;width:auto;vertical-align:middle}
 .preview-error{font:13px/1.6 var(--sans);color:var(--danger);margin:-12px 0 16px}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Generate data-only SVG scenes. Model output is never executed as code.
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { callDsh } from './dsh-model.mjs';
 
@@ -31,36 +31,39 @@ for (const s of production.sections) {
 }
 await mkdir(output); // Do not overwrite an existing task.
 const layerExamples = '图层示例：素材 {"type":"asset","assetId":"素材ID","x":100,"y":100,"width":200,"height":200,"start":0,"end":1}；图形 {"type":"rect","x":100,"y":100,"width":200,"height":200,"fill":"#112233","start":0,"end":1}；文字 {"type":"text","x":100,"y":100,"width":200,"height":40,"fill":"#112233","text":"文字","start":0,"end":1}。';
-const system = `你是知识视频画面设计师。根据单段制作信息，设计可读的矢量动态图解，按所选风格安排空间、动作和节奏。只返回 JSON 对象，不要 Markdown。画布 1920×1080，底部 180 像素留给字幕。格式：{"background":"#rrggbb","layers":[图层]}。每层必须有 type、x、y、width、height、start、end；type 为 rect、ellipse、line、text 或 asset。asset 必须有 assetId，不需要 fill 和 text；其他类型必须有 fill；仅 text 类型必须有 text。${layerExamples}最多 30 层；x/y 为左上角，line 从 (x,y) 到 (x+width,y+height)，width 和 height 可为负数表示向左或向上，起点和终点的 x 均在 0–1920、y 均在 0–900；text 的 x/y 为基线，height 为字号。start/end 是出现和消失时间比例，start < end。需要移动的主体可加可选字段 motion: {"toX":数字,"toY":数字}，表示本图层出现后从 x/y 移动到的目标坐标。对照叙述让动作解释变化，标签保持可读。背景色直接写 background，不要铺全屏背景矩形。图层 x 在 0–1920、y 在 0–900；非 line 类型 width 在 0–1920、height 在 0–900；文字字号 height 12–100。图形与文字不越过内容区，留出字幕区。画面用分阶段的可见变化解释动作；只画本段需要的信息，提问段遵守揭晓时机。不得添加未经材料支持的事实，不要编写旁白、代码、外链或 SVG。缺失信息不要猜测。`;
+const system = `你是知识视频画面设计师。根据单段制作信息，设计可读的矢量动态图解，按所选风格安排空间、动作和节奏。只返回 JSON 对象，不要 Markdown。画布 1920×1080，底部 180 像素留给字幕。格式：{"background":"#rrggbb","layers":[图层]}。每层必须有 type、x、y、width、height、start、end；type 为 rect、ellipse、line、text 或 asset。asset 必须有 assetId，不需要 fill 和 text；其他类型必须有 fill；仅 text 类型必须有 text。${layerExamples}建议保持图层精简；x/y 为左上角，line 从 (x,y) 到 (x+width,y+height)，width 和 height 可为负数表示向左或向上；其他类型的宽高为非负数。text 的 x/y 为基线，height 为字号。图层可从画外进入，画面会裁切到字幕区上方。start/end 是出现和消失时间比例，start < end。需要移动的主体可加可选字段 motion: {"toX":数字,"toY":数字}，表示本图层出现后从 x/y 移动到的目标坐标。对照叙述让动作解释变化，标签保持可读。背景色直接写 background，不要铺全屏背景矩形。画面用分阶段的可见变化解释动作；只画本段需要的信息，提问段遵守揭晓时机。不得添加未经材料支持的事实，不要编写旁白、代码、外链或 SVG。缺失信息不要猜测。`;
 const color = /^#[0-9a-fA-F]{6}$/;
-function validate(data, assetIds) {
+function validate(data, assetIds, fillMissing = true) {
   if (!data || typeof data.background !== 'string' || !color.test(data.background)) throw new Error('background 必须是 #rrggbb 颜色');
-  if (!Array.isArray(data.layers) || data.layers.length < 1 || data.layers.length > 30) throw new Error('layers 必须是 1 至 30 个图层的数组');
+  if (!Array.isArray(data.layers) || data.layers.length < 1) throw new Error('layers 必须是非空图层数组');
   for (const [i, l] of data.layers.entries()) {
     const fail = message => { throw new Error(`layers[${i}]：${message}`); };
     if (!l || !['rect','ellipse','line','text','asset'].includes(l.type) ) fail('type 必须是 rect、ellipse、line、text 或 asset');
     if (l.type !== 'asset' && (typeof l.fill !== 'string' || !color.test(l.fill))) fail('fill 必须是 #rrggbb 颜色');
-    if (l.type === 'text' && (typeof l.text !== 'string' || l.text.length > 120)) fail('text 必须是最多 120 个字符的文字');
+    if (l.type === 'text' && typeof l.text !== 'string') fail('text 必须是文字');
     if (l.type === 'asset' && !assetIds.has(l.assetId)) fail(`assetId 必须是本段素材 ID，收到 ${JSON.stringify(l.assetId)}`);
     for (const k of ['x','y','width','height','start','end']) if (typeof l[k] !== 'number' || !Number.isFinite(l[k])) fail(`${k} 必须是有限数字`);
     for (const key of ['rotation', 'orbit']) {
       if (l[key] !== undefined && (l.type !== 'asset' || !Number.isFinite(l[key]?.from) || !Number.isFinite(l[key]?.to) ||
-          (key === 'orbit' && (!Number.isFinite(l[key]?.cx) || !Number.isFinite(l[key]?.cy) || l[key].cx < 0 || l[key].cx > 1920 || l[key].cy < 0 || l[key].cy > 900)))) fail(`${key} 字段无效，仅 asset 可用，角度及中心坐标须为有效数字`);
+          (key === 'orbit' && (!Number.isFinite(l[key]?.cx) || !Number.isFinite(l[key]?.cy))))) fail(`${key} 字段无效，仅 asset 可用，角度及中心坐标须为有效数字`);
     }
-    if (l.motion !== undefined && (!Number.isFinite(l.motion?.toX) || !Number.isFinite(l.motion?.toY) ||
-        l.motion.toX < 0 || l.motion.toX > 1920 || l.motion.toY < 0 || l.motion.toY > 900)) fail('motion.toX 或 motion.toY 超出画布范围');
-    for (const [k, max] of [['x',1920],['y',900]]) if (l[k] < 0 || l[k] > max) fail(`${k} 必须在 0 至 ${max} 之间`);
-    if (l.type === 'line') {
-      if (l.x + l.width < 0 || l.x + l.width > 1920) fail('line 终点 x + width 必须在 0 至 1920 之间');
-      if (l.y + l.height < 0 || l.y + l.height > 900) fail('line 终点 y + height 必须在 0 至 900 之间');
-    } else {
-      for (const [k, max] of [['width',1920],['height',900]]) if (l[k] < 0 || l[k] > max) fail(`${k} 必须在 0 至 ${max} 之间`);
+    if (l.motion !== undefined && (!Number.isFinite(l.motion?.toX) || !Number.isFinite(l.motion?.toY))) fail('motion.toX 和 motion.toY 必须是有限数字');
+    if (l.type !== 'line') {
+      if (l.width < 0) { l.x += l.width; l.width = -l.width; }
+      if (l.height < 0) { l.y += l.height; l.height = -l.height; }
     }
-    if (l.start < 0 || l.end > 1 || l.start >= l.end) fail('start 和 end 必须满足 0 ≤ start < end ≤ 1');
-    if (l.type === 'text' && (l.height < 12 || l.height > 100)) fail('文字的 height 必须在 12 至 100 之间');
+    const start = Math.max(0, Math.min(1, Math.min(l.start, l.end)));
+    const end = Math.max(0, Math.min(1, Math.max(l.start, l.end)));
+    l.start = start < end ? start : 0;
+    l.end = start < end ? end : 1;
   }
   const usedAssets = new Set(data.layers.filter(l => l.type === 'asset').map(l => l.assetId));
-  for (const id of assetIds) if (!usedAssets.has(id)) throw new Error(`layers 缺少 assetId 为 ${id} 的素材图层`);
+  const missing = fillMissing ? [...assetIds].filter(id => !usedAssets.has(id)) : [];
+  for (const [index, assetId] of missing.entries()) {
+    const width = Math.min(380, 1600 / missing.length);
+    data.layers.push({type:'asset', assetId, x:(index + 0.5) * 1920 / missing.length - width / 2,
+      y:450, width, height:300, start:0, end:1});
+  }
   // Discard all properties beyond the schema, including possible code or URLs.
   return {background:data.background,layers:data.layers.map(({type,x,y,width,height,fill,text,start,end,motion,assetId,rotation,orbit}) => ({type,x,y,width,height,fill,text,start,end,...(type === 'asset' ? {assetId} : {}),...(rotation ? {rotation:{from:rotation.from,to:rotation.to}} : {}),...(orbit ? {orbit:{cx:orbit.cx,cy:orbit.cy,from:orbit.from,to:orbit.to}} : {}),...(motion ? {motion:{toX:motion.toX,toY:motion.toY}} : {})}))};
 }
@@ -85,7 +88,7 @@ svg { width: 100%; height: 100%; }
 <body>
 <div id="stage">
   <img id="source-image" alt="">
-  <svg viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+  <svg viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="content-clip"><rect x="0" y="0" width="1920" height="900"/></clipPath></defs><g clip-path="url(#content-clip)"></g></svg>
   <div id="sub"></div>
 </div>
 <script>
@@ -95,6 +98,7 @@ const assets = ${assetsJson};
 const style = window.STYLE;
 const stage = document.querySelector('#stage');
 const svg = document.querySelector('svg');
+const content = svg.querySelector('g');
 if (imageData) { const image = document.querySelector('#source-image'); image.src = imageData; image.style.display = 'block'; stage.classList.add('has-image'); }
 const sub = document.querySelector('#sub');
 stage.style.width = style.video.width + 'px';
@@ -125,7 +129,7 @@ const nodes = data.layers.map(l => {
     e.textContent = l.text;
   }
   if (l.type !== 'asset') e.setAttribute('fill', l.fill);
-  svg.appendChild(e);
+  content.appendChild(e);
   return e;
 });
 window.seek = function(t) {
@@ -182,6 +186,17 @@ async function imageDataFor(section) {
 }
 
 for (const section of production.sections) {
+  if (process.env.VIDEO_SCENE_REUSE_DIR) {
+    try {
+      const source = process.env.VIDEO_SCENE_REUSE_DIR;
+      await readFile(join(source, `${section.id}.html`));
+      await readFile(join(source, `${section.id}.scene.json`));
+      await copyFile(join(source, `${section.id}.html`), join(output, `${section.id}.html`));
+      await copyFile(join(source, `${section.id}.scene.json`), join(output, `${section.id}.scene.json`));
+      section.scene = `${section.id}.html`;
+      continue;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
   const assets = Object.create(null);
   const assetInfo = [];
   for (const asset of section.assets || []) {
@@ -210,6 +225,8 @@ for (const section of production.sections) {
     { role: 'user', content: JSON.stringify(scrubPaths(sceneInput)) },
   ];
   let data;
+  const assetIds = new Set(Object.keys(assets));
+  let usable;
   for (let attempt = 0; attempt < 2; attempt++) {
     let content;
     if (dsh) content = await callDsh(messages);
@@ -229,9 +246,24 @@ for (const section of production.sections) {
     const result = await response.json();
     content = result.choices[0].message.content;
     }
-    try { data = validate(JSON.parse(content), new Set(Object.keys(assets))); break; }
+    let parsed;
+    try { parsed = JSON.parse(content); data = validate(parsed, assetIds); break; }
     catch (error) {
-      if (attempt === 1) throw new Error(`Invalid scene response for ${section.id}: ${error.message}`);
+      // Keep usable layers if the correction also contains an invalid layer.
+      if (Array.isArray(parsed?.layers) && color.test(parsed.background)) {
+        const layers = [];
+        for (const layer of parsed.layers) {
+          try { layers.push(...validate({background:parsed.background, layers:[layer]}, assetIds, false).layers); }
+          catch { /* This layer cannot be rendered. Request a corrected scene below. */ }
+        }
+        if (layers.length && (!usable || layers.length > usable.layers.length)) usable = {background:parsed.background, layers};
+      }
+      if (attempt === 1) {
+        if (!usable) throw new Error(`Invalid scene response for ${section.id}: ${error.message}`);
+        data = validate(usable, assetIds);
+        data.warning = '模型修正后仍有无效图层，已保留可渲染的画面。';
+        break;
+      }
       messages.push({ role: 'assistant', content }, { role: 'user', content: `图层校验失败：${error.message}。${layerExamples}请修正后重新提交完整 JSON。` });
     }
   }

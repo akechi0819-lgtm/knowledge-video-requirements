@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createService } from '../lib/service.js'
+import { createProduction } from '../lib/production.js'
 import { renderBlueprint } from '../lib/blueprint.js'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -132,6 +133,7 @@ test('production status reports per-section artifacts and serves mid-run files',
     await writeFile(path.join(dir, 'film', 'audio', 'S01.mp3'), 'audio')
     const state = await service.production.status()
     assert.equal(state.status, 'interrupted')
+    assert.equal(JSON.parse(await readFile(path.join(root, 'production', 'status.json'))).status, 'running')
     assert.equal(state.sections[0].scene, true)
     assert.equal(state.sections[0].sceneKind, 'html')
     assert.equal(state.sections[0].audio, true)
@@ -159,6 +161,30 @@ test('production status reports per-section artifacts and serves mid-run files',
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('status does not overwrite stale running state while a new job starts', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-status-race-'))
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  try {
+    await mkdir(path.join(root, 'production'))
+    const stateFile = path.join(root, 'production', 'status.json')
+    const old = {id:'11111111-1111-4111-8111-111111111111',status:'running'}
+    await writeFile(stateFile, JSON.stringify(old))
+    const service = createProduction(root, {settings:{load:async () => { await gate; return {} }}})
+    const starting = service.start()
+    const status = await service.status()
+    assert.equal(status.status, 'running')
+    assert.deepEqual(JSON.parse(await readFile(stateFile)), old)
+    release()
+    await assert.rejects(starting)
+    assert.equal((await service.status()).status, 'interrupted')
+    const finished = {...old,status:'completed'}
+    await writeFile(stateFile, JSON.stringify(finished))
+    await Promise.all(Array.from({length:30}, () => service.status()))
+    assert.deepEqual(JSON.parse(await readFile(stateFile)), finished)
+  } finally { release(); await rm(root,{recursive:true,force:true}) }
 })
 
 
@@ -305,10 +331,117 @@ test('a new production reuses only complete scenes with matching inputs and asse
     await rm(path.join(workspace,'production',second.id,'scenes','S01.html'))
     await rm(path.join(workspace,'production',changed.id,'scenes','S01.html'))
     const third = await complete()
-    assert.equal(third.reusedScenesFrom,undefined)
+    assert.equal(third.reusedScenesFrom,changed.id)
+    assert.deepEqual(third.reusedSceneSections,['S02'])
     assert.equal(await readFile(path.join(root,'calls'),'utf8'),'xxx')
   } finally {
     for (const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
     await rm(root,{recursive:true,force:true})
   }
+})
+
+test('restyle asks when unspecified and applies the next named choice without reconfirmation', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-restyle-'))
+  const previous = process.env.SCENE_API_KEY
+  delete process.env.SCENE_API_KEY
+  try {
+    const service = createService({}, { workspace: root })
+    await service._internal.ensureDirs()
+    const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
+    await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
+    await service.finalize({ all:true, version:1 })
+    const before = await service._internal.getState()
+    const engine = { chatTurn: async () => { throw new Error('不应调用模型') } }
+    const request = await service.chat({ text:'修改画风重绘' }, engine)
+    assert.equal(request.chooseRestyle, true)
+    assert.deepEqual((await service.status()).pendingRestyle, { version:1 })
+    const choice = await service.chat({ text:'白板手绘' }, engine)
+    assert.equal(choice.chooseRestyle, false)
+    assert.ok(choice.production || choice.productionError)
+    assert.equal((await service.status()).visualStyle.style?.id, 'huashu-whiteboard', JSON.stringify(choice))
+    assert.equal((await service.status()).pendingRestyle, null)
+    assert.deepEqual((await service._internal.getState()).finalized, before.finalized)
+    const pixel = await service.chat({ text:'换成像素画风重新做' }, engine)
+    assert.ok(pixel.production || pixel.productionError)
+    assert.equal((await service.status()).visualStyle.style.id, 'andy-pixel-quest')
+    assert.deepEqual((await service._internal.getState()).finalized, before.finalized)
+    const quoted = await service.chat({ text:'换成「白板手绘：关系逐步展开」重新制作' }, engine)
+    assert.ok(quoted.production || quoted.productionError)
+    assert.equal((await service.status()).visualStyle.style.id, 'huashu-whiteboard')
+    for (const [text, id] of [['这版重新画一遍，用像素风', 'andy-pixel-quest'], ['用白板手绘重做', 'huashu-whiteboard'], ['换成白板手绘', 'huashu-whiteboard']]) {
+      const changed = await service.chat({ text }, engine)
+      assert.ok(changed.production || changed.productionError, text)
+      assert.equal((await service.status()).visualStyle.style.id, id, text)
+    }
+    await service.styles.importStyle({ name:'白板手绘新版本', description:'另一种白板风格', source:{ kind:'text', label:'测试' } })
+    const fullName = await service.chat({ text:'换成「白板手绘：关系逐步展开」重新制作' }, engine)
+    assert.ok(fullName.production || fullName.productionError)
+    assert.equal((await service.status()).visualStyle.style.id, 'huashu-whiteboard')
+    const byId = await service.chat({ text:'换成 huashu-whiteboard 重新制作' }, engine)
+    assert.ok(byId.production || byId.productionError)
+    assert.equal((await service.status()).visualStyle.style.id, 'huashu-whiteboard')
+    for (const text of ['算了', '取消重绘']) {
+      await service.chat({ text:'修改画风重绘' }, engine)
+      const cancelled = await service.chat({ text }, engine)
+      assert.match(cancelled.reply, /已取消重绘/)
+      assert.equal((await service.status()).pendingRestyle, null)
+      assert.equal(cancelled.production, null)
+    }
+    await service.chat({ text:'修改画风重绘' }, engine)
+    const semanticEngine = { chatTurn: async () => ({ reply:'收到', productionRequested:true }) }
+    for (const text of ['不要用白板手绘重做', '换成像素风好吗？', '取消重绘吧？']) {
+      const denied = await service.chat({ text }, semanticEngine)
+      assert.equal(denied.production, null, text)
+      assert.equal((await service.status()).visualStyle.style.id, 'huashu-whiteboard', text)
+    }
+  } finally {
+    if (previous === undefined) delete process.env.SCENE_API_KEY; else process.env.SCENE_API_KEY = previous
+    await rm(root, {recursive:true, force:true})
+  }
+})
+
+test('redrawing passes audio only from a completed job with identical narration', async () => {
+  const root = await mkdtemp(path.join(tmpdir(),'production-audio-reuse-'))
+  const kit = path.join(root,'kit'), workspace = path.join(root,'ws'), old = {...process.env}
+  try {
+    await mkdir(path.join(kit,'scripts'),{recursive:true}); await mkdir(path.join(kit,'WORK/modules/video'),{recursive:true})
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `import {mkdir,readFile,writeFile} from 'node:fs/promises'; const a=process.argv,p=JSON.parse(await readFile(a[3])); await mkdir(a[5]); for(const s of p.sections){s.scene=s.id+'.html';await writeFile(a[5]+'/'+s.scene,'html');await writeFile(a[5]+'/'+s.id+'.scene.json','{}')} await writeFile(a[5]+'/production.json',JSON.stringify(p))`)
+    await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,readFile,writeFile,appendFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1],p=JSON.parse(await readFile(a[3])); await appendFile(${JSON.stringify(path.join(root,'sources'))},(process.env.VIDEO_TTS_CACHE_DIR||'none')+'\\n'); await mkdir(out); await mkdir(out+'/audio'); for(const s of p.sections){await writeFile(out+'/audio/'+s.id+'.mp3','audio');await writeFile(out+'/audio/'+s.id+'.json',JSON.stringify({id:s.id,narration:s.narration}))} await writeFile(out+'/final.mp4','video');await writeFile(out+'/mapping.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
+    Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api'})
+    const service = createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
+    const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const markdown = renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
+    const engine = {produce:async () => ({markdown,engine:'test'})}
+    await service.generate({},engine); await service.confirm({all:true}); await service.finalize()
+    async function complete() { let state=await service.production.start(); for(let i=0;i<100;i++){state=await service.production.status();if(state.status!=='running')break;await sleep(20)} assert.equal(state.status,'completed',state.error);return state }
+    const first = await complete()
+    await service.selectVisualStyle({id:'editorial',version:1}); await complete()
+    let sources=(await readFile(path.join(root,'sources'),'utf8')).trim().split('\n')
+    assert.equal(sources[0],'none'); assert.equal(sources[1],path.join(workspace,'production',first.id,'film','audio'))
+    await service.manualEdit({section:'B01',fields:{narration:'修改旁白'}},engine); await service.confirm({all:true}); await service.finalize(); await complete()
+    sources=(await readFile(path.join(root,'sources'),'utf8')).trim().split('\n'); assert.equal(sources[2],'none')
+  } finally { for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']) {if(old[key]===undefined) delete process.env[key]; else process.env[key]=old[key]} await rm(root,{recursive:true,force:true}) }
+})
+
+test('failed scene production reuses matching completed sections only', async () => {
+  const root = await mkdtemp(path.join(tmpdir(),'partial-scenes-')), kit=path.join(root,'kit'), workspace=path.join(root,'ws'), old={...process.env}
+  try {
+    await mkdir(path.join(kit,'scripts'),{recursive:true}); await mkdir(path.join(kit,'WORK/modules/video'),{recursive:true})
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `import {mkdir,readFile,writeFile,appendFile,copyFile} from 'node:fs/promises'; const a=process.argv,p=JSON.parse(await readFile(a[3])),seed=process.env.VIDEO_SCENE_REUSE_DIR; await mkdir(a[5]); for(const s of p.sections){s.scene=s.id+'.html'; try{await copyFile(seed+'/'+s.scene,a[5]+'/'+s.scene);await copyFile(seed+'/'+s.id+'.scene.json',a[5]+'/'+s.id+'.scene.json');continue}catch{} await appendFile(${JSON.stringify(path.join(root,'calls'))},s.id+'\\n'); if(s.id==='S03'&&!seed)process.exit(1); await writeFile(a[5]+'/'+s.scene,'html');await writeFile(a[5]+'/'+s.id+'.scene.json','{}')} await writeFile(a[5]+'/production.json',JSON.stringify(p))`)
+    await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises';const a=process.argv,out=a[a.indexOf('--out')+1];await mkdir(out);await writeFile(out+'/final.mp4','x');await writeFile(out+'/mapping.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
+    Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api'})
+    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs(); await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
+    const sections=['B01','B02','B03'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
+    await service.generate({}, {produce:async()=>({markdown,engine:'test'})});await service.confirm({all:true});await service.finalize()
+    async function run(){let s=await service.production.start();for(let i=0;i<100;i++){s=await service.production.status();if(s.status!=='running')break;await sleep(20)}return s}
+    const first=await run();assert.equal(first.status,'failed')
+    const second=await run();assert.equal(second.status,'completed',second.error);assert.equal(second.reusedScenesFrom,first.id);assert.deepEqual(second.reusedSceneSections,['S01','S02'])
+    assert.deepEqual((await readFile(path.join(root,'calls'),'utf8')).trim().split('\n'),['S01','S02','S03','S03'])
+    await service.selectVisualStyle({id:'editorial',version:1})
+    const changed=await run();assert.equal(changed.status,'failed');assert.equal(changed.reusedScenesFrom,undefined)
+  } finally {for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]}await rm(root,{recursive:true,force:true})}
 })

@@ -13,7 +13,7 @@
       const sec = sections[index]
       const scene = scenes?.find(item => item.id === sec.id)
       const palette = { ink: '#d5d0c6', red: '#e08a82', sand: '#8a8070', none: 'none' }
-      const drawing = scene ? `<svg viewBox="0 0 400 220" role="img" aria-label="${escape(sec.title)}场景示意">${scene.shapes.map(shape => `<path d="${escape(shape.d)}" fill="${palette[shape.fill] || 'none'}" stroke="${palette[shape.stroke] || 'none'}" stroke-width="${Number(shape.width)}" stroke-linecap="round" stroke-linejoin="round"/>`).join('')}</svg>` : '<span class="bpv-wait">场景示意生成中…</span>'
+      const drawing = scene ? `<svg viewBox="0 0 400 220" role="img" aria-label="${escape(sec.title)}场景示意">${scene.shapes.map(shape => `<path d="${escape(shape.d)}" fill="${escape(palette[shape.fill] || shape.fill)}" stroke="${escape(palette[shape.stroke] || shape.stroke)}" stroke-width="${Number(shape.width)}" stroke-linecap="round" stroke-linejoin="round"/>`).join('')}</svg>` : '<span class="bpv-wait">场景示意生成中…</span>'
       const detail = excerpt(sec.intent || sec.narration || (sec.facts || []).join('；'), 75)
       return `<button type="button" class="bpv-card bpv-card-${position + 1}" data-preview-target="${escape(sec.id)}" aria-label="查看 ${escape(sec.id)} ${escape(sec.title)} 的完整内容">
         <span class="bpv-art"><span class="bpv-index">${escape(sec.id)}</span>${drawing}</span>

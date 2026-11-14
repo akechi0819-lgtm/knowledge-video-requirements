@@ -12,6 +12,22 @@ import tts_api
 
 
 class SpeechEndpointTest(unittest.TestCase):
+    def test_changed_tts_configuration_invalidates_cache(self):
+        with TemporaryDirectory() as tmp, patch.dict('os.environ', {
+            'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a',
+            'VIDEO_TTS_PROTOCOL': 'speech'
+        }), patch.object(tts_api, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'audio')) as send, patch.object(tts_api.subprocess, 'run') as probe:
+            probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
+            segments = [{'id':'S1', 'narration':'旁白'}]
+            def render(voice='api:test'):
+                return tts_api.synth_all(segments, Path(tmp), voice, '+0%', 'ffprobe')[1]
+            self.assertEqual(render(), ['S1'])
+            self.assertEqual(render(), [])
+            with patch.dict('os.environ', {'VIDEO_TTS_MODEL':'model-b'}): self.assertEqual(render(), ['S1'])
+            with patch.dict('os.environ', {'VIDEO_TTS_ENDPOINT':'https://test.invalid/b'}): self.assertEqual(render(), ['S1'])
+            self.assertEqual(render('api:other'), ['S1'])
+            self.assertEqual(send.call_count, 4)
+
     def test_mimo_request_decode_cache_and_invalid_response(self):
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {
             "VIDEO_TTS_ENDPOINT": "https://test.invalid/v1/chat/completions",

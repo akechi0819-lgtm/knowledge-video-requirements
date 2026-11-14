@@ -49,7 +49,7 @@ window.BohackFilm = (() => {
     if (p.status === 'completed') {
       if (p.source === 'external') return `蓝图 ${p.version} 的独立制作成片已归档，请按段观看并核对。`
       if (p.verify && p.verify.pass === false) return '成片已合成，质检发现需要核对的问题。'
-      return '成片已做好，点左侧段落即可跳到对应时刻。'
+      return '成片已做好，点击右侧段落可跳到对应时刻。'
     }
     const sections = p.sections || []
     const withScene = sections.filter(s => s.scene).length
@@ -78,7 +78,7 @@ window.BohackFilm = (() => {
   }
 
   function renderPhases(rail, p) {
-    if (!p) { rail.hidden = true; rail.replaceChildren(); return }
+    if (!p || p.status === 'completed') { rail.hidden = true; rail.replaceChildren(); return }
     const idx = phaseIndex(p.phase, p.status)
     const failed = p.status === 'failed' || p.status === 'interrupted'
     rail.hidden = false
@@ -252,19 +252,18 @@ window.BohackFilm = (() => {
     }
     renderPhases(rail, p)
     if (line) {
-      const show = Boolean(p)
+      const show = Boolean(p) && (p.status !== 'completed' || p.verify?.pass === false)
       line.hidden = !show
       if (show) line.textContent = headline(p)
     }
     if (waitMeta) {
-      const text = p?.status === 'running' ? elapsed(p.startedAt) : p?.status === 'completed' && p.completedAt && p.startedAt
-        ? `制作用时 ${formatClock((new Date(p.completedAt) - new Date(p.startedAt)) / 1000)}`
-        : ''
+      const text = p?.status === 'running' ? elapsed(p.startedAt) : ''
       waitMeta.hidden = !text
       waitMeta.textContent = text
     }
     if (prep) prep.hidden = p?.status === 'running'
     root.classList.toggle('is-producing', p?.status === 'running' || p?.status === 'completed')
+    root.classList.toggle('is-completed', p?.status === 'completed')
     const signature = JSON.stringify({
       id: p?.id, status: p?.status, phase: p?.phase, thread: env.threadId,
       artifacts: p?.artifacts, sections: (p?.sections || []).map(sec => [sec.id, sec.scene, sec.sceneKind, sec.audio, sec.clip]),
