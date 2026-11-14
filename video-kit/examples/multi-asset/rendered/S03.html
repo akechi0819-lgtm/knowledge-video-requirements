@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; padding: 0; }
+#stage { position: relative; overflow: hidden; }
+svg { width: 100%; height: 100%; }
+#source-image { display: none; position: absolute; left: 3%; top: 7%; width: 42%; height: 70%; object-fit: contain; }
+#stage.has-image svg { position: absolute; left: 48%; width: 50%; height: 100%; }
+#sub { position: absolute; left: 50%; transform: translateX(-50%); width: max-content; max-width: 85%; text-align: center; color: white; background: #181c24e8; border-radius: 12px; padding: 8px 22px; line-height: 1.3; }
+#sub:empty { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <img id="source-image" alt="">
+  <svg viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div id="sub"></div>
+</div>
+<script>
+const data = {"background":"#e7eef9","layers":[{"type":"asset","x":1000,"y":250,"width":320,"height":480,"fill":"#ffffff","text":"","start":0,"end":1,"assetId":"traveler","motion":{"toX":1420,"toY":250}},{"type":"asset","x":220,"y":230,"width":380,"height":260,"fill":"#ffffff","text":"","start":0,"end":1,"assetId":"map","motion":{"toX":220,"toY":230}}]};
+const imageData = null;
+const assets = {"traveler":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyMDAgMzAwIj48Y2lyY2xlIGN4PSIxMDAiIGN5PSI2NCIgcj0iNDIiIGZpbGw9IiNmM2JjODUiLz48cGF0aCBkPSJNNTUgNTIgUTYwIDYgMTA1IDE1IFExNDYgMTIgMTQ4IDU4IFExMDggMzQgNTUgNTIiIGZpbGw9IiMyNjM1NTIiLz48Y2lyY2xlIGN4PSI4NCIgY3k9IjY1IiByPSI0Ii8+PGNpcmNsZSBjeD0iMTE3IiBjeT0iNjUiIHI9IjQiLz48cGF0aCBkPSJNODkgODQgUTEwMCA5NCAxMTIgODQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzc4M2UzOCIgc3Ryb2tlLXdpZHRoPSI0Ii8+PHBhdGggZD0iTTU3IDEyNSBRMTAwIDEwMCAxNDMgMTI1IEwxNTMgMjMwIEw0NyAyMzAgWiIgZmlsbD0iI2RmNjM1MyIvPjxwYXRoIGQ9Ik03MCAyMjcgTDY1IDI4NSBNMTMwIDIyNyBMMTM1IDI4NSIgc3Ryb2tlPSIjMjYzNTUyIiBzdHJva2Utd2lkdGg9IjE4IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48cGF0aCBkPSJNNTggMTM1IEwyOCAxOTUgTTE0MiAxMzUgTDE3NCAxOTAiIHN0cm9rZT0iI2YzYmM4NSIgc3Ryb2tlLXdpZHRoPSIxNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+Cg==","map":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMDAgMjAwIj48cmVjdCB4PSI1IiB5PSI1IiB3aWR0aD0iMjkwIiBoZWlnaHQ9IjE5MCIgcng9IjE4IiBmaWxsPSIjZWFjYjkxIiBzdHJva2U9IiM2NzRmMzgiIHN0cm9rZS13aWR0aD0iNiIvPjxwYXRoIGQ9Ik01MCAxNTAgQzcwIDQwIDEyNSAxNjAgMTY1IDY1IFMyMzAgMTIwIDI1NSA0NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjYjY1NDQyIiBzdHJva2Utd2lkdGg9IjgiIHN0cm9rZS1kYXNoYXJyYXk9IjEyIDEwIi8+PGNpcmNsZSBjeD0iNTAiIGN5PSIxNTAiIHI9IjEwIiBmaWxsPSIjMzY1ZTU2Ii8+PGNpcmNsZSBjeD0iMjU1IiBjeT0iNDUiIHI9IjEwIiBmaWxsPSIjYjY1NDQyIi8+PC9zdmc+Cg=="};
+const style = window.STYLE;
+const stage = document.querySelector('#stage');
+const svg = document.querySelector('svg');
+if (imageData) { const image = document.querySelector('#source-image'); image.src = imageData; image.style.display = 'block'; stage.classList.add('has-image'); }
+const sub = document.querySelector('#sub');
+stage.style.width = style.video.width + 'px';
+stage.style.height = style.video.height + 'px';
+stage.style.background = data.background;
+sub.style.bottom = style.subtitle.bottom + 'px';
+sub.style.font = style.subtitle.fontWeight + ' ' + style.subtitle.fontSize + 'px ' + style.font.family;
+const ns = 'http://www.w3.org/2000/svg';
+const nodes = data.layers.map(l => {
+  const e = document.createElementNS(ns, l.type === 'asset' ? 'image' : l.type);
+  if (l.type === 'asset') {
+    e.setAttribute('x', l.x); e.setAttribute('y', l.y);
+    e.setAttribute('width', l.width); e.setAttribute('height', l.height);
+    e.setAttribute('href', assets[l.assetId]);
+  } else if (l.type === 'rect') {
+    e.setAttribute('x', l.x); e.setAttribute('y', l.y);
+    e.setAttribute('width', l.width); e.setAttribute('height', l.height);
+  } else if (l.type === 'ellipse') {
+    e.setAttribute('cx', l.x + l.width / 2); e.setAttribute('cy', l.y + l.height / 2);
+    e.setAttribute('rx', l.width / 2); e.setAttribute('ry', l.height / 2);
+  } else if (l.type === 'line') {
+    e.setAttribute('x1', l.x); e.setAttribute('y1', l.y);
+    e.setAttribute('x2', l.x + l.width); e.setAttribute('y2', l.y + l.height);
+    e.setAttribute('stroke', l.fill); e.setAttribute('stroke-width', '5');
+  } else {
+    e.setAttribute('x', l.x); e.setAttribute('y', l.y);
+    e.setAttribute('font-size', l.height); e.setAttribute('font-family', 'sans-serif');
+    e.textContent = l.text;
+  }
+  e.setAttribute('fill', l.fill);
+  svg.appendChild(e);
+  return e;
+});
+window.seek = function(t) {
+  const p = window.__PLAN__;
+  const progress = Math.max(0, Math.min(1, t / p.duration));
+  // Bring the diagram out of a soft shadow as its layers unfold.
+  svg.style.filter = 'brightness(' + (0.82 + 0.18 * progress) + ')';
+  nodes.forEach((node, i) => {
+    const l = data.layers[i];
+    const visible = progress >= l.start && (progress < l.end || (progress === 1 && l.end === 1));
+    const fade = Math.max(0, Math.min(1, (progress - l.start) / 0.04));
+    node.style.opacity = visible ? String(fade) : '0';
+    // Keep related shapes registered as one diagram; reveal the composition with a shared camera.
+    const zoom = 0.58 + 0.42 * progress;
+    const t = Math.min(1, Math.max(0, (progress - l.start) / (l.end - l.start)));
+    const ease = t * t * (3 - 2 * t);
+    const dx = l.motion ? (l.motion.toX - l.x) * ease : 0;
+    const dy = l.motion ? (l.motion.toY - l.y) * ease : 0;
+    node.setAttribute('transform', 'translate(960 450) scale(' + zoom + ') translate(' + (dx - 960) + ' ' + (dy - 450) + ')');
+    if (l.type === 'line') {
+      const length = Math.hypot(l.width, l.height);
+      const reveal = Math.min(1, Math.max(0, (progress - l.start) / Math.min(0.32, l.end - l.start)));
+      node.setAttribute('stroke-dasharray', length);
+      node.setAttribute('stroke-dashoffset', length * (1 - reveal));
+    }
+  });
+  const caption = p.subtitle;
+  sub.textContent = caption && t >= caption.start && t < caption.end ? caption.text : '';
+};
+</script>
+</body>
+</html>

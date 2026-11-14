@@ -6,9 +6,11 @@
  * the in-process capability service — they are NOT a team contract and carry
  * no authentication (bound to 127.0.0.1 by the shipped webserver config).
  */
-import { readFile, stat, mkdtemp, open, rm } from 'node:fs/promises'
+import { readFile, stat, mkdtemp, open, rm, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import { analyzeVideo } from './video-style.js'
+import { generatePreview } from './preview.js'
+import { listModels } from './models.js'
 import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import { readGithubStyle } from './github-style.js'
@@ -64,12 +66,39 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
     const method = (req.method || 'GET').toUpperCase()
 
     try {
+      const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
+      const asset = pathname.slice('/bohack/'.length)
+      if (pathname.startsWith('/bohack/') && Object.hasOwn(assetTypes, asset) && (method === 'GET' || method === 'HEAD')) {
+        const data = await readFile(path.join(path.dirname(HTML_FILE), asset))
+        res.writeHead(200, { 'content-type': assetTypes[asset], 'cache-control': 'no-cache' })
+        res.end(method === 'HEAD' ? undefined : data)
+        return
+      }
       // ── static page ─────────────────────────────────────────────────────
-      if (['/bohack/style-previews/andy.mp4', '/bohack/style-previews/hey.mp4'].includes(pathname) && (method === 'GET' || method === 'HEAD')) {
-        const file = path.join(path.dirname(HTML_FILE), 'style-previews', path.basename(pathname))
-        res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': (await stat(file)).size })
-        if (method === 'HEAD') res.end()
-        else createReadStream(file).pipe(res)
+      if (pathname.startsWith('/bohack/style-previews/') && (method === 'GET' || method === 'HEAD')) {
+        const types = { '.mp4': 'video/mp4', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' }
+        const name = path.basename(pathname)
+        const ext = path.extname(name).toLowerCase()
+        const dir = path.resolve(path.dirname(HTML_FILE), 'style-previews')
+        const file = path.resolve(dir, name)
+        if (!types[ext] || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(name) || file !== path.join(dir, name)) {
+          text(res, 404, 'Not Found'); return
+        }
+        try {
+          const info = await stat(file)
+          if (!info.isFile()) { text(res, 404, 'Not Found'); return }
+          const resolved = await realpath(file)
+          const rootResolved = await realpath(dir)
+          if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) { text(res, 404, 'Not Found'); return }
+          const headers = { 'content-type': types[ext], 'content-length': info.size, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' }
+          if (ext === '.svg') headers['content-security-policy'] = "default-src 'none'; style-src 'unsafe-inline'"
+          res.writeHead(200, headers)
+          if (method === 'HEAD') res.end()
+          else createReadStream(file).pipe(res)
+        } catch (e) {
+          if (e.code === 'ENOENT') { text(res, 404, 'Not Found'); return }
+          throw e
+        }
         return
       }
       if (pathname === '/bohack' || pathname === '/bohack/' || pathname === '/bohack/index.html') {
@@ -108,6 +137,11 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         res.writeHead(200, { 'content-type': 'image/svg+xml', 'content-security-policy': "default-src 'none'; style-src 'none'; sandbox", 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' })
         res.end(method === 'HEAD' ? undefined : data); return
       }
+      if (pathname === '/bohack/api/blueprint-skill' && method === 'GET') { json(res, 200, {ok:true, skill:await service.styles.blueprintSkill()}); return }
+      if (pathname === '/bohack/api/blueprint-skill' && method === 'POST') { json(res, 200, await service.styles.chooseBlueprintSkill(await readBody(req))); return }
+      if (pathname === '/bohack/api/models' && method === 'POST') { json(res, 200, await listModels(await readBody(req), await service.settings.load())); return }
+      if (pathname === '/bohack/api/settings' && method === 'GET') { json(res, 200, await service.settings.get()); return }
+      if (pathname === '/bohack/api/settings' && method === 'POST') { json(res, 200, await service.settings.update(await readBody(req))); return }
       if (pathname === '/bohack/api/thread' && method === 'GET') {
         if (!threadId) throw new Error('需要指定会话 ID')
         json(res, 200, { ok: true, thread: await threads.metadata(threadId) }); return
@@ -115,9 +149,13 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
 
       if (pathname === '/bohack/api/production-file' && (method === 'GET' || method === 'HEAD')) {
         const kind = params.get('kind')
-        const file = await service.production.file(kind)
+        const file = await service.production.file(kind, params.get('section'))
         const size = (await stat(file)).size
-        const headers = { 'content-type': kind === 'video' ? 'video/mp4' : 'application/json; charset=utf-8', 'cache-control': 'no-store', 'accept-ranges': 'bytes', 'x-content-type-options': 'nosniff' }
+        const type = kind === 'video' || kind === 'clip' ? 'video/mp4'
+          : kind === 'audio' ? 'audio/mpeg'
+          : kind === 'scene' && file.endsWith('.html') ? 'text/html; charset=utf-8'
+          : 'application/json; charset=utf-8'
+        const headers = { 'content-type': type, 'cache-control': 'no-store', 'accept-ranges': 'bytes', 'x-content-type-options': 'nosniff' }
         let start = 0, end = size - 1, code = 200
         if (req.headers.range) {
           const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range)
@@ -147,7 +185,8 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
             }
             if (!size) throw new Error('视频文件为空。')
           } finally { await handle.close() }
-          result = await videoAnalyzer({ videoPath, outputDir: dir, projectModel: await service.projectModel?.resolve() })
+          const model = (await service.settings?.load())?.model
+          result = await videoAnalyzer({ videoPath, outputDir: dir, projectModel: model?.baseUrl ? { endpoint: model.baseUrl, model: model.model, key: model.apiKey } : undefined })
         } finally { await rm(dir, { recursive: true, force: true }) }
         json(res, 200, { ok: true, draft: result.draft, evidence: { durationSeconds: result.evidence.durationSeconds, frames: result.evidence.frames.map(frame => ({ seconds: frame.seconds })) } }); return
       }
@@ -155,7 +194,6 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         const markdown = await service.styles.exportMarkdown({ id: params.get('id') })
         res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'content-disposition': 'attachment; filename=SKILL.md', 'cache-control': 'no-store' }); res.end(markdown); return
       }
-      if (pathname === '/bohack/api/project-model' && method === 'GET') { json(res, 200, await service.projectModel.view()); return }
       if (pathname === '/bohack/api/styles' && method === 'GET') { json(res, 200, await service.styles.list()); return }
 
       // ── read endpoints ──────────────────────────────────────────────────
@@ -188,12 +226,12 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         json(res, 200, await service.listAssets()); return
       }
       if (pathname === '/bohack/api/upload' && method === 'POST') {
-        // Drag-and-drop: base64 body, own cap (10 MB) before generic parsing.
+        // Allow a 10 MiB file after Base64 expansion plus JSON metadata.
         const chunks = []
         let size = 0
         for await (const chunk of req) {
           size += chunk.length
-          if (size > 12 * 1024 * 1024) { json(res, 400, { ok: false, error: '文件过大（上限 10 MB）' }); return }
+          if (size > 4 * Math.ceil(10 * 1024 * 1024 / 3) + 64 * 1024) { json(res, 400, { ok: false, error: '文件过大（上限 10 MB）' }); return }
           chunks.push(chunk)
         }
         let body
@@ -240,7 +278,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       switch (pathname) {
         case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.generatedAssets.generate({ ...await generatedContext(body.version), id: body.id })); break
         case '/bohack/api/generated-assets-approve': out = generatedUrls(await service.generatedAssets.approve({ ...await generatedContext(body.version), id: body.id, revisions: body.revisions })); break
-        case '/bohack/api/project-model': out = await service.projectModel.save(body); break
+        case '/bohack/api/preview': out = { ok: true, scenes: await generatePreview((await service.status()).sections, await service.settings.load()) }; break
         case '/bohack/api/style-github': out = await readGithubStyle(body); break
         case '/bohack/api/styles-import': out = await service.styles.importStyle(body); break
         case '/bohack/api/styles-update': out = await service.styles.update(body); break
@@ -272,7 +310,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
     } catch (e) {
       try { ctx.logger?.warn?.('[bohack/web]', String(e?.stack || e)) } catch { /* ignore */ }
       if (!res.headersSent) json(res, 400, errorBody(e))
-      else { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify({ type: 'error', code: e?.code, message: String(e?.message || e) }) + '\n'); res.end() }
+      else { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify({ type: 'error', message: String(e?.message || e) }) + '\n'); res.end() }
     }
   }
 }

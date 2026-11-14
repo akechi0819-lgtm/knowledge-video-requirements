@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="寓言场景预览">
+  <rect width="1600" height="900" fill="#efe6d4"/>
+  <rect x="0" y="620" width="1600" height="280" fill="#d9c9a8"/>
+  <ellipse cx="1280" cy="260" rx="90" ry="90" fill="#f3d7a0" opacity=".8"/>
+  <path d="M0 640 C 200 580, 400 700, 640 640 S 1040 560, 1600 650 L1600 900 L0 900 Z" fill="#cbb892"/>
+  <circle cx="430" cy="500" r="70" fill="#5c4630"/>
+  <circle cx="430" cy="430" r="46" fill="#7a5a3a"/>
+  <circle cx="416" cy="420" r="6" fill="#1a1916"/>
+  <circle cx="448" cy="420" r="6" fill="#1a1916"/>
+  <rect x="980" y="200" width="72" height="420" rx="8" fill="#3d4f3a"/>
+  <rect x="996" y="230" width="40" height="280" fill="#c45a3a"/>
+  <rect x="996" y="510" width="40" height="90" fill="#e8dcc4"/>
+  <text x="1070" y="250" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="28" fill="#3d4f3a">变化仪表</text>
+  <text x="120" y="200" font-family="Noto Serif SC, Songti SC, serif" font-size="56" fill="#3a2d22">同一角色，走完变化。</text>
+  <text x="120" y="820" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="22" fill="#6a5b48">寓言场景</text>
+</svg>

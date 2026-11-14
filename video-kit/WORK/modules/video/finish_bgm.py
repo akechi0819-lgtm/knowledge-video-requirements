@@ -33,6 +33,19 @@ def decode_audio(ffmpeg: str, src: Path, filters: list[str] | None = None) -> np
     return np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).copy()
 
 
+def remux_mix(ffmpeg: str, final: Path, tmp: Path, pcm: bytes, total: float) -> None:
+    # Decoding concatenated AAC can expose encoder padding past the container
+    # duration. Bound the new audio to the measured timeline used by mapping.
+    subprocess.run(
+        [ffmpeg, "-y", "-v", "error", "-i", str(final),
+         "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-",
+         "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+         "-c:a", "aac", "-b:a", "160k", "-ar", str(SR), "-ac", "2",
+         "-t", str(total), "-movflags", "+faststart", str(tmp)],
+        input=pcm, check=True,
+    )
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -92,14 +105,7 @@ def main() -> int:
         mix *= 0.99 / peak
     pcm = (np.clip(mix, -1, 1) * 32767).astype("<i2").tobytes()
     tmp = out_dir / "final_bgm_tmp.mp4"
-    subprocess.run(
-        [ffmpeg, "-y", "-v", "error", "-i", str(final),
-         "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-",
-         "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-         "-c:a", "aac", "-b:a", "160k", "-ar", str(SR), "-ac", "2",
-         "-movflags", "+faststart", str(tmp)],
-        input=pcm, check=True,
-    )
+    remux_mix(ffmpeg, final, tmp, pcm, total)
     new_dur = float(subprocess.run(
         [ffprobe, "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(tmp)],

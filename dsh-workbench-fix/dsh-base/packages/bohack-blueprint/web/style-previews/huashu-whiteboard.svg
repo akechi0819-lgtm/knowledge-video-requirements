@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="白板手绘预览">
+  <rect width="1600" height="900" fill="#f4f1ea"/>
+  <rect x="70" y="60" width="1460" height="780" fill="#fbfaf6" stroke="#cfc9bc" stroke-width="8"/>
+  <circle cx="420" cy="360" r="90" fill="none" stroke="#2b2a27" stroke-width="5" stroke-linecap="round"/>
+  <path d="M510 360 C 640 300, 700 420, 830 380" fill="none" stroke="#2b2a27" stroke-width="4" stroke-linecap="round"/>
+  <path d="M810 360 h140 v140 h-140 z" fill="none" stroke="#2b2a27" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M950 430 C 1080 390, 1160 520, 1280 500" fill="none" stroke="#2b2a27" stroke-width="4" stroke-linecap="round"/>
+  <path d="M1280 500 l-18 -22 M1280 500 l-26 6" fill="none" stroke="#2b2a27" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="1310" cy="500" r="70" fill="none" stroke="#c45a3a" stroke-width="5"/>
+  <text x="420" y="520" text-anchor="middle" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="30" fill="#3c3a36">对象 A</text>
+  <text x="880" y="560" text-anchor="middle" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="30" fill="#3c3a36">关系</text>
+  <text x="1310" y="630" text-anchor="middle" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="30" fill="#c45a3a">新展开</text>
+  <text x="140" y="160" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="36" fill="#6d6a63">先画结构，再逐步揭示。</text>
+</svg>

@@ -1,0 +1,9 @@
+[submodule "andy-vibe-knowledge"]
+	path = .project-skills/andy-vibe-knowledge
+	url = https://github.com/andyhuo520/vibe-knowledge.git
+[submodule "deepseek-opus-motion-skill"]
+	path = .project-skills/deepseek-opus-motion-skill
+	url = https://github.com/8533502-dev/deepseek-opus-motion-skill.git
+[submodule "vibe-knowledge-film"]
+	path = .project-skills/vibe-knowledge-film
+	url = https://github.com/HeyChengC/vibe-knowledge-film.git

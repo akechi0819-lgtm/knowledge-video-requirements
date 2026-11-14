@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="剪报调查预览">
+  <rect width="1600" height="900" fill="#ebe4d4"/>
+  <g transform="rotate(-6 420 320)">
+    <rect x="140" y="140" width="560" height="380" fill="#f7f1e4" stroke="#1c1915" stroke-width="3"/>
+    <text x="180" y="230" font-family="Noto Serif SC, Songti SC, serif" font-size="54" fill="#1c1915">剪报</text>
+    <text x="180" y="300" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="28" fill="#5a554c">材料一 · 现场记录</text>
+  </g>
+  <g transform="rotate(5 1100 280)">
+    <rect x="820" y="120" width="520" height="300" fill="#d7c4a4"/>
+    <rect x="860" y="170" width="440" height="200" fill="#c4ad86"/>
+    <text x="880" y="290" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="36" fill="#f7f1e4">照片残片</text>
+  </g>
+  <g transform="rotate(-2 980 640)">
+    <rect x="700" y="500" width="640" height="220" fill="#f4eedf" stroke="#1c1915" stroke-width="2"/>
+    <text x="740" y="590" font-family="Noto Serif SC, Songti SC, serif" font-size="44" fill="#1c1915">关键句被框出来。</text>
+    <rect x="740" y="620" width="360" height="18" fill="#f2e15a" opacity=".85"/>
+  </g>
+  <path d="M420 300 C 620 260, 860 420, 1080 390" fill="none" stroke="#c0392b" stroke-width="5"/>
+  <circle cx="420" cy="300" r="10" fill="none" stroke="#c0392b" stroke-width="4"/>
+  <circle cx="1080" cy="390" r="10" fill="none" stroke="#c0392b" stroke-width="4"/>
+  <rect x="200" y="620" width="220" height="64" fill="#c0392b"/>
+  <text x="214" y="662" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="28" fill="#f7f1e4">调查标注</text>
+</svg>

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="杂志式图文预览">
+  <rect width="1600" height="900" fill="#f3efe6"/>
+  <rect x="0" y="0" width="18" height="900" fill="#9a3b32"/>
+  <text x="96" y="220" font-family="Noto Serif SC, Songti SC, serif" font-size="128" font-weight="600" fill="#1a1916">图解</text>
+  <text x="96" y="340" font-family="Noto Serif SC, Songti SC, serif" font-size="128" font-weight="600" fill="#1a1916">这一页。</text>
+  <rect x="100" y="390" width="120" height="6" fill="#9a3b32"/>
+  <rect x="880" y="160" width="540" height="360" fill="#d9d1c3"/>
+  <rect x="930" y="210" width="440" height="260" fill="#cfc6b6"/>
+  <line x1="880" y1="160" x2="1420" y2="520" stroke="#f3efe6" stroke-width="8"/>
+  <text x="880" y="620" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="28" fill="#6d6a63">栏目 / 04</text>
+  <text x="96" y="520" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="32" fill="#3c3a36">标题先立住，再把图文</text>
+  <text x="96" y="570" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="32" fill="#3c3a36">排进同一块留白里。</text>
+  <text x="96" y="820" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="22" fill="#9a9388">杂志式图文</text>
+</svg>

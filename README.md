@@ -1,4 +1,6 @@
-# 知识视频需求整理模块：交接说明
+# 讲界视频工坊
+
+首次安装风格 Skill 时，在仓库根目录运行 `git submodule update --init`。若单独运行 vibe-knowledge 的建片脚本，可用 `git -C .project-skills/andy-vibe-knowledge apply ../../patches/vibe-knowledge-sibling-skill.patch` 让它读取同目录的 ai-teardown。
 
 ## 三模块工作台与正式演示
 

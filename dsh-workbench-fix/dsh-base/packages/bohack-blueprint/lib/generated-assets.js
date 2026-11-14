@@ -15,7 +15,7 @@ export function renderAsset(shapes) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">${paths.join('')}</svg>`
 }
 
-export function createGeneratedAssets(root, { projectModel, request = fetch, videoKitDir } = {}) {
+export function createGeneratedAssets(root, { settings, request = fetch, videoKitDir } = {}) {
   let mutating = false
   const directory = version => path.join(root, 'outbox', `素材_v${version}`)
   const stateFile = version => path.join(directory(version), '状态.json')
@@ -61,10 +61,10 @@ export function createGeneratedAssets(root, { projectModel, request = fetch, vid
       const kit = path.resolve(videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
       ;({ callDsh } = await import(pathToFileURL(path.join(kit, 'scripts/dsh-model.mjs')).href))
     } else {
-      const configured = await projectModel.resolve()
-      const endpoint = configured.endpoint || process.env.SCENE_ENDPOINT
-      model = configured.model || process.env.SCENE_MODEL
-      key = configured.endpoint ? configured.key : process.env.SCENE_API_KEY
+      const config = await settings.load()
+      const endpoint = config.model?.baseUrl || process.env.SCENE_ENDPOINT || process.env.WORKBENCH_MODEL_ENDPOINT
+      model = config.model?.model || process.env.SCENE_MODEL || process.env.WORKBENCH_MODEL_NAME
+      key = config.model?.baseUrl ? config.model.apiKey : (process.env.SCENE_ENDPOINT ? process.env.SCENE_API_KEY : process.env.WORKBENCH_MODEL_KEY)
       if (!endpoint || !model) throw new Error('请先配置模型地址和名称。')
       url = new URL(endpoint)
       const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)

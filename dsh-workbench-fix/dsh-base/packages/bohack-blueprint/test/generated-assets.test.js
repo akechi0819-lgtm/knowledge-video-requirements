@@ -11,7 +11,7 @@ test('素材生成、确认、单项重建及风格变更均隔离版本与生�
     const shapes = Array.from({ length: 5 }, (_, i) => ({ d: `M ${i} 0 L 10 10 Z`, fill: '#123456', stroke: 'none', width: 1 }))
     const calls = []
     let gate = null
-    const assets = createGeneratedAssets(root, { projectModel: { resolve: async () => ({ endpoint: 'http://localhost:1234', model: 'test' }) }, request: async (_url, options) => { calls.push(JSON.parse(options.body)); if (gate) await gate; return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ shapes }) } }] }) } } })
+    const assets = createGeneratedAssets(root, { settings: { load: async () => ({ model: { baseUrl: 'http://localhost:1234', model: 'test' } }) }, request: async (_url, options) => { calls.push(JSON.parse(options.body)); if (gate) await gate; return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ shapes }) } }] }) } } })
     const doc = { assets: [{ id: 'hero', name: '商人', type: 'character', description: '古代商人', sections: ['B01'] }, { id: 'bag', name: '布袋', type: 'prop', description: '货袋', sections: ['B01'] }] }
     const args = { version: 1, doc, style: { name: '纸绘' } }
     assert.deepEqual((await assets.status(args)).assets.map(a => a.status), ['pending', 'pending'])
@@ -57,7 +57,7 @@ test('DSH 模式在隔离目录运行并生成素材', async () => {
     await writeFile(executable, `#!/bin/sh\nprintf '%s\n' '${JSON.stringify({ type: 'final', reason: { kind: 'completed' }, text: JSON.stringify({ shapes }) })}'\n`)
     await chmod(executable, 0o755)
     process.env.SCENE_MODE = 'dsh'; process.env.PATH = bin + path.delimiter + oldPath
-    const assets = createGeneratedAssets(root, { projectModel: { resolve: async () => ({}) } })
+    const assets = createGeneratedAssets(root, { settings: { load: async () => ({}) } })
     const args = { version: 1, doc: { assets: [{ id: 'a', name: '书', type: 'prop', description: '书本', sections: ['B01'] }] }, style: null }
     assert.equal((await assets.generate(args)).assets[0].status, 'generated')
   } finally {

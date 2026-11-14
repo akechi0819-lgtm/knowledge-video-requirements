@@ -36,3 +36,6 @@ workspace/threads/
 
 workspace/style-library.json
 workspace/style-selection.json
+
+# Local model and speech credentials
+/workspace/settings.json

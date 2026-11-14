@@ -1,0 +1,9 @@
+diff --git a/skills/vibe-knowledge/tools/new_film.py b/skills/vibe-knowledge/tools/new_film.py
+index 29962bb..2537216 100755
+--- a/skills/vibe-knowledge/tools/new_film.py
++++ b/skills/vibe-knowledge/tools/new_film.py
+@@ -22,3 +22,3 @@ from pathlib import Path
+ SKILL = Path(__file__).resolve().parents[1]
+-AT = Path.home() / ".claude/skills/ai-teardown"
++AT = SKILL.parent / "ai-teardown"
+ DEFAULT_REF = Path(os.environ.get("VK_VOICE_REF") or Path(__file__).resolve().parents[1] / "assets/voice/default-voice-ref.wav")   # 默认：AI 设计的「科技博主沉稳男声」；想用自己的克隆音色就传 --voice-ref 或设 VK_VOICE_REF

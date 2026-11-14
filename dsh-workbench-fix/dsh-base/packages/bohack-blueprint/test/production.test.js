@@ -107,3 +107,56 @@ test('image bindings reject missing, ambiguous and outside-workspace assets', as
     await rm(root,{recursive:true,force:true})
   }
 })
+
+test('production status reports per-section artifacts and serves mid-run files', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-progress-'))
+  try {
+    const service = createService({}, { workspace: root })
+    await service._internal.ensureDirs()
+    const id = '11111111-1111-4111-8111-111111111111'
+    const dir = path.join(root, 'production', id)
+    await mkdir(path.join(dir, 'scenes'), { recursive: true })
+    await mkdir(path.join(dir, 'film', 'clips'), { recursive: true })
+    await mkdir(path.join(dir, 'film', 'audio'), { recursive: true })
+    await writeFile(path.join(root, 'production', 'status.json'), JSON.stringify({
+      id, status: 'running', phase: '配音与渲染', version: 'v1', startedAt: new Date().toISOString(),
+    }))
+    await writeFile(path.join(dir, 'production.json'), JSON.stringify({
+      version: 'v1',
+      sections: [
+        { id: 'S01', blueprintId: 'B01', title: '第一段', narration: '旁白一', visual: '画面一' },
+        { id: 'S02', blueprintId: 'B02', title: '第二段', narration: '旁白二', visual: '画面二' },
+      ],
+    }))
+    await writeFile(path.join(dir, 'scenes', 'S01.html'), '<html>scene</html>')
+    await writeFile(path.join(dir, 'film', 'audio', 'S01.mp3'), 'audio')
+    const state = await service.production.status()
+    assert.equal(state.status, 'interrupted')
+    assert.equal(state.sections[0].scene, true)
+    assert.equal(state.sections[0].sceneKind, 'html')
+    assert.equal(state.sections[0].audio, true)
+    assert.equal(state.sections[0].clip, false)
+    assert.equal(state.sections[1].scene, false)
+    assert.equal(state.artifacts.video, false)
+    assert.equal(await readFile(await service.production.file('scene', 'S01'), 'utf8'), '<html>scene</html>')
+    assert.equal(await readFile(await service.production.file('audio', 'S01'), 'utf8'), 'audio')
+    await assert.rejects(service.production.file('clip', 'S01'), /不可用/)
+    await assert.rejects(service.production.file('scene', '../S01'), /不可用/)
+    await assert.rejects(service.production.file('video'), /不可用/)
+    await writeFile(path.join(dir, 'film', 'mapping.json'), JSON.stringify({
+      final_duration_sec: 20,
+      final_video_absolute: '/secret/final.mp4',
+      segments: [{ id: 'S01', blueprint_id: 'B01', title: '第一段', start_sec: 0, end_sec: 14, duration_sec: 14, narration: '旁白一', clip_absolute: '/secret/S01.mp4' }],
+    }))
+    await writeFile(path.join(dir, 'film', 'final.mp4'), 'video')
+    const later = await service.production.status()
+    assert.equal(later.artifacts.video, true)
+    assert.equal(later.mapping.duration, 20)
+    assert.equal(later.mapping.segments[0].start, 0)
+    assert.ok(!JSON.stringify(later.mapping).includes('/secret/'))
+    assert.equal(await readFile(await service.production.file('video'), 'utf8'), 'video')
+    await assert.rejects(service.production.file('../video'), /不可用/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

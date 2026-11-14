@@ -1,0 +1,69 @@
+{
+  "status": "准备制作",
+  "topic": "旅行者的三段旅程",
+  "sections": [
+    {
+      "id": "S01",
+      "title": "出发",
+      "visual": "出发",
+      "narration": "旅行者出发。",
+      "assets": [
+        {
+          "id": "traveler",
+          "name": "旅行者",
+          "type": "character",
+          "image": "assets/traveler.svg"
+        },
+        {
+          "id": "map",
+          "name": "地图",
+          "type": "prop",
+          "image": "assets/map.svg"
+        }
+      ],
+      "scene": "S01.html"
+    },
+    {
+      "id": "S02",
+      "title": "看地图",
+      "visual": "看地图",
+      "narration": "旅行者看地图。",
+      "assets": [
+        {
+          "id": "traveler",
+          "name": "旅行者",
+          "type": "character",
+          "image": "assets/traveler.svg"
+        },
+        {
+          "id": "map",
+          "name": "地图",
+          "type": "prop",
+          "image": "assets/map.svg"
+        }
+      ],
+      "scene": "S02.html"
+    },
+    {
+      "id": "S03",
+      "title": "到达",
+      "visual": "到达",
+      "narration": "旅行者到达。",
+      "assets": [
+        {
+          "id": "traveler",
+          "name": "旅行者",
+          "type": "character",
+          "image": "assets/traveler.svg"
+        },
+        {
+          "id": "map",
+          "name": "地图",
+          "type": "prop",
+          "image": "assets/map.svg"
+        }
+      ],
+      "scene": "S03.html"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-label="瑞士动态排版预览">
+  <rect width="1600" height="900" fill="#f6f1e8"/>
+  <rect x="80" y="0" width="2" height="900" fill="#1a1916"/>
+  <rect x="400" y="0" width="2" height="900" fill="#1a1916" opacity=".2"/>
+  <rect x="800" y="0" width="2" height="900" fill="#1a1916" opacity=".2"/>
+  <rect x="1200" y="0" width="2" height="900" fill="#1a1916" opacity=".2"/>
+  <rect x="1520" y="0" width="2" height="900" fill="#1a1916"/>
+  <rect x="1200" y="0" width="320" height="900" fill="#e23b2b"/>
+  <text x="100" y="260" font-family="Helvetica Neue, Arial, Noto Sans SC, sans-serif" font-size="180" font-weight="700" fill="#1a1916">GRID</text>
+  <text x="100" y="430" font-family="Helvetica Neue, Arial, Noto Sans SC, sans-serif" font-size="180" font-weight="700" fill="#1a1916">TYPE</text>
+  <text x="100" y="620" font-family="Noto Sans SC, PingFang SC, sans-serif" font-size="42" fill="#1a1916">网格 · 大字 · 单一强调色</text>
+  <text x="1230" y="820" font-family="Helvetica Neue, Arial, sans-serif" font-size="28" font-weight="700" fill="#f6f1e8">SWISS</text>
+</svg>

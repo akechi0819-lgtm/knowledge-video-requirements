@@ -52,7 +52,6 @@ export async function exportProduction(workspace) {
     try { style = JSON.parse(await readFile(path.join(outbox, `蓝图_v${n}.风格.json`), 'utf8')) }
     catch (e) { if (e.code !== 'ENOENT') throw e }
   }
-
   let skill = null
   try { skill = JSON.parse(await readFile(path.join(outbox, `蓝图_v${n}.技能.json`), 'utf8')) }
   catch (e) { if (e.code !== 'ENOENT') throw e }
