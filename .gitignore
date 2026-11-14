@@ -10,3 +10,6 @@ __pycache__/
 node_modules/
 .venv/
 .runtime/
+
+project-model.private.json
+.project-model-*.tmp
