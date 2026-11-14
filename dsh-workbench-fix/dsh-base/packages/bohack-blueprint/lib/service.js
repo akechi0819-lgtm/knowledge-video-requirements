@@ -10,6 +10,7 @@
  */
 import { readFile, writeFile, readdir, mkdir, stat, appendFile } from 'node:fs/promises'
 import { createProduction } from './production.js'
+import { createGeneratedAssets } from './generated-assets.js'
 import { createProjectModel } from './project-model.js'
 import { createStyles } from './styles.js'
 import { defaultProcessGuidance } from './process-guidance.js'
@@ -54,7 +55,8 @@ export function createService(ctx, config = {}) {
     sources: path.join(root, 'sources'),
   }
   const projectModel = createProjectModel(config.styleLibraryRoot || root)
-  const productionService = createProduction(root, { ...config, projectModel })
+  const generatedAssets = createGeneratedAssets(root, { projectModel })
+  const productionService = createProduction(root, { ...config, projectModel, generatedAssets })
   const styles = createStyles(root, config.styleLibraryRoot || root)
   const log = (...a) => { try { ctx.logger?.info?.('[bohack]', ...a) } catch { /* ignore */ } }
 
@@ -437,7 +439,7 @@ export function createService(ctx, config = {}) {
       finalized: state.finalized || null, visualStyle: await visualStyle(n),
       locked: (state.locked || {})[`v${n}`] || [],
       confirmed: state.confirmed?.[`v${n}`] || [],
-      sections, validation, doc,
+      sections, blueprintAssets: doc?.assets || [], validation, doc,
       lastRun: state.lastRun || null, production: await productionService.status(),
       adapters: availableAdapters,
       inboxFiles: inboxNames, outboxFiles: outboxNames, recentRuns: runNames,
@@ -653,9 +655,16 @@ export function createService(ctx, config = {}) {
           productionError = { code: 'STYLE_REQUIRED', message: '蓝图已定稿，请在成片页选择视觉参考，再开始制作。' }
           reply = productionError.message
         } else {
-          onProgress?.({ type: 'status', text: '已确认蓝图，正在启动成片制作' })
-          production = await productionService.start()
-          reply = `已确认蓝图 v${initialVersion} 全部段落并定稿，成片制作已启动。可在成片页查看进度。`
+          const doc = (await show({ version: initialVersion })).doc
+          const assets = await generatedAssets.status({ version: initialVersion, doc, style: visual?.style || null })
+          if (!assets.allApproved) {
+            productionError = { code: 'ASSETS_REQUIRED', message: '请先确认动画素材。' }
+            reply = `蓝图 v${initialVersion} 已定稿，请到成片页生成并确认动画素材，再开始制作成片。`
+          } else {
+            onProgress?.({ type: 'status', text: '已确认蓝图，正在启动成片制作' })
+            production = await productionService.start()
+            reply = `已确认蓝图 v${initialVersion} 全部段落并定稿，成片制作已启动。可在成片页查看进度。`
+          }
         }
       } catch (e) {
         productionError = { code: e.code || 'PRODUCTION_FAILED', message: String(e.message || e) }
@@ -792,7 +801,7 @@ export function createService(ctx, config = {}) {
   return {
     ingest, generate, show, validate, confirm, feedback, revise, finalize, status, trace,
     lock, chat, chatHistory, manualEdit, note, adjustments, requirement,
-    listAssets, updateAsset, addAsset, uploadAsset, styles, selectVisualStyle, projectModel, production: productionService,
+    listAssets, updateAsset, addAsset, uploadAsset, styles, selectVisualStyle, projectModel, generatedAssets, production: productionService,
     _internal: { dirs, versions, latestVersion, readVersion, getState, setState, writeRun, ensureDirs },
   }
 }

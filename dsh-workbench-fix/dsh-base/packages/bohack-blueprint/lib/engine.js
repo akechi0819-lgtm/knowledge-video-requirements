@@ -62,7 +62,8 @@ const SHORT_RULES = `你是知识视频的蓝图编辑。
 3. 「讲什么」要写内容本身，不要写「本段负责…」「要让观众…」这类关于写法的说明书。
 4. 只写内容大纲，不写分镜、动画、代码或逐帧动作；保留需求里明确提出的呈现要求与表述边界。
 5. skill 方法论是工具箱不是模板：先按需求判断观众、时长与形态再选用方法；skill 与需求冲突时以需求为准。
-6. 不联网检索、不执行命令；需要原文依据的细节用 query_scene 工具取证；必须调用 write_blueprint 一次性提交结构化蓝图，工具会校验，失败按 errors 修正后重新调用。`
+6. 列出制作需要保持一致的角色、道具和背景资产，写名称、类型、具体描述及涉及的段落；不需要时提交空数组。
+7. 不联网检索、不执行命令；需要原文依据的细节用 query_scene 工具取证；必须调用 write_blueprint 一次性提交结构化蓝图，工具会校验，失败按 errors 修正后重新调用。`
 
 function log(ctx, ...args) {
   try { ctx.logger?.info?.('[bohack/engine]', ...args) }
@@ -87,13 +88,22 @@ function extractMarkdown(text) {
 const TOOL_PARAMETERS = {
   type: 'object',
   additionalProperties: false,
-  required: ['topic', 'sections'],
+  required: ['topic', 'sections', 'assets'],
   properties: {
     topic: { type: 'string', description: '视频主题' },
     core: { type: 'string', description: '核心意思' },
     audience: { type: 'string', description: '目标观众' },
     order: { type: 'string', description: '叙事顺序' },
     userRequirements: { type: 'array', items: { type: 'string' }, description: '用户明确提出的呈现要求' },
+    assets: {
+      type: 'array', description: '需要保持一致的角色、道具和背景；不需要时为空数组',
+      items: { type: 'object', additionalProperties: false, required: ['id', 'name', 'type', 'description', 'sections'], properties: {
+        id: { type: 'string', pattern: '^[A-Za-z0-9_-]+$', description: '资产稳定编号，仅使用英文字母、数字、下划线和连字符' }, name: { type: 'string' },
+        type: { type: 'string', enum: ['character', 'prop', 'background'] },
+        description: { type: 'string', description: '便于制作时保持一致的具体描述' },
+        sections: { type: 'array', items: { type: 'string' }, description: '使用该资产的蓝图段号' },
+      } },
+    },
     sections: {
       type: 'array',
       description: '按视频顺序排列的段落（至少 2 段）',
@@ -167,6 +177,7 @@ function registerWriteTool(agentCtx, capture, ctx, quality = null) {
           audience: args.audience || '',
           order: args.order || '',
           userRequirements: Array.isArray(args.userRequirements) ? args.userRequirements : [],
+          assets: args.assets,
           sections: (Array.isArray(args.sections) ? args.sections : []).map(s => ({
             id: String(s.id || ''), title: String(s.title || ''),
             intent: String(s.intent || ''),

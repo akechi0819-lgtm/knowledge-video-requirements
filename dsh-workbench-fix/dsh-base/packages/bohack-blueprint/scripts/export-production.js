@@ -60,7 +60,7 @@ export async function exportProduction(workspace) {
   return {
     skill,
     status: '准备制作', version: `v${n}`, topic: doc.topic,
-    userRequirements: doc.userRequirements, notes: doc.notes.trim(),
+    userRequirements: doc.userRequirements, notes: doc.notes.trim(), assets: doc.assets,
     targetDurationSeconds: requestedDuration(doc.userRequirements),
     style,
     sections: doc.sections.map((s, i) => ({

@@ -63,12 +63,15 @@ export function createProduction(workspace, config = {}) {
       const production = await exportProduction(workspace)
       const missing = production.sections.filter(s => !s.narration?.trim()).map(s => s.blueprintId)
       if (missing.length) throw new Error(`缺少旁白：${missing.join('、')}；请补充后重新确认并定稿。`)
+      const approved = production.assets?.length
+        ? await config.generatedAssets.approvedFiles({ version: Number(production.version.slice(1)), doc: production, style: production.style })
+        : []
       let sceneConfig = null
       try { sceneConfig = JSON.parse(await readFile(path.join(workspace, 'hotpot-demo-scene.json'), 'utf8')) }
       catch (e) { if (e.code !== 'ENOENT') throw e }
       if (sceneConfig && sceneConfig.version !== 1) throw new Error('本创作的专用场景配置版本不支持。')
       // Choosing a style explicitly routes this version through the style-aware renderer.
-      if (production.style) sceneConfig = null
+      if (approved.length || production.style) sceneConfig = null
       const sceneMode = process.env.SCENE_MODE || 'api'
       if (!sceneConfig && !['api', 'dsh'].includes(sceneMode)) throw new Error('SCENE_MODE 只支持 api 或 dsh。')
       const customScene = !(await config.projectModel?.isSaved()) && Boolean(process.env.SCENE_ENDPOINT || process.env.SCENE_MODEL)
@@ -83,6 +86,16 @@ export function createProduction(workspace, config = {}) {
       await mkdir(root, { recursive: true })
       const id = randomUUID(), dir = path.join(root, id)
       await mkdir(dir)
+      if (approved.length) {
+        await mkdir(path.join(dir, 'assets'))
+        for (const { id, name, type, sections, path: source } of approved) {
+          const image = `assets/${id}.svg`
+          await copyFile(source, path.join(dir, image))
+          for (const section of production.sections.filter(s => sections.includes(s.blueprintId))) {
+            ;(section.assets ||= []).push({ id, name, type, image })
+          }
+        }
+      }
       await bindImages(production, dir)
       await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
       const state = { id, status: 'running', phase: '生成画面', version: production.version, startedAt: new Date().toISOString() }

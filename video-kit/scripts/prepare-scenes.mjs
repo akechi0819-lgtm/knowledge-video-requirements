@@ -2,7 +2,7 @@
 // Generate data-only SVG scenes. Model output is never executed as code.
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
-import { spawn } from 'node:child_process';
+import { callDsh } from './dsh-model.mjs';
 
 const args = process.argv.slice(2);
 if (args[0] !== '--input' || args[2] !== '--output' || !((args.length === 5 && args[4] === '--dsh') || (args.length === 8 && args[4] === '--endpoint' && args[6] === '--model'))) {
@@ -30,21 +30,25 @@ for (const s of production.sections) {
   ids.add(s.id);
 }
 await mkdir(output); // Do not overwrite an existing task.
-const system = `你是知识视频画面设计师。根据单段制作信息，设计可读的矢量动态图解，按所选风格安排空间、动作和节奏。只返回 JSON 对象，不要 Markdown。画布 1920×1080，底部 180 像素留给字幕。格式：{"background":"#rrggbb","layers":[{"type":"rect|ellipse|line|text","x":数字,"y":数字,"width":数字,"height":数字,"fill":"#rrggbb","text":"文字","start":0到1的数字,"end":0到1的数字}]}。每层全部字段必填，最多 30 层；x/y 为左上角，line 从 (x,y) 到 (x+width,y+height)，text 的 x/y 为基线，height 为字号。start/end 是出现和消失时间比例，start < end。需要移动的主体可加可选字段 motion: {"toX":数字,"toY":数字}，表示本图层出现后从 x/y 移动到的目标坐标。对照叙述让动作解释变化，标签保持可读。背景色直接写 background，不要铺全屏背景矩形。图层 x 在 0–1920、y 在 0–900、width 在 0–1920、height 在 0–900；文字字号 height 12–100。图形与文字不越过内容区，留出字幕区。画面用分阶段的可见变化解释动作；只画本段需要的信息，提问段遵守揭晓时机。不得添加未经材料支持的事实，不要编写旁白、代码、外链或 SVG。缺失信息不要猜测。`;
+const system = `你是知识视频画面设计师。根据单段制作信息，设计可读的矢量动态图解，按所选风格安排空间、动作和节奏。只返回 JSON 对象，不要 Markdown。画布 1920×1080，底部 180 像素留给字幕。格式：{"background":"#rrggbb","layers":[{"type":"rect|ellipse|line|text|asset","x":数字,"y":数字,"width":数字,"height":数字,"fill":"#rrggbb","text":"文字","start":0到1的数字,"end":0到1的数字}]}。每层全部字段必填，最多 30 层；x/y 为左上角，line 从 (x,y) 到 (x+width,y+height)，text 的 x/y 为基线，height 为字号。start/end 是出现和消失时间比例，start < end。需要移动的主体可加可选字段 motion: {"toX":数字,"toY":数字}，表示本图层出现后从 x/y 移动到的目标坐标。对照叙述让动作解释变化，标签保持可读。背景色直接写 background，不要铺全屏背景矩形。图层 x 在 0–1920、y 在 0–900、width 在 0–1920、height 在 0–900；文字字号 height 12–100。图形与文字不越过内容区，留出字幕区。画面用分阶段的可见变化解释动作；只画本段需要的信息，提问段遵守揭晓时机。不得添加未经材料支持的事实，不要编写旁白、代码、外链或 SVG。缺失信息不要猜测。`;
 const color = /^#[0-9a-fA-F]{6}$/;
-function validate(data) {
+function validate(data, assetIds) {
   if (!data || !color.test(data.background) || !Array.isArray(data.layers) || data.layers.length < 1 || data.layers.length > 30) throw new Error('Invalid scene background or layers');
   for (const l of data.layers) {
-    if (!l || !['rect','ellipse','line','text'].includes(l.type) || !color.test(l.fill) || typeof l.text !== 'string' || l.text.length > 120) throw new Error('Invalid scene layer');
+    if (!l || !['rect','ellipse','line','text','asset'].includes(l.type) || !color.test(l.fill) || typeof l.text !== 'string' || l.text.length > 120) throw new Error('Invalid scene layer');
+    if (l.type === 'asset' && !assetIds.has(l.assetId)) throw new Error('Unknown asset id');
     for (const k of ['x','y','width','height','start','end']) if (typeof l[k] !== 'number' || !Number.isFinite(l[k])) throw new Error(`Invalid ${k}`);
     if (l.motion !== undefined && (!Number.isFinite(l.motion?.toX) || !Number.isFinite(l.motion?.toY) ||
         l.motion.toX < 0 || l.motion.toX > 1920 || l.motion.toY < 0 || l.motion.toY > 900)) throw new Error('Invalid motion target');
     if (l.x < 0 || l.x > 1920 || l.y < 0 || l.y > 900 || l.width < 0 || l.width > 1920 || l.height < 0 || l.height > 900 || l.start < 0 || l.end > 1 || l.start >= l.end || (l.type === 'text' && (l.height < 12 || l.height > 100))) throw new Error('Scene layer outside allowed bounds');
   }
+  const usedAssets = new Set(data.layers.filter(l => l.type === 'asset').map(l => l.assetId));
+  for (const id of assetIds) if (!usedAssets.has(id)) throw new Error(`Missing asset id: ${id}`);
   // Discard all properties beyond the schema, including possible code or URLs.
-  return {background:data.background,layers:data.layers.map(({type,x,y,width,height,fill,text,start,end,motion}) => ({type,x,y,width,height,fill,text,start,end,...(motion ? {motion:{toX:motion.toX,toY:motion.toY}} : {})}))};
+  return {background:data.background,layers:data.layers.map(({type,x,y,width,height,fill,text,start,end,motion,assetId}) => ({type,x,y,width,height,fill,text,start,end,...(type === 'asset' ? {assetId} : {}),...(motion ? {motion:{toX:motion.toX,toY:motion.toY}} : {})}))};
 }
-function html(data, imageData) {
+function html(data, imageData, assets) {
+  const assetsJson = JSON.stringify(assets).replaceAll('<', '\\u003c');
   const imageJson = JSON.stringify(imageData).replaceAll('<', '\\u003c');
   const json = JSON.stringify(data).replaceAll('<', '\\u003c');
   return `<!doctype html>
@@ -70,6 +74,7 @@ svg { width: 100%; height: 100%; }
 <script>
 const data = ${json};
 const imageData = ${imageJson};
+const assets = ${assetsJson};
 const style = window.STYLE;
 const stage = document.querySelector('#stage');
 const svg = document.querySelector('svg');
@@ -82,8 +87,12 @@ sub.style.bottom = style.subtitle.bottom + 'px';
 sub.style.font = style.subtitle.fontWeight + ' ' + style.subtitle.fontSize + 'px ' + style.font.family;
 const ns = 'http://www.w3.org/2000/svg';
 const nodes = data.layers.map(l => {
-  const e = document.createElementNS(ns, l.type);
-  if (l.type === 'rect') {
+  const e = document.createElementNS(ns, l.type === 'asset' ? 'image' : l.type);
+  if (l.type === 'asset') {
+    e.setAttribute('x', l.x); e.setAttribute('y', l.y);
+    e.setAttribute('width', l.width); e.setAttribute('height', l.height);
+    e.setAttribute('href', assets[l.assetId]);
+  } else if (l.type === 'rect') {
     e.setAttribute('x', l.x); e.setAttribute('y', l.y);
     e.setAttribute('width', l.width); e.setAttribute('height', l.height);
   } else if (l.type === 'ellipse') {
@@ -134,28 +143,6 @@ window.seek = function(t) {
 </html>`;
 }
 
-async function callDsh(messages) {
-  return await new Promise((resolve, reject) => {
-    const env = { ...process.env };
-    if (!env.DEEPSEEK_API_KEY && env.SCENE_API_KEY) env.DEEPSEEK_API_KEY = env.SCENE_API_KEY;
-    const child = spawn('dsh', ['headless', '--json', '--approval-policy', 'never', '-'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', chunk => stdout += chunk);
-    child.stderr.on('data', chunk => stderr += chunk);
-    child.on('error', reject);
-    child.on('close', code => {
-      if (code !== 0) return reject(new Error(`DSH request failed: ${stderr.trim()}`));
-      try {
-        const events = stdout.trim().split('\n').map(line => JSON.parse(line));
-        const final = events.findLast(event => event.type === 'final');
-        if (!final || final.reason?.kind !== 'completed') throw new Error('No completed final response');
-        resolve(final.text);
-      } catch (error) { reject(new Error(`Invalid DSH response: ${error.message}`)); }
-    });
-    child.stdin.end(`只按下列消息生成 JSON，不要调用工具。\n${JSON.stringify(messages)}`);
-  });
-}
-
 // Send descriptive content to the model without exposing local paths.
 function scrubPaths(value) {
   if (typeof value === 'string') return value.replace(/(?:[A-Za-z]:\\|\/)(?:[^\s，。；、：:（）()"'<>]+[\/\\])*[^\s，。；、：:（）()"'<>]+/g, '[本地路径]');
@@ -174,12 +161,21 @@ async function imageDataFor(section) {
 }
 
 for (const section of production.sections) {
+  const assets = Object.create(null);
+  const assetInfo = [];
+  for (const asset of section.assets || []) {
+    if (!asset || typeof asset.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(asset.id) || Object.hasOwn(assets, asset.id) || typeof asset.name !== 'string' || !['character', 'prop', 'background'].includes(asset.type) || asset.image !== `assets/${asset.id}.svg`) throw new Error(`Invalid asset for ${section.id}`);
+    const bytes = await readFile(join(dirname(input), asset.image));
+    assets[asset.id] = `data:image/svg+xml;base64,${bytes.toString('base64')}`;
+    assetInfo.push({id: asset.id, name: asset.name, type: asset.type});
+  }
   const sceneInput = {
     topic: production.topic,
     userRequirements: production.userRequirements,
     productionNotes: production.notes,
     skillGuidance: production.skill || null,
     visualStyle: production.style ? { name: production.style.name, description: production.style.description } : null,
+    assets: assetInfo,
     title: section.title,
     intent: section.intent,
     facts: section.facts,
@@ -189,7 +185,7 @@ for (const section of production.sections) {
     gaps: section.gaps,
   };
   const messages = [
-    { role: 'system', content: system + ' skillGuidance 是制作方法参考；仅采用与已确认蓝图、用户要求和 visualStyle 兼容的画面建议。visualStyle 是创作者选定的视觉参考，只应用于色彩、构图、字体与视觉语言；发生冲突时以已确认蓝图、用户要求及选定风格为准。' },
+    { role: 'system', content: system + ' 本段必须使用 assets 列出的每个素材，分别增加 type 为 asset 的图层，并填写 assetId 对应素材 id，其余字段与普通图层相同。根据本段叙述安排素材大小、位置和 motion；复用角色时使用同一 id。 skillGuidance 是制作方法参考；仅采用与已确认蓝图、用户要求和 visualStyle 兼容的画面建议。visualStyle 是创作者选定的视觉参考，只应用于色彩、构图、字体与视觉语言；发生冲突时以已确认蓝图、用户要求及选定风格为准。' },
     { role: 'user', content: JSON.stringify(scrubPaths(sceneInput)) },
   ];
   let data;
@@ -211,14 +207,14 @@ for (const section of production.sections) {
     const result = await response.json();
     content = result.choices[0].message.content;
     }
-    try { data = validate(JSON.parse(content)); break; }
+    try { data = validate(JSON.parse(content), new Set(Object.keys(assets))); break; }
     catch (error) {
       if (attempt === 1) throw new Error(`Invalid scene response for ${section.id}: ${error.message}`);
       messages.push({ role: 'assistant', content }, { role: 'user', content: `图层校验失败：${error.message}。请按上述尺寸与类型约束修正后重新提交完整 JSON。` });
     }
   }
   await writeFile(join(output,`${section.id}.scene.json`),JSON.stringify(data,null,2)+'\n');
-  await writeFile(join(output,`${section.id}.html`),html(data, await imageDataFor(section)));
+  await writeFile(join(output,`${section.id}.html`),html(data, await imageDataFor(section), assets));
   section.scene = `${section.id}.html`;
 }
 await writeFile(join(output,'production.json'),JSON.stringify(production,null,2)+'\n');

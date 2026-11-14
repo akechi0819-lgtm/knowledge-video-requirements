@@ -89,6 +89,25 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       const params = new URL(req.url || '/', 'http://localhost').searchParams
       const threadId = params.get('threadId') || req.headers['x-thread-id'] || null
       const { service, engine } = threads ? await threads.get(threadId) : { service: legacyService, engine: legacyEngine }
+      async function generatedContext(version) {
+        const current = await service.status()
+        if (!current.currentVersion || !current.doc || Number(version || current.currentVersion) !== current.currentVersion) throw new Error('请使用当前蓝图版本。')
+        if (current.finalized?.version !== current.currentVersion || current.visualStyle?.status !== 'selected') throw new Error('请先确认蓝图并选择视觉参考。')
+        return { version: current.currentVersion, doc: current.doc, style: current.visualStyle?.style || null }
+      }
+      function generatedUrls(result) {
+        if (threadId) for (const asset of result.assets) if (asset.previewUrl) asset.previewUrl += `&threadId=${encodeURIComponent(threadId)}`
+        return result
+      }
+      if (pathname === '/bohack/api/generated-assets' && method === 'GET') {
+        json(res, 200, generatedUrls(await service.generatedAssets.status(await generatedContext(params.get('version'))))); return
+      }
+      if (pathname === '/bohack/api/generated-asset-file' && (method === 'GET' || method === 'HEAD')) {
+        const file = await service.generatedAssets.file({ ...await generatedContext(params.get('version')), id: params.get('id'), revision: params.get('rev') })
+        const data = await readFile(file)
+        res.writeHead(200, { 'content-type': 'image/svg+xml', 'content-security-policy': "default-src 'none'; style-src 'none'; sandbox", 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' })
+        res.end(method === 'HEAD' ? undefined : data); return
+      }
       if (pathname === '/bohack/api/thread' && method === 'GET') {
         if (!threadId) throw new Error('需要指定会话 ID')
         json(res, 200, { ok: true, thread: await threads.metadata(threadId) }); return
@@ -219,6 +238,8 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       }
       let out
       switch (pathname) {
+        case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.generatedAssets.generate({ ...await generatedContext(body.version), id: body.id })); break
+        case '/bohack/api/generated-assets-approve': out = generatedUrls(await service.generatedAssets.approve({ ...await generatedContext(body.version), id: body.id, revisions: body.revisions })); break
         case '/bohack/api/project-model': out = await service.projectModel.save(body); break
         case '/bohack/api/style-github': out = await readGithubStyle(body); break
         case '/bohack/api/styles-import': out = await service.styles.importStyle(body); break

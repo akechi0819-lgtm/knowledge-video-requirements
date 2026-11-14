@@ -67,3 +67,24 @@ test('chat confirmation finalizes then prompts for visual choice', async () => {
     assert.equal(await service.production.status(), null)
   } finally { await rm(workspace,{recursive:true,force:true}) }
 })
+
+test('chat starts production after the blueprint assets are approved', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'asset-chat-'))
+  try {
+    const service = createService({}, { workspace })
+    await service._internal.ensureDirs()
+    await writeFile(path.join(workspace, 'inbox/需求.md'), '# 主题\n潮汐\n')
+    const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const assets = [{id:'A01',name:'船',type:'prop',description:'木船',sections:['B01']}]
+    const markdown = renderBlueprint({topic:'潮汐',userRequirements:[],sections,assets,meta:{}})
+    const engine = { async produce(){return {markdown,engine:'test'}}, async chatTurn(){return {reply:'已提交',productionRequested:true}} }
+    await service.generate({}, engine)
+    const message = {text:'确认当前蓝图全部段落，开始制作成片'}
+    await service.chat(message, engine)
+    await service.selectVisualStyle({ id:'general', version:1 })
+    assert.match((await service.chat(message, engine)).reply, /成片页生成并确认动画素材/)
+    service.generatedAssets.status = async () => ({allApproved:true})
+    service.production.start = async () => ({started:true})
+    assert.deepEqual((await service.chat(message, engine)).production, {started:true})
+  } finally { await rm(workspace,{recursive:true,force:true}) }
+})

@@ -84,6 +84,7 @@ export function emptyDoc() {
     order: '',
     userRequirements: [],
     sections: [],
+    assets: [],
     notes: '',
     meta: {},
     raw: '',
@@ -127,6 +128,7 @@ export function parseBlueprint(md) {
       else if (/分段蓝图|三、/.test(t)) zone = 'sections'
       // The canonical renderer owns the "确认与交接" boilerplate. Collecting
       // its bullets into notes would duplicate them on the next render.
+      else if (/资产清单/.test(t)) zone = 'assets'
       else if (/确认|交接|四、/.test(t)) zone = 'handoff'
       else if (/表述边界|五、|备注/.test(t)) zone = 'notes'
       else zone = 'other'
@@ -158,6 +160,10 @@ export function parseBlueprint(md) {
     }
 
     const bullet = /^[-*]\s+(.+?)\s*$/.exec(line)
+    if (bullet && zone === 'assets') {
+      doc.assets.push(JSON.parse(bullet[1]))
+      continue
+    }
     if (bullet && zone === 'requirements' && section === null) {
       doc.userRequirements.push(bullet[1].trim())
       continue
@@ -245,6 +251,14 @@ export function validateBlueprint(doc, opts = {}) {
     if (metaHits >= 2) warnings.push(`段 ${s.id}「讲什么」像在描述写法而不是内容（${metaHits} 处元叙述）`)
     const narrationHit = PLACEHOLDER_PATTERNS.find(p => String(s.narration || '').includes(p))
     if (narrationHit) warnings.push(`段 ${s.id}「旁白」用占位话术顶替内容：「${narrationHit}」`)
+  }
+
+  const assetIds = new Set()
+  for (const a of doc.assets || []) {
+    if (typeof a.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(a.id) || assetIds.has(a.id)) errors.push(`资产编号无效或重复（仅限字母、数字、下划线和连字符）：${a.id || '空'}`)
+    assetIds.add(a.id)
+    if (!a.name || !a.description || !['character', 'prop', 'background'].includes(a.type)) errors.push(`资产 ${a.id || '空'} 缺少名称、描述或类型不合法`)
+    if (!Array.isArray(a.sections) || !a.sections.length || a.sections.some(id => !seen.has(id))) errors.push(`资产 ${a.id || '空'} 的关联段落无效`)
   }
 
   if (factGate && sections.length) {
@@ -337,6 +351,10 @@ export function renderBlueprint(doc) {
     if (s.narration) { L.push(`**旁白：** ${s.narration}`); L.push('') }
     if (s.notes) { L.push(`**备注：** ${s.notes}`); L.push('') }
   }
+  L.push('## 资产清单')
+  L.push('')
+  for (const asset of doc.assets || []) L.push(`- ${JSON.stringify(asset)}`)
+  L.push('')
   L.push('## 四、确认与修改')
   L.push('')
   L.push('- 请在蓝图侧栏逐段查看、修改和确认。')

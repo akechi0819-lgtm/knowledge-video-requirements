@@ -16,12 +16,13 @@ const scene = {
   script: 'evil()',
 };
 
-async function runCase(production, modelScene = scene, imageBytes = null) {
+async function runCase(production, modelScene = scene, imageBytes = null, assetFiles = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'prepare-scenes-test-'));
   const input = join(dir, 'input.json');
   const output = join(dir, 'out');
   await writeFile(input, JSON.stringify(production));
   if (imageBytes) { await mkdir(join(dir, 'images')); await writeFile(join(dir, 'images/S01.png'), imageBytes); }
+  if (Object.keys(assetFiles).length) { await mkdir(join(dir, 'assets')); for (const [name, contents] of Object.entries(assetFiles)) await writeFile(join(dir, 'assets', name), contents); }
   const requests = [];
   const server = http.createServer(async (req, res) => {
     let body = '';
@@ -138,4 +139,43 @@ test('uses the uploaded image in the scene without sending local paths to the mo
     assert.ok(html.includes('data:image/png;base64,' + image.toString('base64')));
     assert.ok(html.includes('has-image'));
   } finally { await rm(result.dir, { recursive: true, force: true }); }
+});
+
+
+test('reuses one character across three independently directed scenes', async () => {
+  const input = base();
+  const character = {id:'traveler', name:'旅行者', type:'character', image:'assets/traveler.svg'};
+  input.sections = [0, 1, 2].map(i => ({...input.sections[0], id:`S0${i+1}`, assets:[character], visual:`第 ${i+1} 段`}));
+  const modelScene = {background:'#ffffff', layers:[{type:'asset', assetId:'traveler', x:200, y:100, width:300, height:400, fill:'#ffffff', text:'', start:0, end:1, motion:{toX:900,toY:200}}]};
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40" fill="red"/></svg>';
+  const result = await runCase(input, modelScene, null, {'traveler.svg':svg});
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.requests.length, 3);
+    for (let i = 1; i <= 3; i++) {
+      const request = JSON.parse(result.requests[i-1].messages[1].content);
+      assert.deepEqual(request.assets, [{id:'traveler',name:'旅行者',type:'character'}]);
+      const data = JSON.parse(await readFile(join(result.output, `S0${i}.scene.json`)));
+      assert.equal(data.layers[0].assetId, 'traveler');
+      assert.deepEqual(data.layers[0].motion, {toX:900,toY:200});
+      const html = await readFile(join(result.output, `S0${i}.html`), 'utf8');
+      assert.ok(html.includes(Buffer.from(svg).toString('base64')));
+    }
+  } finally { await rm(result.dir, {recursive:true, force:true}); }
+});
+
+test('rejects a model reference to an asset outside the section', async () => {
+  const invalid = {...scene, layers:[{...scene.layers[0], type:'asset', assetId:'missing'}]};
+  const result = await runCase(base(), invalid);
+  try { assert.notEqual(result.code, 0); assert.match(result.stderr, /Unknown asset id/); }
+  finally { await rm(result.dir, {recursive:true, force:true}); }
+});
+
+
+test('rejects omitted planned assets', async () => {
+  const input = base();
+  input.sections[0].assets = [{id:'traveler',name:'旅行者',type:'character',image:'assets/traveler.svg'}];
+  const result = await runCase(input, scene, null, {'traveler.svg':'<svg xmlns="http://www.w3.org/2000/svg"/>'});
+  try { assert.notEqual(result.code, 0); assert.match(result.stderr, /Missing asset id: traveler/); }
+  finally { await rm(result.dir, {recursive:true, force:true}); }
 });

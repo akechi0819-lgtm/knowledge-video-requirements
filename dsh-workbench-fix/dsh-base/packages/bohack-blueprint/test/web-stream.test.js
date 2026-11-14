@@ -66,3 +66,28 @@ test('video upload streams to temporary storage and returns review data without 
     await assert.rejects(stat(tempPath), {code:'ENOENT'})
   } finally { await new Promise(resolve=>server.close(resolve)) }
 })
+
+test('asset review serves the thread preview and confirms its exact revision', async () => {
+  const service = {
+    status: async () => ({ currentVersion: 1, finalized: {version: 1}, doc: {assets: []}, visualStyle: {status: 'selected', style: {id:'general'}} }),
+    generatedAssets: {
+      status: async () => ({assets: [{previewUrl:'/bohack/api/generated-asset-file?version=1&id=guide&rev=r1'}]}),
+      approve: async ({version, revisions}) => {
+        assert.equal(version, 1)
+        assert.deepEqual(revisions, {guide:'r1'})
+        return {assets:[], allApproved:true}
+      },
+    },
+  }
+  const threads = {get: async id => { assert.equal(id, 'example'); return {service} }, touch: async () => {}}
+  const server = http.createServer(createWebHandler(null, null, {}, threads))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const url = 'http://127.0.0.1:'+server.address().port+'/bohack/api/generated-assets'
+  try {
+    const res = await fetch(url+'?version=1&threadId=example')
+    assert.equal(res.status, 200)
+    assert.match((await res.json()).assets[0].previewUrl, /threadId=example/)
+    const confirm = await fetch(url+'-approve?threadId=example', {method:'POST', body:JSON.stringify({version:1,revisions:{guide:'r1'}})})
+    assert.equal((await confirm.json()).allApproved, true)
+  } finally { await new Promise(resolve => server.close(resolve)) }
+})

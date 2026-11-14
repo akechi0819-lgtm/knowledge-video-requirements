@@ -170,3 +170,7 @@ scene.html 通过注入的 `window.STYLE` 读同一份，渲染与编排不会�
 
 在工作区运行 `sh video-kit/scripts/prepare-scenes-dsh.sh --input /绝对路径/production.json --output /绝对路径/新场景目录`。脚本使用工作台的 DSH_HOME 与 DSH headless 当前默认模型；需要时沿用工作台的凭据文件向子进程传递密钥，不输出或另存密钥。输出目录必须不存在。可通过 DSH_HOME 环境变量指定其他 DSH 配置。
 
+
+### 多素材画面
+
+制作 JSON 的每段可通过 `assets` 传入本段需要的已确认素材，格式为 `{ "id": "traveler", "name": "旅行者", "type": "character", "image": "assets/traveler.svg" }`；类型为 `character`、`prop` 或 `background`。路径相对制作 JSON，素材应为已清理、可信的生成 SVG。同一 ID 可在不同段复用。画面模型必须安排该段列出的全部素材，并可逐段设置位置、大小、出现时间与移动目标；无法满足时会报错。原有 `image` 图片入口仍可使用。
