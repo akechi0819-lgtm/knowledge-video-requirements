@@ -718,6 +718,7 @@ export function createService(ctx, config = {}) {
     const canonical = renderBlueprint(doc)
     await writeFile(versionPath(next), canonical, 'utf8')
     await writeFile(visualPath(next), JSON.stringify({ status: 'pending', style: null }, null, 2) + '\n', 'utf8')
+    try { await writeFile(path.join(dirs.outbox, `蓝图_v${next}.技能.json`), await readFile(path.join(dirs.outbox, `蓝图_v${n}.技能.json`))) } catch (e) { if (e.code !== 'ENOENT') throw e }
 
     await ensureDirs()
     const lines = [
