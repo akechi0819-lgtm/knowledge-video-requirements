@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile, stat, rename, realpath, copyFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, stat, rename, realpath, copyFile, readdir, cp } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { exportProduction } from '../scripts/export-production.js'
@@ -101,6 +102,30 @@ export function createProduction(workspace, config = {}) {
       child.on('close', code => code === 0 ? resolve() : reject(new Error(`${script} 退出码 ${code}：${errors.trim()}`)))
     })
   }
+  async function reusableScenes(production, dir) {
+    const files = [...new Set(production.sections.flatMap(s => [s.image, ...(s.assets || []).map(a => a.image)].filter(Boolean)))]
+    for (const id of (await readdir(root)).filter(name => /^[0-9a-f-]{36}$/.test(name) && name !== path.basename(dir)).reverse()) {
+      const previous = path.join(root, id), scenes = path.join(previous, 'scenes')
+      try {
+        const input = JSON.parse(await readFile(path.join(previous, 'production.json'), 'utf8'))
+        if (!isDeepStrictEqual(input, production)) continue
+        const prepared = JSON.parse(await readFile(path.join(scenes, 'production.json'), 'utf8'))
+        const restored = { ...prepared, sections: prepared.sections.map(({ scene, ...section }) => section) }
+        if (!isDeepStrictEqual(restored, production)) continue
+        for (const section of prepared.sections) {
+          if (section.scene !== `${section.id}.html`) throw new Error('invalid scene')
+          if (!(await readFile(path.join(scenes, section.scene))).length || !(await readFile(path.join(scenes, `${section.id}.scene.json`))).length) throw new Error('empty scene')
+          JSON.parse(await readFile(path.join(scenes, `${section.id}.scene.json`), 'utf8'))
+        }
+        for (const file of files) if (!(await readFile(path.join(previous, file))).equals(await readFile(path.join(dir, file)))) throw new Error('changed asset')
+        return { id, scenes }
+      } catch (e) {
+        if (e.code && e.code !== 'ENOENT') throw e
+        // Missing or incomplete scene outputs are not reusable.
+      }
+    }
+    return null
+  }
   async function bindImages(production, dir) {
     let raw
     try { raw = await readFile(path.join(workspace, 'assets.jsonl'), 'utf8') }
@@ -134,18 +159,16 @@ export function createProduction(workspace, config = {}) {
     active = true
     try {
       const saved = await config.settings?.load() || {}
+      await config.ensureVisual?.()
       const production = await exportProduction(workspace)
       const missing = production.sections.filter(s => !s.narration?.trim()).map(s => s.blueprintId)
       if (missing.length) throw new Error(`缺少旁白：${missing.join('、')}；请补充后重新确认并定稿。`)
-      const approved = production.assets?.length
-        ? await config.generatedAssets.approvedFiles({ version: Number(production.version.slice(1)), doc: production, style: production.style })
-        : []
       let sceneConfig = null
       try { sceneConfig = JSON.parse(await readFile(path.join(workspace, 'hotpot-demo-scene.json'), 'utf8')) }
       catch (e) { if (e.code !== 'ENOENT') throw e }
       if (sceneConfig && sceneConfig.version !== 1) throw new Error('本创作的专用场景配置版本不支持。')
       // Choosing a style explicitly routes this version through the style-aware renderer.
-      if (approved.length || production.style || production.skill) sceneConfig = null
+      if (production.assets?.length || production.style || production.skill) sceneConfig = null
       const sceneMode = process.env.SCENE_MODE || 'api'
       if (!sceneConfig && !['api', 'dsh'].includes(sceneMode)) throw new Error('SCENE_MODE 只支持 api 或 dsh。')
       const customScene = Boolean(process.env.SCENE_ENDPOINT || process.env.SCENE_MODEL)
@@ -160,25 +183,29 @@ export function createProduction(workspace, config = {}) {
       await mkdir(root, { recursive: true })
       const id = randomUUID(), dir = path.join(root, id)
       await mkdir(dir)
-      if (approved.length) {
-        await mkdir(path.join(dir, 'assets'))
-        for (const { id, name, type, sections, path: source } of approved) {
-          const image = `assets/${id}.svg`
-          await copyFile(source, path.join(dir, image))
-          for (const section of production.sections.filter(s => sections.includes(s.blueprintId))) {
-            ;(section.assets ||= []).push({ id, name, type, image })
-          }
-        }
-      }
       await bindImages(production, dir)
-      await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
-      const state = { id, status: 'running', phase: '生成画面', version: production.version, startedAt: new Date().toISOString(), styleId: production.style?.id || null, styleName: production.style?.name || null }
+      const state = { id, status: 'running', phase: '生成素材', version: production.version, startedAt: new Date().toISOString(), styleId: production.style?.id || null, styleName: production.style?.name || null }
       await save(state)
       ;(async () => {
         try {
+          const assetArgs = { version: Number(production.version.slice(1)), doc: production, style: production.style }
+          const generated = production.assets?.length ? (await config.generatedAssets.generate(assetArgs)).assets : []
+          if (generated.length) await mkdir(path.join(dir, 'assets'))
+          for (const asset of generated) {
+            const source = await config.generatedAssets.file({ ...assetArgs, id: asset.id, revision: asset.revision })
+            const image = `assets/${asset.id}.svg`
+            await copyFile(source, path.join(dir, image))
+            for (const section of production.sections.filter(s => asset.sections.includes(s.blueprintId))) {
+              ;(section.assets ||= []).push({ id: asset.id, name: asset.name, type: asset.type, image })
+            }
+          }
+          await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
+          state.phase = '生成画面'; await save(state)
           const scenes = path.join(dir, 'scenes'), film = path.join(dir, 'film')
           const sceneArgs = ['--input', path.join(dir, 'production.json'), '--output', scenes]
-          if (sceneConfig) await run('scripts/hotpot-scenes.mjs', sceneArgs)
+          const reused = sceneConfig ? null : await reusableScenes(production, dir)
+          if (reused) { await cp(reused.scenes, scenes, { recursive: true }); state.reusedScenesFrom = reused.id; await save(state) }
+          else if (sceneConfig) await run('scripts/hotpot-scenes.mjs', sceneArgs)
           else await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', endpoint, '--model', model], { ...process.env, SCENE_API_KEY: key || '' })
           state.phase = '配音与渲染'; await save(state)
           const args = ['--prepared', path.join(scenes, 'production.json'), '--out', film]

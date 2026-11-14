@@ -17,7 +17,7 @@ const scene = {
   script: 'evil()',
 };
 
-async function runCase(production, modelScene = scene, imageBytes = null, assetFiles = {}) {
+async function runCase(production, modelScene = scene, imageBytes = null, assetFiles = {}, model = 'test') {
   const dir = await mkdtemp(join(tmpdir(), 'prepare-scenes-test-'));
   const input = join(dir, 'input.json');
   const output = join(dir, 'out');
@@ -35,7 +35,7 @@ async function runCase(production, modelScene = scene, imageBytes = null, assetF
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const child = spawn(process.execPath, [script, '--input', input, '--output', output,
     '--endpoint', `http://127.0.0.1:${server.address().port}/v1/chat/completions`,
-    '--model', 'test'], { env: { ...process.env, SCENE_API_KEY: 'test' } });
+    '--model', model], { env: { ...process.env, SCENE_API_KEY: 'test' } });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk; });
   const code = await new Promise(resolve => child.on('close', resolve));
@@ -46,6 +46,12 @@ async function runCase(production, modelScene = scene, imageBytes = null, assetF
 const base = () => ({ status: '准备制作', topic: '潮汐', userRequirements: ['简洁'], notes: null,
   sections: [{ id: 'S01', blueprintId: 'B03', title: '月球', intent: '理解潮汐',
     facts: ['月球影响海水'], visual: '月球与海洋', narration: '月球影响潮汐。', notes: null, gaps: [] }] });
+
+test('MiMo 场景制作请求关闭思考', async () => {
+  const result = await runCase(base(), scene, null, {}, 'mimo-v2.6-pro');
+  try { assert.equal(result.code, 0, result.stderr); assert.deepEqual(result.requests[0].thinking, { type: 'disabled' }); }
+  finally { await rm(result.dir, { recursive: true, force: true }); }
+});
 
 test('preserves narration and confines model output to data', async () => {
   const input = base(); input.style = { id:'editorial', name:'杂志式图文', description:'暖色与留白', source:{kind:'text',label:'资料'} };
@@ -92,6 +98,21 @@ test('rejects unsupported model layer types', async () => {
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /Invalid scene response/);
   } finally { await rm(result.dir, { recursive: true, force: true }); }
+});
+
+test('line 接受向左向上的位移，但终点必须在内容区，其他图层不接受负宽高', async () => {
+  const line = {type:'line', x:500, y:300, width:-300, height:-200, fill:'#112233', start:0, end:1};
+  const result = await runCase(base(), {background:'#ffffff',layers:[line]});
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(await readFile(join(result.output, 'S01.scene.json'))).layers[0], line);
+    assert.match(result.requests[0].messages[0].content, /可为负数/);
+  } finally { await rm(result.dir, {recursive:true, force:true}); }
+  for (const layer of [{...line, width:-501}, {...line, height:-301}, {...line, type:'rect'}]) {
+    const bad = await runCase(base(), {background:'#ffffff',layers:[layer]});
+    try { assert.notEqual(bad.code, 0); assert.match(bad.stderr, /layers\[0\].*(终点|width)/); }
+    finally { await rm(bad.dir, {recursive:true, force:true}); }
+  }
 });
 
 test('null section is rejected before any request', async () => {
@@ -147,7 +168,7 @@ test('reuses one character across three independently directed scenes', async ()
   const input = base();
   const character = {id:'traveler', name:'旅行者', type:'character', image:'assets/traveler.svg'};
   input.sections = [0, 1, 2].map(i => ({...input.sections[0], id:`S0${i+1}`, assets:[character], visual:`第 ${i+1} 段`}));
-  const modelScene = {background:'#ffffff', layers:[{type:'asset', assetId:'traveler', x:200, y:100, width:300, height:400, fill:'#ffffff', text:'', start:0, end:1, motion:{toX:900,toY:200}}]};
+  const modelScene = {background:'#ffffff', layers:[{type:'asset', assetId:'traveler', x:200, y:100, width:300, height:400, start:0, end:1, motion:{toX:900,toY:200}}, {type:'rect',x:20,y:20,width:100,height:100,fill:'#112233',start:0,end:1}]};
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40" fill="red"/></svg>';
   const result = await runCase(input, modelScene, null, {'traveler.svg':svg});
   try {
@@ -158,6 +179,9 @@ test('reuses one character across three independently directed scenes', async ()
       assert.deepEqual(request.assets, [{id:'traveler',name:'旅行者',type:'character'}]);
       const data = JSON.parse(await readFile(join(result.output, `S0${i}.scene.json`)));
       assert.equal(data.layers[0].assetId, 'traveler');
+      assert.equal(data.layers[0].fill, undefined);
+      assert.equal(data.layers[0].text, undefined);
+      assert.equal(data.layers[1].text, undefined);
       assert.deepEqual(data.layers[0].motion, {toX:900,toY:200});
       const html = await readFile(join(result.output, `S0${i}.html`), 'utf8');
       assert.ok(html.includes(Buffer.from(svg).toString('base64')));
@@ -168,7 +192,11 @@ test('reuses one character across three independently directed scenes', async ()
 test('rejects a model reference to an asset outside the section', async () => {
   const invalid = {...scene, layers:[{...scene.layers[0], type:'asset', assetId:'missing'}]};
   const result = await runCase(base(), invalid);
-  try { assert.notEqual(result.code, 0); assert.match(result.stderr, /Unknown asset id/); }
+  try {
+    assert.notEqual(result.code, 0); assert.match(result.stderr, /layers\[0\].*assetId/);
+    assert.match(result.requests[1].messages.at(-1).content, /layers\[0\].*assetId/);
+    assert.match(result.requests[1].messages.at(-1).content, /图层示例/);
+  }
   finally { await rm(result.dir, {recursive:true, force:true}); }
 });
 
@@ -177,7 +205,7 @@ test('rejects omitted planned assets', async () => {
   const input = base();
   input.sections[0].assets = [{id:'traveler',name:'旅行者',type:'character',image:'assets/traveler.svg'}];
   const result = await runCase(input, scene, null, {'traveler.svg':'<svg xmlns="http://www.w3.org/2000/svg"/>'});
-  try { assert.notEqual(result.code, 0); assert.match(result.stderr, /Missing asset id: traveler/); }
+  try { assert.notEqual(result.code, 0); assert.match(result.stderr, /缺少 assetId 为 traveler/); }
   finally { await rm(result.dir, {recursive:true, force:true}); }
 });
 
@@ -198,6 +226,6 @@ test('preserves asset rotation and orbit and rejects invalid pivots', async () =
     assert.match(html, /orbitTransform \+ selfTransform/);
   } finally { await rm(result.dir, {recursive:true, force:true}); }
   const bad = await runCase(input, {background:'#000000',layers:[{...layer, orbit:{cx:2000,cy:450,from:0,to:360}}]}, null, {'moon.svg':svg});
-  try { assert.notEqual(bad.code, 0); assert.match(bad.stderr, /Invalid orbit/); }
+  try { assert.notEqual(bad.code, 0); assert.match(bad.stderr, /layers\[0\].*orbit/); }
   finally { await rm(bad.dir, {recursive:true, force:true}); }
 });

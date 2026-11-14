@@ -36,4 +36,8 @@ fi
 if [[ -z "${VIDEO_PYTHON:-}" && "$(uname)" == Darwin ]] && python3 -c 'import numpy, PIL' 2>/dev/null; then
   export VIDEO_PYTHON="$(command -v python3)"
 fi
+# python.org 的 macOS 安装可能没有 OpenSSL CA 链；配音沿用系统 CA。
+if [[ "$(uname)" == Darwin && -z "${SSL_CERT_FILE:-}" && -r /etc/ssl/cert.pem ]] && "${VIDEO_PYTHON:-python3}" -c 'import ssl, sys; p=ssl.get_default_verify_paths(); sys.exit(bool(p.cafile or p.capath))'; then
+  export SSL_CERT_FILE=/etc/ssl/cert.pem
+fi
 exec "$cli" workbench --port "${WORKBENCH_PORT:-3099}" --no-open "$@"

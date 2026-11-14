@@ -66,3 +66,18 @@ test('DSH 模式在隔离目录运行并生成素材', async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('MiMo 素材关闭思考并允许超过 90 秒，响应超时明确报错', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'asset-timeout-test-'))
+  const original = AbortSignal.timeout
+  let timeout
+  AbortSignal.timeout = ms => { timeout = ms; return original(ms) }
+  try {
+    const assets = createGeneratedAssets(root, { settings: { load: async () => ({ model: { baseUrl: 'http://localhost:1234', model: 'mimo-v2.6-pro' } }) }, request: async (_url, options) => {
+      assert.deepEqual(JSON.parse(options.body).thinking, { type: 'disabled' })
+      return { ok: true, json: async () => { throw new DOMException('timeout', 'TimeoutError') } }
+    } })
+    await assert.rejects(assets.generate({ version: 1, doc: { assets: [{ id: 'a', name: '书', type: 'prop', description: '书本', sections: ['B01'] }] }, style: null }), /生成超时/)
+    assert.equal(timeout, 600000)
+  } finally { AbortSignal.timeout = original; await rm(root, { recursive: true, force: true }) }
+})

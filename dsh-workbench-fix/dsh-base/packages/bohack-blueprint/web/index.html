@@ -286,13 +286,12 @@ input[type=file],input[type=checkbox]{box-shadow:none;background:transparent;pad
             <aside class="film-rail" id="filmRail" hidden></aside>
           </div>
           <div class="film-prep" id="filmPrep">
-            <p class="hint">每段需要已确认的旁白。自动质检通过后，仍需按段观看并核对内容与画面。</p>
-            <div id="filmStyles"></div>
-            <section id="filmAssets" aria-label="动画素材"></section>
             <div class="film-action">
-              <button class="primary" id="btnProduction">开始制作成片</button>
+              <button class="primary" id="btnProduction">开始制作</button>
               <p id="productionStatus" class="film-action-status" role="status" aria-live="polite"></p>
             </div>
+            <div id="filmStyles"></div>
+            <section id="filmAssets" aria-label="动画素材"></section>
           </div>
         </div>
       </div>
@@ -611,7 +610,7 @@ $('#btnChat').addEventListener('click',async()=>{
     succeeded=true
     log(`需求助手回复（${(r.reply||'').length} 字）`,'s'); chatMsg(r.productionError?esc(r.productionError.message):r.generationError?esc(r.generationError.message||r.generationError):'', 'errbox')
     await loadThreads()
-    if(r.production || ['STYLE_REQUIRED','ASSETS_REQUIRED'].includes(r.productionError?.code)){ const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
+    if(r.production || r.confirmation || r.productionError){ const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
     if(r.generation){ const tab=$('[data-tab=bp]'); tab.disabled=false; tab.click() }
   }catch(e){
     log('需求助手失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox')
@@ -765,6 +764,15 @@ function renderBlueprint(){
   $('#bpMeta').innerHTML=`<span class="badge on">蓝图 v${s.currentVersion} · ${s.sections.length} 段</span>
     ${s.blueprintSkill?`<span class="badge">本版技能 · ${esc(s.blueprintSkill)}</span>`:''}
     ${s.lastRun?`<span class="badge ${s.lastRun.realCall?'gold':''}">${esc(s.lastRun.engineLabel||'')}</span>`:''}`
+  const actions=$('#bpMeta')
+  if(s.finalized?.version===s.currentVersion && s.stage==='finalized'){
+    actions.insertAdjacentHTML('beforeend','<button class="sm ghost" id="goFilm">查看成片工作台</button>')
+    $('#goFilm').onclick=()=>chooseTab('film')
+  }else{
+    actions.insertAdjacentHTML('beforeend','<button class="sm primary" id="bpStart">全部确认并开始制作</button><button class="sm ghost" id="btnFinalize">仅确认定稿</button>')
+    $('#bpStart').onclick=()=>doFinalize(true)
+    $('#btnFinalize').onclick=()=>doFinalize(false)
+  }
   const types={character:'人物',prop:'道具',background:'背景'}
   const list=s.blueprintAssets || []
   const assetPlan=list.length ? '<div class="hand"><h3>一起确认的动画素材</h3>'+list.map(a=>`<p><b>${esc(types[a.type])} · ${esc(a.name)}</b>　${esc(a.sections.join('、'))}<br>${esc(a.description)}</p>`).join('')+'</div>' : ''
@@ -780,7 +788,6 @@ function renderBlueprint(){
           <button class="sm primary" id="btnNote">保存意见</button>
           <button class="sm ghost" id="btnRevise">按意见修改</button>
           <button class="sm ghost" id="btnFresh">重新起草</button>
-          <button class="sm ghost" id="btnFinalize">确认定稿</button>
           <button class="sm ghost" id="btnRefresh">刷新</button>
         </div>
         <div class="kv" style="margin-top:8px"><span>修改意见：${s.hasFeedback?'已有':'暂无'}</span></div>
@@ -793,12 +800,11 @@ function renderBlueprint(){
     $('#btnNote').addEventListener('click',doNote)
     $('#btnRevise').addEventListener('click',doRevise)
     $('#btnFresh').addEventListener('click',doFresh)
-    $('#btnFinalize').addEventListener('click',doFinalize)
     $('#btnRefresh').addEventListener('click',()=>{refresh();loadChat();loadAssets();loadAdjustments()})
     loadAdjustments()
   } else {
     man.style.display='none'; prev.style.display=''
-    prev.innerHTML=leaves+'<button class="primary" id="btnFinalize">确认定稿</button>'; $('#btnFinalize').onclick=doFinalize
+    prev.innerHTML=leaves
     prev.querySelectorAll('[data-act="confirm"]').forEach(b=>b.addEventListener('click',()=>doConfirm(b.dataset.id)))
     prev.querySelectorAll('[data-act="lock"]').forEach(b=>b.addEventListener('click',()=>doLock(b.dataset.id,b.dataset.on==='1')))
   }
@@ -876,10 +882,15 @@ async function doFresh(){
   catch(e){ log('重新起草失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
   finally{ progress.clear(); state.streamingChat=false; busy(false); loadChat() }
 }
-async function doFinalize(){
-  busy(true,'定稿')
-  try{ const r=await api('/bohack/api/finalize',{}); log(`定稿完成：${r.file}`,'s'); chatMsg(`蓝图已定稿。请到成片页选择视觉风格，再开始制作。`); const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
-  catch(e){ log('定稿失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+async function doFinalize(startProduction){
+  const thread=state.threadId, version=state.status.currentVersion
+  busy(true,startProduction?'确认并开始制作':'确认定稿')
+  try{
+    await api('/bohack/api/finalize',{all:true,version},thread)
+    chooseTab('film')
+    if(startProduction) await api('/bohack/api/production',{},thread)
+    chatMsg(startProduction?'制作已启动。':'蓝图已定稿。可以选择风格，或直接开始制作。')
+  }catch(e){ chatMsg(esc(e.message),'errbox') }
   finally{ busy(false) }
 }
 async function loadAdjustments(){
@@ -915,7 +926,7 @@ async function refresh(){
     renderValidation(s.validation)
   }catch(e){ console.warn('状态读取失败：',e.message) }
 }
-const assetRequests=new Set()
+let productionRequest=null, productionFailure=null
 let filmRender=0
 function styleItems(list){
   return (list||[]).filter(item => item.kind === 'style' || (!item.kind && !String(item.id||'').startsWith('repo-skill:')))
@@ -958,98 +969,52 @@ function setProductionStatus(message, kind){
 function productionLabel(s){
   const p=s.production, name=s.visualStyle?.style?.name || ''
   const done=p && ['completed','failed','interrupted'].includes(p.status)
-  if(!done) return '开始制作成片'
+  if(!done) return '开始制作'
   const same=name && p.styleId && p.styleId===s.visualStyle?.style?.id
   if(same || !name) return '重新制作'
   return `用『${name}』重新制作成片`
 }
-function productionReason(s, assets){
-  const p=s.production
-  const finalized=s.finalized?.version===s.currentVersion && s.stage==='finalized'
-  const visual=s.visualStyle
+function productionReason(s){
+  if(s.production?.status==='running') return s.production.phase || '制作中…'
+  if(productionRequest===state.threadId) return '正在启动制作…'
   if(state.busy) return '正在处理其他操作，请稍候。'
-  if(p?.status==='running') return '正在制作成片，请稍候。'
-  if(!s.currentVersion) return '请先生成并确认蓝图，再制作成片。'
-  if(!finalized) return '请先确认蓝图全部段落并定稿，再制作成片。'
-  if(!visual || visual.status==='pending') return '请先在上方选择一种视觉风格。'
-  if(assets?.busy) return '正在处理动画素材，请稍候。'
-  if(assets?.needed && assets.pending){
-    const name=visual.style?.name || '新风格'
-    return assets.restyle
-      ? `已改用『${name}』。请先重新生成并确认动画素材，再重新制作成片。`
-      : '请先生成并确认动画素材，再开始制作成片。'
-  }
-  if(assets?.needed && assets.unapproved) return '请先确认这批动画素材，再开始制作成片。'
+  if(!s.currentVersion) return '请先生成蓝图。'
+  if(s.finalized?.version!==s.currentVersion || s.stage!=='finalized') return '请先在分段蓝图中确认定稿。'
   return ''
 }
 function productionNote(s){
   const p=s.production
-  if(!p) return '尚未开始制作。选择风格后，即可开始制作成片。'
+  if(!p) return '将使用「'+(s.visualStyle?.style?.name || '简洁知识图解')+'」生成素材并制作成片。'
   if(p.status==='running') return ''
   if(p.status==='completed') return p.source==='external'
     ? `蓝图 ${p.version}：${p.model} 独立制作成片已归档。`
     : '制作完成，请按段观看并核对。若要换风格，选好后点击下方按钮重新制作。'
-  return `制作${p.status==='interrupted'?'中断':'失败'}：${p.error||'未知错误'}`
+  return `制作${p.status==='interrupted'?'中断':'失败'}：${window.BohackFilm.failureMessage(p.error)}`
 }
-function updateProductionAction(s, assets){
+function updateProductionAction(s){
   const btn=$('#btnProduction')
-  const reason=productionReason(s, assets)
+  const reason=productionReason(s)
   btn.textContent=productionLabel(s)
   btn.disabled=Boolean(reason)
   const failed=s.production && (s.production.status==='failed' || s.production.status==='interrupted')
-  setProductionStatus(reason || productionNote(s), reason ? 'warn' : (failed ? 'error' : ''))
+  const error=productionFailure?.thread===state.threadId && productionFailure.version===s.currentVersion && !reason ? productionFailure.message : ''
+  setProductionStatus(error || reason || productionNote(s), error || failed ? 'error' : '')
 }
 async function renderFilmAssets(s, ready, generation){
-  const box=$('#filmAssets'), thread=state.threadId, version=s.currentVersion
-  const key=JSON.stringify([thread,version])
-  if(!ready || !s.blueprintAssets?.length){ box.replaceChildren(); updateProductionAction(s); return }
-  updateProductionAction(s, {needed:true, busy:true})
+  const box=$('#filmAssets'), thread=state.threadId
+  const makingAssets=s.production?.status==='running' && s.production.phase==='生成素材'
+  if(!ready || !s.blueprintAssets?.length || (s.production?.status==='running' && !makingAssets)){box.replaceChildren(); return}
   const current=()=>generation===filmRender && state.threadId===thread
   try {
-    const data=await api('/bohack/api/generated-assets?version='+version)
+    const data=await api('/bohack/api/generated-assets?version='+s.currentVersion)
     if(!current()) return
-    const busy=assetRequests.has(key) || state.busy || s.production?.status==='running'
-    const approved=data.assets.every(a=>a.status==='approved')
-    const pending=data.assets.some(a=>a.status==='pending')
-    const restyle=Boolean(s.production && ['completed','failed','interrupted'].includes(s.production.status) && pending)
-    const name=s.visualStyle?.style?.name || '新风格'
-    const banner=restyle
-      ? `<p class="asset-banner">已改用『${esc(name)}』。请先重新生成并确认动画素材，然后即可重新制作成片。</p>`
-      : (pending ? '<p class="asset-banner">这支成片需要先生成并确认动画素材。</p>' : (!approved ? '<p class="asset-banner">请确认这批动画素材后，再开始制作。</p>' : ''))
-    box.innerHTML=banner+'<h3>动画素材</h3>'+data.assets.map(a=>`<div class="leaf">
-      ${a.previewUrl?`<img src="${esc(a.previewUrl)}" alt="${esc(a.name)}" style="width:120px;height:90px;object-fit:contain;background:var(--bg-4);border-radius:10px">`:''}
-      <b>${esc(a.name)}</b> · ${esc(a.sections.join('、'))} · ${({pending:'待生成',generated:'待确认',approved:'已确认'})[a.status]}
-      <p>${esc(a.description)}</p><button class="sm ghost" data-generate="${esc(a.id)}">${a.previewUrl?'单个重做':'生成此项'}</button></div>`).join('')
-      + (pending?'<button class="sm primary" data-generate="">生成待做素材</button>':'')
-      + (!pending && !approved?'<button class="sm primary" data-approve>确认这批素材</button>':'')
-      + '<p role="status" class="hint"></p>'
-    updateProductionAction(s, {needed:true, busy, pending, unapproved:!approved, restyle})
-    const buttons=box.querySelectorAll('button')
-    for(const btn of buttons){
-      btn.disabled=busy
-      btn.onclick=async()=>{
-        assetRequests.add(key)
-        for(const b of buttons) b.disabled=true
-        updateProductionAction(s, {needed:true, busy:true, pending, unapproved:!approved, restyle})
-        box.querySelector('[role=status]').textContent='正在处理素材…'
-        let error=''
-        try {
-          const approve=btn.hasAttribute('data-approve')
-          await api('/bohack/api/generated-assets-'+(approve?'approve':'generate'),approve ? {version,revisions:Object.fromEntries(data.assets.map(a=>[a.id,a.revision]))} : {version,id:btn.dataset.generate || undefined})
-        } catch(e){ error=e.message }
-        finally { assetRequests.delete(key) }
-        if(thread===state.threadId){
-          await refresh()
-          if(error) setProductionStatus('素材处理失败：'+error, 'error')
-        }
-      }
+    const previews=data.assets.filter(a=>a.previewUrl)
+    if(makingAssets){
+      $('#filmHeadline').textContent=`正在生成动画素材，已就绪 ${previews.length} / ${data.assets.length} 项。`
+      return
     }
-  } catch(e){
-    if(current()){
-      box.textContent='无法加载素材：'+e.message
-      setProductionStatus('无法加载素材：'+e.message, 'error')
-    }
-  }
+    box.innerHTML=previews.length?'<h3>已生成素材</h3>'+previews.map(a=>`<figure class="leaf"><img src="${esc(a.previewUrl)}" alt="" width="120" height="90" style="object-fit:contain"><figcaption>${esc(a.name)}</figcaption></figure>`).join(''):''
+  }catch(e){if(current()) box.textContent='无法读取素材预览：'+e.message}
 }
 function styleSummary(item){
   return item?.summary || (item?.description||'').split(/[。！？\n]/).find(Boolean) || ''
@@ -1063,7 +1028,7 @@ function bindFilmStyleCards(styleBox, s){
     setProductionStatus(`正在切换到『${name}』…`)
     try {
       await api('/bohack/api/styles-select',{id:button.dataset.filmStyle,version})
-      if(thread===state.threadId) await refresh()
+      if(thread===state.threadId){ state.pickingStyle=false; await refresh() }
     } catch(e) {
       if(thread===state.threadId) setProductionStatus('风格选择失败：'+e.message, 'error')
     } finally { button.disabled=false }
@@ -1143,12 +1108,16 @@ function renderFilm(s){
 $('#btnProduction').addEventListener('click',async()=>{
   const s=state.status, btn=$('#btnProduction')
   if(btn.disabled){ setProductionStatus(productionReason(s) || '现在还不能开始制作。', 'warn'); return }
-  const label=btn.textContent
-  const starting=label==='开始制作成片'?'正在开始制作成片…':label==='重新制作'?'正在重新制作成片…':`正在开始${label}…`
-  setProductionStatus(starting)
-  btn.disabled=true
-  try { chooseTab('film'); await api('/bohack/api/production',{}); await refresh() }
-  catch(e) { setProductionStatus('无法开始制作：'+e.message, 'error'); if(state.status) updateProductionAction(state.status) }
+  const thread=state.threadId
+  productionRequest=thread
+  productionFailure=null
+  updateProductionAction(s)
+  try { await api('/bohack/api/production',{},thread) }
+  catch(e) { productionFailure={thread,version:s.currentVersion,message:'无法开始制作：'+e.message} }
+  finally {
+    if(productionRequest===thread) productionRequest=null
+    if(state.threadId===thread){ await refresh(); updateProductionAction(state.status) }
+  }
 })
 function renderValidation(v){
   if(!v) return

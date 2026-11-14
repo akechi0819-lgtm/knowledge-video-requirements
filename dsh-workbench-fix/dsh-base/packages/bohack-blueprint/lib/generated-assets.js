@@ -77,10 +77,15 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
       let content
       if (dsh) content = await callDsh([{ role: 'user', content: prompt }])
       else {
-        const response = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }), signal: AbortSignal.timeout(90000) })
-        if (!response.ok) throw new Error(`素材「${asset.name}」生成失败（HTTP ${response.status}）。`)
-        const data = await response.json()
-        content = data.choices[0].message.content
+        try {
+          const response = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], ...(/^mimo-v2\.[56](?:-pro)?$/i.test(model) ? { thinking: { type: 'disabled' } } : {}) }), signal: AbortSignal.timeout(600000) })
+          if (!response.ok) throw new Error(`素材「${asset.name}」生成失败（HTTP ${response.status}）。`)
+          const data = await response.json()
+          content = data.choices[0].message.content
+        } catch (error) {
+          if (error.name === 'TimeoutError' || error.name === 'AbortError') throw new Error(`素材「${asset.name}」生成超时，请重试。`)
+          throw error
+        }
       }
       let parsed
       try { parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')) } catch { throw new Error(`素材「${asset.name}」返回格式无效。`) }

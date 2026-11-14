@@ -1,6 +1,6 @@
 /* 讲界成片台：按蓝图段展示制作进度，并用段落映射同步播放。 */
 window.BohackFilm = (() => {
-  const PHASES = ['生成画面', '配音与渲染', '自动质检', '制作完成']
+  const PHASES = ['生成素材', '生成画面', '配音与渲染', '自动质检', '制作完成']
 
   function qs(root, sel) { return root.querySelector(sel) }
 
@@ -35,9 +35,16 @@ window.BohackFilm = (() => {
     return '尚未开始'
   }
 
+  function failureMessage(error) {
+    const lines=String(error || '未知错误').trim().split(/\r?\n/)
+    const reason=lines.filter(line=>/^(?:[\w.]*Error|Error):/.test(line)).at(-1) || lines[0]
+    if(reason.includes('CERTIFICATE_VERIFY_FAILED')) return '配音服务的 HTTPS 证书校验失败。'
+    return reason.replace(/^Error:\s*/, '')
+  }
+
   function headline(p) {
-    if (!p) return '选择视觉风格后，即可开始制作成片。'
-    if (p.status === 'failed') return p.error ? `制作失败：${p.error}` : '制作失败，请重新制作。'
+    if (!p) return '从蓝图生成素材，再合成为视频。'
+    if (p.status === 'failed') return p.error ? `制作失败：${failureMessage(p.error)}` : '制作失败，请重新制作。'
     if (p.status === 'interrupted') return '制作中断，已保留已完成的段落，可以重新开始。'
     if (p.status === 'completed') {
       if (p.source === 'external') return `蓝图 ${p.version} 的独立制作成片已归档，请按段观看并核对。`
@@ -48,6 +55,7 @@ window.BohackFilm = (() => {
     const withScene = sections.filter(s => s.scene).length
     const withAudio = sections.filter(s => s.audio).length
     const withClip = sections.filter(s => s.clip).length
+    if (p.phase === '生成素材') return '正在为当前蓝图准备动画素材。'
     if (p.phase === '生成画面') {
       const current = sections.find(s => !s.scene)
       if (current) return withScene ? `${current.id} 正在生成画面，已完成 ${withScene} / ${sections.length} 段。` : '正在根据蓝图生成各段画面。'
@@ -269,5 +277,5 @@ window.BohackFilm = (() => {
     }, player._active || p?.sections?.find(sec => !sec.clip)?.id || p?.sections?.[0]?.id)
   }
 
-  return { render, headline, fileUrl, PHASES }
+  return { render, headline, failureMessage, fileUrl, PHASES }
 })()

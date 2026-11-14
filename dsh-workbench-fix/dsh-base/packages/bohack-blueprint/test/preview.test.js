@@ -26,3 +26,17 @@ test('invalid markup in model geometry is rejected', async () => {
   const request = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ scenes: [{ id: 'B01', shapes: Array(5).fill(shape('M0 0" onload="alert(1)')) }] }) } }] }) })
   await assert.rejects(generatePreview([{ id: 'B01' }], settings, request), /图元无效/)
 })
+test('MiMo 预览关闭思考并允许超过 90 秒，响应超时明确报错', async () => {
+  const original = AbortSignal.timeout
+  let timeout
+  AbortSignal.timeout = ms => { timeout = ms; return original(ms) }
+  try {
+    const mimo = { model: { baseUrl: 'http://localhost:1234', model: 'mimo-v2.6-pro' } }
+    const request = async (_url, options) => {
+      assert.deepEqual(JSON.parse(options.body).thinking, { type: 'disabled' })
+      return { ok: true, json: async () => { throw new DOMException('timeout', 'TimeoutError') } }
+    }
+    await assert.rejects(generatePreview([{ id: 'B01' }], mimo, request), /生成超时/)
+    assert.equal(timeout, 600000)
+  } finally { AbortSignal.timeout = original }
+})

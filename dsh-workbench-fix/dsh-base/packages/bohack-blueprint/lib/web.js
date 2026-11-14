@@ -294,7 +294,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         case '/bohack/api/revise':   out = await service.revise(body, engine); break
         case '/bohack/api/confirm':  out = await service.confirm(body); break
         case '/bohack/api/feedback': out = await service.feedback(body); break
-        case '/bohack/api/finalize': out = await service.finalize(); break
+        case '/bohack/api/finalize': out = await service.finalize(body); break
         case '/bohack/api/production': out = await service.production.start(); break
         case '/bohack/api/chat':     out = await runTurn(engine, () => service.chat(body, engine, streaming ? emit : undefined)); break
         case '/bohack/api/section':  out = await service.manualEdit(body, engine); break

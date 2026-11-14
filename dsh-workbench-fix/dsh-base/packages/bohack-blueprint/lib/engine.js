@@ -934,7 +934,7 @@ export function createEngine(ctx, config = {}) {
       })
       agentCtx.tools.register({
         name: 'request_confirm_and_produce',
-        description: '仅当创作者在当前消息中明确确认当前蓝图全部段落，并明确要求立即生成成片时调用。提问、引用、讨论、假设、否定、只确认一部分或只询问可否制作都不能调用。实际结果由工作台返回，不要宣称已经完成。',
+        description: '创作者在当前消息中明确确认当前蓝图全部段落并要求立即制作，或当前蓝图已定稿且创作者明确要求开始制作时调用。提问、引用、讨论、假设、否定、只确认一部分或只询问可否制作都不能调用。实际结果由工作台返回，不要宣称已经完成。',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
         output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
         async execute() { chatCapture.productionRequested = true; return { ok: true, message: '请求已提交，工作台将在本轮结束后校验并处理。' } },

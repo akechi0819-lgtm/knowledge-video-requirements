@@ -407,6 +407,8 @@ button:focus-visible,summary:focus-visible,a:focus-visible,select:focus-visible,
 .film-wait-meta{margin:0;font:12px var(--sans);color:var(--faded)}
 .film-layout{display:grid;grid-template-columns:minmax(0,1fr) 188px;gap:12px;align-items:stretch}
 .film-main,#filmPlayer{min-width:0;min-height:0}
+.film-layout{grid-template-rows:minmax(0,1fr);overflow:auto}
+.film-main{overflow:auto}
 .film-rail{
   display:flex;flex-direction:column;gap:2px;min-width:0;
   max-height:min(62vh,720px);overflow:auto;padding:0 0 4px 2px;

@@ -37,10 +37,27 @@ export class ServiceError extends Error {
 }
 
 // A semantic tool request must also be grounded in an affirmative current message.
+function affirmative(message) {
+  const text = String(message).trim()
+  return !(/[?？“”「」『』"]/.test(text) || /不|没|别|取消|暂缓|如果|假如|假设|是否|能否|可以吗|怎么|如何|讨论|举例|引用/.test(text))
+}
+
 export function explicitProductionApproval(message) {
   const text = String(message).trim()
-  if (/[?？“”「」『』"]/.test(text) || /不|没|别|取消|暂缓|如果|假如|假设|是否|能否|可以吗|怎么|如何|讨论|举例|引用/.test(text)) return false
-  return /(确认|认可|同意|通过|采纳)/.test(text) && /(全部|所有|整(个|体|份|版)|全(部|段)|当前|这(版|份|个|一版))/.test(text) && /(蓝图|段落|分段|这版|这一版)/.test(text) && /(生成|制作|做|开始|出).{0,12}(成片|视频)|(?:成片|视频).{0,12}(生成|制作|开始)/.test(text)
+  if (!affirmative(text)) return false
+  return /(确认|认可|同意|通过|采纳)/.test(text) && /(全部|所有|整(个|体|份|版)|全(部|段)|当前|这(版|份|个|一版))/.test(text) && /(蓝图|段落|分段|这版|这一版)/.test(text) && /(?:(?:生成|制作|做|开始|出).{0,12}(?:成片|视频)|(?:成片|视频).{0,12}(?:生成|制作|开始))/.test(text)
+}
+
+function confirmAllRequest(message) {
+  const text = String(message).trim()
+  return affirmative(text) && /^(?:(?:将|把)?(?:当前|这(?:份|版))?(?:蓝图|段落)?(?:全部|所有|全都|都)(?:确认|通过|定稿)(?:定稿)?|(?:确认|通过)(?:当前|这(?:份|版))?(?:蓝图)?(?:全部|所有)(?:段落)?(?:并?定稿)?)[了吧。！!，,\s]*$/.test(text)
+}
+
+function productionCommand(message, alreadyFinalized) {
+  const text = String(message).trim()
+  if (!affirmative(text)) return false
+  if (alreadyFinalized && /^(?:确认[，,\s]*)?(?:开始|进行|直接)?(?:正式)?(?:制作|做)(?:成片|视频)?[了吧。！!，,\s]*$/.test(text)) return true
+  return /^(?:(?:全部|全都|都)(?:确认|通过|可以)|(?:\d+|[一二两三四五六七八九十]+)段都确认)[，,\s]*(?:开始|直接)(?:正式)?(?:制作|做)(?:成片|视频)?[了吧。！!，,\s]*$/.test(text)
 }
 
 export function createService(ctx, config = {}) {
@@ -56,7 +73,10 @@ export function createService(ctx, config = {}) {
   }
   const settings = createSettings(root, config)
   const generatedAssets = createGeneratedAssets(root, { settings })
-  const productionService = createProduction(root, { ...config, settings, generatedAssets })
+  const productionService = createProduction(root, { ...config, settings, generatedAssets, ensureVisual: async () => {
+    const n = await latestVersion()
+    if ((await visualStyle(n))?.status === 'pending') await selectVisualStyle({ id: 'general', version: n })
+  } })
   const styles = createStyles(root, config.styleLibraryRoot || root)
   const log = (...a) => { try { ctx.logger?.info?.('[bohack]', ...a) } catch { /* ignore */ } }
 
@@ -367,15 +387,16 @@ export function createService(ctx, config = {}) {
   const revise = (options = {}, engine) => produce('revise', options, engine)
 
   // ── finalize ──────────────────────────────────────────────────────────────
-  async function finalize() {
+  async function finalize({ all = false, version } = {}) {
     const n = await latestVersion()
     if (!n) throw new ServiceError('没有可定稿的蓝图', 'NOT_FOUND')
+    if (version !== undefined && version !== n) throw new ServiceError('蓝图版本已变化，请查看当前版本后重新确认。', 'STALE_VERSION')
     const state = await getState()
     const doc = parseBlueprint(await readVersion(n))
     const ids = doc.sections.map(s => s.id)
     const confirmed = (state.confirmed?.[`v${n}`] || [])
     const missing = ids.filter(id => !confirmed.includes(id))
-    if (missing.length) throw new ServiceError(`还有未确认的段落：${missing.join(', ')}`, 'NOT_CONFIRMED')
+    if (!all && missing.length) throw new ServiceError(`还有未确认的段落：${missing.join(', ')}`, 'NOT_CONFIRMED')
     const check = validateBlueprint(doc, { quality: config.quality })
     if (!check.ok) throw new ServiceError(`蓝图校验未通过：${check.errors.join('；')}`, 'INVALID')
 
@@ -403,7 +424,7 @@ export function createService(ctx, config = {}) {
     L.push('')
     L.push(await readVersion(n))
     await writeFile(deliveryPath(), L.join('\n'), 'utf8')
-    await setState({ stage: 'finalized', finalized: { version: n, at: now(), file: 'outbox/' + DELIVERY_FILE } })
+    await setState({ confirmed: { ...state.confirmed, [`v${n}`]: ids }, stage: 'finalized', finalized: { version: n, at: now(), file: 'outbox/' + DELIVERY_FILE } })
     await writeRun({ action: 'finalize', version: n })
     return { ok: true, version: n, file: 'outbox/' + DELIVERY_FILE, sections: ids }
   }
@@ -634,7 +655,11 @@ export function createService(ctx, config = {}) {
     if (!message) throw new ServiceError('消息不能为空', 'BAD_INPUT')
     await ensureDirs()
     const initialVersion = await latestVersion()
-    const contextText = await chatContextText()
+    const stateBeforeAction = await getState()
+    const alreadyFinalized = stateBeforeAction.stage === 'finalized' && stateBeforeAction.finalized?.version === initialVersion
+    const produce = productionCommand(message, alreadyFinalized)
+    const confirmAll = confirmAllRequest(message)
+    const directAction = initialVersion && (produce || confirmAll)
     const t0 = Date.now()
     const historyText = await readFile(dialoguePath(), 'utf8').catch(() => '')
     const activities = []
@@ -644,7 +669,7 @@ export function createService(ctx, config = {}) {
       onProgress?.(event)
     }
     let turn
-    try { turn = await engine.chatTurn({ text: message, contextText, historyText, onProgress: progress }) }
+    try { turn = directAction ? { reply: '' } : await engine.chatTurn({ text: message, contextText: await chatContextText(), historyText, onProgress: progress }) }
     catch (e) {
       await writeRun({ action: 'chat', ok: false, error: String(e?.message || e), ms: Date.now() - t0 })
       throw new ServiceError(`需求助手不可用：${e?.message || e}`, 'CHAT_FAILED')
@@ -657,35 +682,35 @@ export function createService(ctx, config = {}) {
       try { await saveRequirement(raw, turn.replaceBaseline === true) }
       catch (e) { if (e.code !== 'BASELINE_LOCKED') throw e; saveError = e; reply = e.message }
     } else if (turn?.requirementChanged && !await latestVersion()) await setState({ requirementDirty: true })
-    let production = null, productionError = null
-    if (turn?.productionRequested) {
+    let production = null, productionError = null, confirmation = null
+    const semanticProduce = turn?.productionRequested && (explicitProductionApproval(message) || (alreadyFinalized && affirmative(message) && /(?:制作|生成|做|出).{0,8}(?:成片|视频|出来|起来)|(?:开始|直接).{0,6}(?:制作|做)/.test(message)))
+    if (turn?.productionRequested || produce || confirmAll) {
       try {
-        if (!explicitProductionApproval(message)) throw new ServiceError('请明确确认当前蓝图全部段落，并明确要求开始制作成片。', 'CONFIRMATION_REQUIRED')
+        if (!produce && !confirmAll && !semanticProduce) throw new ServiceError('请明确确认当前蓝图全部段落，并明确要求开始制作成片。', 'CONFIRMATION_REQUIRED')
         const mentionedVersions = [...message.matchAll(/v(\d+)/gi)].map(m => Number(m[1]))
         if (!initialVersion || initialVersion !== await latestVersion() || mentionedVersions.some(n => n !== initialVersion)) throw new ServiceError('蓝图版本已变化，请查看当前版本后重新确认。', 'STALE_VERSION')
         const validation = await validate({ version: initialVersion })
         if (!validation.ok) throw new ServiceError(`蓝图校验未通过：${validation.errors.join('；')}`, 'INVALID')
-        await confirm({ version: initialVersion, all: true })
-        await finalize()
-        const visual = await visualStyle(initialVersion)
-        if (visual?.status === 'pending') {
-          productionError = { code: 'STYLE_REQUIRED', message: '蓝图已定稿，请在成片页选择视觉参考，再开始制作。' }
-          reply = productionError.message
-        } else {
+        const countMatch = message.match(/^(\d+|[一二两三四五六七八九十])段都确认/ )
+        if (countMatch) {
+          const count = Number(countMatch[1]) || '一二三四五六七八九十'.indexOf(countMatch[1].replace('两', '二')) + 1
           const doc = (await show({ version: initialVersion })).doc
-          const assets = await generatedAssets.status({ version: initialVersion, doc, style: visual?.style || null })
-          if (!assets.allApproved) {
-            productionError = { code: 'ASSETS_REQUIRED', message: '请先确认动画素材。' }
-            reply = `蓝图 v${initialVersion} 已定稿，请到成片页生成并确认动画素材，再开始制作成片。`
-          } else {
-            onProgress?.({ type: 'status', text: '已确认蓝图，正在启动成片制作' })
-            production = await productionService.start()
-            reply = `已确认蓝图 v${initialVersion} 全部段落并定稿，成片制作已启动。可在成片页查看进度。`
-          }
+          if (doc.sections.length !== count) throw new ServiceError('所述段落数与当前蓝图不一致，请核对后确认。', 'CONFIRMATION_REQUIRED')
+        }
+        if (!alreadyFinalized) {
+          const result = await finalize({ all: true, version: initialVersion })
+          confirmation = { ok: true, version: result.version, confirmed: result.sections, total: result.sections.length, allConfirmed: true }
+        }
+        if (confirmAll) {
+          reply = `蓝图 v${initialVersion} 全部段落已确认并定稿。`
+        } else {
+          onProgress?.({ type: 'status', text: '正在准备素材并启动成片制作' })
+          production = await productionService.start()
+          reply = `蓝图 v${initialVersion} 的成片制作已启动。可在成片页查看进度。`
         }
       } catch (e) {
         productionError = { code: e.code || 'PRODUCTION_FAILED', message: String(e.message || e) }
-        reply = `成片制作未启动：${productionError.message}`
+        reply = `${confirmAll ? '蓝图未定稿' : '成片制作未启动'}：${productionError.message}`
       }
     }
     await appendDialogue('user', message)
@@ -702,7 +727,7 @@ export function createService(ctx, config = {}) {
         generation = await generate({}, engine, onProgress)
       } catch (e) { generationError = { code: e.code || 'ENGINE_FAILED', message: String(e.message || e) } }
     }
-    return { ok: true, reply, generation, generationError, production, productionError, sessionId: engine.chatSessionId || null, at: now() }
+    return { ok: true, reply, generation, generationError, production, productionError, confirmation, finalized: (await getState()).stage === 'finalized', sessionId: engine.chatSessionId || null, at: now() }
   }
 
   async function chatHistory() {
