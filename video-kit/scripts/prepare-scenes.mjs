@@ -103,13 +103,22 @@ const nodes = data.layers.map(l => {
 window.seek = function(t) {
   const p = window.__PLAN__;
   const progress = Math.max(0, Math.min(1, t / p.duration));
+  // Bring the diagram out of a soft shadow as its layers unfold.
+  svg.style.filter = 'brightness(' + (0.82 + 0.18 * progress) + ')';
   nodes.forEach((node, i) => {
     const l = data.layers[i];
     const visible = progress >= l.start && (progress < l.end || (progress === 1 && l.end === 1));
     const fade = Math.max(0, Math.min(1, (progress - l.start) / 0.04));
     node.style.opacity = visible ? String(fade) : '0';
-    // A slow, deterministic drift keeps long holds alive without changing content.
-    node.setAttribute('transform', 'translate(0 ' + (4 * Math.sin(progress * 6.283 + i)) + ')');
+    // Keep related shapes registered as one diagram; reveal the composition with a shared camera.
+    const zoom = 0.58 + 0.42 * progress;
+    node.setAttribute('transform', 'translate(960 450) scale(' + zoom + ') translate(-960 -450)');
+    if (l.type === 'line') {
+      const length = Math.hypot(l.width, l.height);
+      const reveal = Math.min(1, Math.max(0, (progress - l.start) / Math.min(0.32, l.end - l.start)));
+      node.setAttribute('stroke-dasharray', length);
+      node.setAttribute('stroke-dashoffset', length * (1 - reveal));
+    }
   });
   const caption = p.subtitle;
   sub.textContent = caption && t >= caption.start && t < caption.end ? caption.text : '';
