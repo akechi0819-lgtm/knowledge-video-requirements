@@ -2,7 +2,6 @@ import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseBlueprint, validateBlueprint } from '../lib/blueprint.js'
-import { sameStyle } from '../lib/style-match.js'
 
 export function requestedDuration(requirements) {
   const values = requirements.flatMap(text => {
@@ -43,10 +42,17 @@ export async function exportProduction(workspace) {
   if (!check.ok || (doc.meta['版本'] && doc.meta['版本'] !== `v${n}`)) throw new Error(`蓝图无效或版本不一致：${check.errors.join('；')}`)
   const confirmed = state.confirmed?.[`v${n}`]
   if (!Array.isArray(confirmed) || doc.sections.some(s => !confirmed.includes(s.id))) throw new Error('定稿段落确认记录不完整')
-  let style = null, choice = null
-  try { style = JSON.parse(await readFile(path.join(outbox, `蓝图_v${n}.风格.json`), 'utf8')) } catch (e) { if (e.code !== 'ENOENT') throw e }
-  try { choice = JSON.parse(await readFile(path.join(path.resolve(workspace), 'style-selection.json'), 'utf8')) } catch (e) { if (e.code !== 'ENOENT') throw e }
-  if (choice?.selectedId && (choice.style ? !sameStyle(choice.style, style) : choice.selectedId !== style?.id)) throw new Error('风格已更换，请先按新风格重新起草或修改蓝图。')
+  let style = null, visual = null
+  try { visual = JSON.parse(await readFile(path.join(outbox, `蓝图_v${n}.视觉选择.json`), 'utf8')) }
+  catch (e) { if (e.code !== 'ENOENT') throw e }
+  if (visual) {
+    if (visual.status !== 'selected' || !visual.style) throw new Error('蓝图已定稿，请在成片页选择视觉参考（也可选择通用风格），再开始制作。')
+    style = visual.style
+  } else {
+    try { style = JSON.parse(await readFile(path.join(outbox, `蓝图_v${n}.风格.json`), 'utf8')) }
+    catch (e) { if (e.code !== 'ENOENT') throw e }
+  }
+
   return {
     status: '准备制作', version: `v${n}`, topic: doc.topic,
     userRequirements: doc.userRequirements, notes: doc.notes.trim(),

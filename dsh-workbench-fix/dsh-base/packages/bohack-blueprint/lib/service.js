@@ -12,7 +12,6 @@ import { readFile, writeFile, readdir, mkdir, stat, appendFile } from 'node:fs/p
 import { createProduction } from './production.js'
 import { createProjectModel } from './project-model.js'
 import { createStyles } from './styles.js'
-import { sameStyle } from './style-match.js'
 import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import {
@@ -68,17 +67,24 @@ export function createService(ctx, config = {}) {
   const deliveryPath = () => path.join(dirs.outbox, DELIVERY_FILE)
   const versionPath = (n) => path.join(dirs.outbox, `蓝图_v${n}.md`)
   const stylePath = (n) => path.join(dirs.outbox, `蓝图_v${n}.风格.json`)
-  async function versionStyle(n) {
-    try { return JSON.parse(await readFile(stylePath(n), 'utf8')) }
-    catch (e) { if (e.code === 'ENOENT') return null; throw e }
+  const visualPath = (n) => path.join(dirs.outbox, `蓝图_v${n}.视觉选择.json`)
+  async function visualStyle(n) {
+    if (!n) return null
+    try { return { version: n, ...JSON.parse(await readFile(visualPath(n), 'utf8')) } }
+    catch (e) { if (e.code !== 'ENOENT') throw e }
+    let style = null
+    try { style = JSON.parse(await readFile(stylePath(n), 'utf8')) }
+    catch (e) { if (e.code !== 'ENOENT') throw e }
+    return { version: n, status: 'legacy', style }
   }
-  async function checkedStyle(n) {
-    const choice = await styles.list()
-    const selected = await styles.selected()
-    if (choice.selectedId && !selected) throw new ServiceError('所选风格已不存在，请重新选择。', 'STYLE_MISSING')
-    const snapshot = await versionStyle(n)
-    if (choice.selectedId && !sameStyle(selected, snapshot)) throw new ServiceError('风格已更换，请先按新风格重新起草或修改蓝图。', 'STYLE_CHANGED')
-    return snapshot
+  async function selectVisualStyle({ id, version } = {}) {
+    const n = await latestVersion(), state = await getState()
+    if (!n || Number(version) !== n || state.stage !== 'finalized' || state.finalized?.version !== n) {
+      throw new ServiceError('请先确认当前蓝图并定稿，再选择本版本的视觉参考。', 'STYLE_VERSION')
+    }
+    const result = await styles.select({ id })
+    await writeFile(visualPath(n), JSON.stringify({ status: 'selected', style: result.style }, null, 2) + '\n', 'utf8')
+    return { ...result, version: n }
   }
 
   async function readJson(file, fallback) {
@@ -252,11 +258,6 @@ export function createService(ctx, config = {}) {
 
     const n = await latestVersion()
     const next = n + 1
-    const styleChoice = await styles.list()
-    const selectedStyle = await styles.selected()
-    if (styleChoice.selectedId && !selectedStyle) throw new ServiceError('所选风格已不存在，请重新选择。', 'STYLE_MISSING')
-    const style = selectedStyle || (n ? await versionStyle(n) : null)
-    if (!n && !style) throw new ServiceError('请先选择并确认视频风格，再起草蓝图。', 'STYLE_REQUIRED')
     const state = await getState()
     let previousDoc = null
     if (action === 'revise') {
@@ -270,7 +271,7 @@ export function createService(ctx, config = {}) {
     let result
     try {
       result = await engine.produce({
-        action, requirement, requirementText, rulesText, previousDoc, style,
+        action, requirement, requirementText, rulesText, previousDoc,
         textAssets: (await readAssetLines()).filter(a => a.type === 'text'),
         feedbackText, feedback: state.pendingFeedback || null,
         version: next, config, options, onProgress,
@@ -310,7 +311,7 @@ export function createService(ctx, config = {}) {
     }
     const canonical = renderBlueprint(doc)
     await writeFile(versionPath(next), canonical, 'utf8')
-    await writeFile(stylePath(next), JSON.stringify(style, null, 2) + '\n', 'utf8')
+    await writeFile(visualPath(next), JSON.stringify({ status: 'pending', style: null }, null, 2) + '\n', 'utf8')
 
     const finalCheck = validateBlueprint(parseBlueprint(canonical), { quality: config.quality })
     const runId = await writeRun({
@@ -364,7 +365,6 @@ export function createService(ctx, config = {}) {
   async function finalize() {
     const n = await latestVersion()
     if (!n) throw new ServiceError('没有可定稿的蓝图', 'NOT_FOUND')
-    await checkedStyle(n)
     const state = await getState()
     const doc = parseBlueprint(await readVersion(n))
     const ids = doc.sections.map(s => s.id)
@@ -431,7 +431,7 @@ export function createService(ctx, config = {}) {
       hasFeedback: await exists(feedbackPath()),
       hasDelivery: await exists(deliveryPath()),
       pendingFeedback: state.pendingFeedback || null,
-      finalized: state.finalized || null,
+      finalized: state.finalized || null, visualStyle: await visualStyle(n),
       locked: (state.locked || {})[`v${n}`] || [],
       confirmed: state.confirmed?.[`v${n}`] || [],
       sections, validation, doc,
@@ -645,9 +645,15 @@ export function createService(ctx, config = {}) {
         if (!validation.ok) throw new ServiceError(`蓝图校验未通过：${validation.errors.join('；')}`, 'INVALID')
         await confirm({ version: initialVersion, all: true })
         await finalize()
-        onProgress?.({ type: 'status', text: '已确认蓝图，正在启动成片制作' })
-        production = await productionService.start()
-        reply = `已确认蓝图 v${initialVersion} 全部段落并定稿，成片制作已启动。可在成片页查看进度。`
+        const visual = await visualStyle(initialVersion)
+        if (visual?.status === 'pending') {
+          productionError = { code: 'STYLE_REQUIRED', message: '蓝图已定稿，请在成片页选择视觉参考（也可选择通用风格），再开始制作。' }
+          reply = productionError.message
+        } else {
+          onProgress?.({ type: 'status', text: '已确认蓝图，正在启动成片制作' })
+          production = await productionService.start()
+          reply = `已确认蓝图 v${initialVersion} 全部段落并定稿，成片制作已启动。可在成片页查看进度。`
+        }
       } catch (e) {
         productionError = { code: e.code || 'PRODUCTION_FAILED', message: String(e.message || e) }
         reply = `成片制作未启动：${productionError.message}`
@@ -708,7 +714,7 @@ export function createService(ctx, config = {}) {
     doc.meta = { ...doc.meta, '版本': `v${next}`, '状态': '待确认', '来源': '手动编辑' }
     const canonical = renderBlueprint(doc)
     await writeFile(versionPath(next), canonical, 'utf8')
-    await writeFile(stylePath(next), JSON.stringify(await versionStyle(n), null, 2) + '\n', 'utf8')
+    await writeFile(visualPath(next), JSON.stringify({ status: 'pending', style: null }, null, 2) + '\n', 'utf8')
 
     await ensureDirs()
     const lines = [
@@ -782,7 +788,7 @@ export function createService(ctx, config = {}) {
   return {
     ingest, generate, show, validate, confirm, feedback, revise, finalize, status, trace,
     lock, chat, chatHistory, manualEdit, note, adjustments, requirement,
-    listAssets, updateAsset, addAsset, uploadAsset, styles, projectModel, production: productionService,
+    listAssets, updateAsset, addAsset, uploadAsset, styles, selectVisualStyle, projectModel, production: productionService,
     _internal: { dirs, versions, latestVersion, readVersion, getState, setState, writeRun, ensureDirs },
   }
 }

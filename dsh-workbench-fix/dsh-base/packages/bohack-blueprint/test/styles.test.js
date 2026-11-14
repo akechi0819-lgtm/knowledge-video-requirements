@@ -9,11 +9,11 @@ test('personal library is shared but choices are isolated per creative thread', 
   const root = await mkdtemp(path.join(tmpdir(), 'styles-'))
   try {
     const a = createStyles(path.join(root, 'a'), root), b = createStyles(path.join(root, 'b'), root), other = createStyles(path.join(root, 'other'))
-    assert.equal((await a.list()).styles.length, 2)
+    assert.equal((await a.list()).styles.length, 9)
     assert.equal(await a.selected(), null)
     const item = (await a.importStyle({name:'我的风格',description:'# 视觉\n参考正文',source:{kind:'web',label:'https://example.com/style'}})).style
     assert.ok((await b.list()).styles.some(s => s.id === item.id))
-    assert.equal((await other.list()).styles.length, 2)
+    assert.equal((await other.list()).styles.length, 9)
     await a.select({id:item.id}); await b.select({id:'general'})
     assert.equal((await a.selected()).id, item.id)
     assert.equal((await b.selected()).id, 'general')
@@ -26,7 +26,19 @@ test('personal library is shared but choices are isolated per creative thread', 
     assert.equal((await a.selected()).name, '我的风格')
     assert.equal((await b.selected()).id, 'general')
     await Promise.all(Array.from({length:12},(_,i)=>a.importStyle({name:`并发${i}`,description:'规则',source:{kind:'text'}})))
-    assert.equal((await a.list()).styles.length, 14)
+    assert.equal((await a.list()).styles.length, 21)
     await assert.rejects(a.importStyle({name:'test',description:'x',source:{kind:'web',label:'javascript:alert(1)'}}), /HTTP/)
   } finally { await rm(root, { recursive:true, force:true }) }
+})
+
+test('内置参考包含具名规则和可核对来源', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'styles-builtins-'))
+  try {
+    const service = createStyles(root), list = (await service.list()).styles
+    for (const id of ['andy-pixel-quest','heychengc-concrete','huashu-vox','huashu-whiteboard','swiss-kinetic','vibe-night','vibe-fable']) {
+      const item = list.find(s => s.id === id)
+      assert.ok(item?.description && item.source.label)
+      await service.select({ id }); assert.equal((await service.selected()).id, id)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

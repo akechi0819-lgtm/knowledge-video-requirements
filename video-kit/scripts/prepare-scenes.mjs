@@ -30,17 +30,19 @@ for (const s of production.sections) {
   ids.add(s.id);
 }
 await mkdir(output); // Do not overwrite an existing task.
-const system = `你是知识视频画面设计师。根据单段制作信息，设计一幅可读、与内容相关的静态矢量画面，用简单形状分阶段呈现。只返回 JSON 对象，不要 Markdown。画布 1920×1080，底部 180 像素留给字幕。格式：{"background":"#rrggbb","layers":[{"type":"rect|ellipse|line|text","x":数字,"y":数字,"width":数字,"height":数字,"fill":"#rrggbb","text":"文字","start":0到1的数字,"end":0到1的数字}]}。每层全部字段必填，最多 30 层；x/y 为左上角，line 从 (x,y) 到 (x+width,y+height)，text 的 x/y 为基线，height 为字号。start/end 是出现和消失时间比例，start < end。背景色直接写 background，不要铺全屏背景矩形。图层 x 在 0–1920、y 在 0–900、width 在 0–1920、height 在 0–900；文字字号 height 12–100。图形与文字不越过内容区，留出字幕区。画面用分阶段的可见变化解释动作；只画本段需要的信息，提问段遵守揭晓时机。不得添加未经材料支持的事实，不要编写旁白、代码、外链或 SVG。缺失信息不要猜测。`;
+const system = `你是知识视频画面设计师。根据单段制作信息，设计可读的矢量动态图解，按所选风格安排空间、动作和节奏。只返回 JSON 对象，不要 Markdown。画布 1920×1080，底部 180 像素留给字幕。格式：{"background":"#rrggbb","layers":[{"type":"rect|ellipse|line|text","x":数字,"y":数字,"width":数字,"height":数字,"fill":"#rrggbb","text":"文字","start":0到1的数字,"end":0到1的数字}]}。每层全部字段必填，最多 30 层；x/y 为左上角，line 从 (x,y) 到 (x+width,y+height)，text 的 x/y 为基线，height 为字号。start/end 是出现和消失时间比例，start < end。需要移动的主体可加可选字段 motion: {"toX":数字,"toY":数字}，表示本图层出现后从 x/y 移动到的目标坐标。对照叙述让动作解释变化，标签保持可读。背景色直接写 background，不要铺全屏背景矩形。图层 x 在 0–1920、y 在 0–900、width 在 0–1920、height 在 0–900；文字字号 height 12–100。图形与文字不越过内容区，留出字幕区。画面用分阶段的可见变化解释动作；只画本段需要的信息，提问段遵守揭晓时机。不得添加未经材料支持的事实，不要编写旁白、代码、外链或 SVG。缺失信息不要猜测。`;
 const color = /^#[0-9a-fA-F]{6}$/;
 function validate(data) {
   if (!data || !color.test(data.background) || !Array.isArray(data.layers) || data.layers.length < 1 || data.layers.length > 30) throw new Error('Invalid scene background or layers');
   for (const l of data.layers) {
     if (!l || !['rect','ellipse','line','text'].includes(l.type) || !color.test(l.fill) || typeof l.text !== 'string' || l.text.length > 120) throw new Error('Invalid scene layer');
     for (const k of ['x','y','width','height','start','end']) if (typeof l[k] !== 'number' || !Number.isFinite(l[k])) throw new Error(`Invalid ${k}`);
+    if (l.motion !== undefined && (!Number.isFinite(l.motion?.toX) || !Number.isFinite(l.motion?.toY) ||
+        l.motion.toX < 0 || l.motion.toX > 1920 || l.motion.toY < 0 || l.motion.toY > 900)) throw new Error('Invalid motion target');
     if (l.x < 0 || l.x > 1920 || l.y < 0 || l.y > 900 || l.width < 0 || l.width > 1920 || l.height < 0 || l.height > 900 || l.start < 0 || l.end > 1 || l.start >= l.end || (l.type === 'text' && (l.height < 12 || l.height > 100))) throw new Error('Scene layer outside allowed bounds');
   }
   // Discard all properties beyond the schema, including possible code or URLs.
-  return {background:data.background,layers:data.layers.map(({type,x,y,width,height,fill,text,start,end}) => ({type,x,y,width,height,fill,text,start,end}))};
+  return {background:data.background,layers:data.layers.map(({type,x,y,width,height,fill,text,start,end,motion}) => ({type,x,y,width,height,fill,text,start,end,...(motion ? {motion:{toX:motion.toX,toY:motion.toY}} : {})}))};
 }
 function html(data, imageData) {
   const imageJson = JSON.stringify(imageData).replaceAll('<', '\\u003c');
@@ -112,7 +114,11 @@ window.seek = function(t) {
     node.style.opacity = visible ? String(fade) : '0';
     // Keep related shapes registered as one diagram; reveal the composition with a shared camera.
     const zoom = 0.58 + 0.42 * progress;
-    node.setAttribute('transform', 'translate(960 450) scale(' + zoom + ') translate(-960 -450)');
+    const t = Math.min(1, Math.max(0, (progress - l.start) / (l.end - l.start)));
+    const ease = t * t * (3 - 2 * t);
+    const dx = l.motion ? (l.motion.toX - l.x) * ease : 0;
+    const dy = l.motion ? (l.motion.toY - l.y) * ease : 0;
+    node.setAttribute('transform', 'translate(960 450) scale(' + zoom + ') translate(' + (dx - 960) + ' ' + (dy - 450) + ')');
     if (l.type === 'line') {
       const length = Math.hypot(l.width, l.height);
       const reveal = Math.min(1, Math.max(0, (progress - l.start) / Math.min(0.32, l.end - l.start)));

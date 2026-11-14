@@ -5,6 +5,13 @@ import path from 'node:path'
 const builtins = Object.freeze([
   { id: 'general', name: '通用知识讲解', description: '以清楚、易读的方式讲解知识，具体画面与节奏由本片蓝图决定。', source: { kind: 'builtin', label: '工作台内置' } },
   { id: 'editorial', name: '杂志式图文', description: '用鲜明标题、留白和图文组合组织信息，节奏沉稳，重点清晰。', source: { kind: 'builtin', label: '工作台内置' } },
+  { id: 'andy-pixel-quest', name: '像素闯关：地图与状态栏（Andy）', description: '以深靛色与亮黄色为主，使用清晰的像素边缘和有限色板。用冒险地图组织关卡，逐关呈现题目、选择与结果；按讲述内容安排进度或状态栏，最终汇总关键收获。地图和状态栏是可调整的设计建议，按题目制作。', source: { kind: 'builtin', label: '本地 .agents/skills/andy-vibe-knowledge/references/03-visual-systems.md 与 01-templates.md' } },
+  { id: 'heychengc-concrete', name: '具象动态图解（HeyChengC 参考）', description: '先找到观众认得出的实物或场景，让讲述中的动作在画面中发生；先展示例子，再解释结论。让同一场景和道具跨句延续，每次突出一个变化；提问或结论可留白，不强配图。', source: { kind: 'builtin', label: '本地 .agents/skills/vibe-knowledge-film/SKILL.md（具象讲解规则）' } },
+  { id: 'huashu-vox', name: '剪报调查：拼贴与标注', description: '用图片、纸片和短标题构成信息拼贴；以红线、框选或荧光笔标注引导注意力，让关键材料随讲述逐步出现。根据主题重新设计构图，不复用参考样片的固定场景。', source: { kind: 'builtin', label: 'https://github.com/alchaincyf/huashu-art-motion#看效果（Vox 解说语法）' } },
+  { id: 'huashu-whiteboard', name: '白板手绘：关系逐步展开', description: '用简洁线稿建立对象与关系，沿着讲解顺序逐步揭示线条和标注；保留清晰留白，让新出现的关系成为焦点。', source: { kind: 'builtin', label: 'https://github.com/alchaincyf/huashu-art-motion#看效果（白板解说语法）' } },
+  { id: 'swiss-kinetic', name: '瑞士动态排版：网格与大字', description: '以暖白和近黑为底，每个画面只用一个高对比强调色；大字沿非对称网格排列，保留大块留白，用线条和矩形组织层次。文字沿网格滑入，色块擦除或黑白反转作为节奏变化，避免装饰渐变和圆角卡片。', source: { kind: 'builtin', label: '本地 .agents/skills/motion-design-prompt-generator/design-systems/swiss-kinetic.md' } },
+  { id: 'vibe-night', name: '夜曲知识实验：暗底光点', description: '以黑色背景、金白与青色点亮重点，为抽象概念设计可看见的小实验；保持统一配色，中心主体清晰，字幕与画面各有空间。光点只辅助表达，不替代必要的具象对象。', source: { kind: 'builtin', label: 'https://github.com/zhaosenlin12-creator/vibe-know--skill#-看看做出来什么样（C 夜曲）' } },
+  { id: 'vibe-fable', name: '寓言场景：角色与变化仪表', description: '以人物或动物及明确场景承载行为机制，围绕一个持续可见的指标展示变化；同一角色和道具贯穿，结尾可回到开场场景，让变化本身说明结论。', source: { kind: 'builtin', label: 'https://github.com/zhaosenlin12-creator/vibe-know--skill#-最新一条-101-秒的完整成片（B 寓言）' } },
 ])
 
 const queues = new Map()

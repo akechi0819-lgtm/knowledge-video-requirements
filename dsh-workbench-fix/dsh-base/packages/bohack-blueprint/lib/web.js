@@ -65,6 +65,13 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
 
     try {
       // ── static page ─────────────────────────────────────────────────────
+      if (['/bohack/style-previews/andy.mp4', '/bohack/style-previews/hey.mp4'].includes(pathname) && (method === 'GET' || method === 'HEAD')) {
+        const file = path.join(path.dirname(HTML_FILE), 'style-previews', path.basename(pathname))
+        res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': (await stat(file)).size })
+        if (method === 'HEAD') res.end()
+        else createReadStream(file).pipe(res)
+        return
+      }
       if (pathname === '/bohack' || pathname === '/bohack/' || pathname === '/bohack/index.html') {
         if (method !== 'GET' && method !== 'HEAD') { text(res, 405, 'Method Not Allowed'); return }
         const html = await readFile(HTML_FILE, 'utf8')
@@ -216,7 +223,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         case '/bohack/api/style-github': out = await readGithubStyle(body); break
         case '/bohack/api/styles-import': out = await service.styles.importStyle(body); break
         case '/bohack/api/styles-update': out = await service.styles.update(body); break
-        case '/bohack/api/styles-select': out = await service.styles.select(body); break
+        case '/bohack/api/styles-select': out = await service.selectVisualStyle(body); break
         case '/bohack/api/styles-remove': out = await service.styles.remove(body); break
         case '/bohack/api/ingest':   out = await service.ingest(body); break
         case '/bohack/api/generate':

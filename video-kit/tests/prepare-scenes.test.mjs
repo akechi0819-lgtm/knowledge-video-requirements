@@ -12,7 +12,7 @@ const scene = {
   background: '#112233',
   layers: [{ type: 'text', x: 100, y: 100, width: 300, height: 40,
     fill: '#ffffff', text: '</script><script>evil()</script>', start: 0, end: 1,
-    onclick: 'evil()', href: 'https://example.invalid' }],
+    motion: {toX: 760, toY: 220, onclick: 'bad()'}, onclick: 'evil()', href: 'https://example.invalid' }],
   script: 'evil()',
 };
 
@@ -63,6 +63,7 @@ test('preserves narration and confines model output to data', async () => {
     assert.equal(data.script, undefined);
     assert.equal(data.layers[0].onclick, undefined);
     assert.equal(data.layers[0].href, undefined);
+    assert.deepEqual(data.layers[0].motion, {toX: 760, toY: 220});
     const html = await readFile(join(result.output, 'S01.html'), 'utf8');
     assert.ok(!html.includes('</script><script>evil()'));
     assert.ok(html.includes('\\u003c/script>'));
