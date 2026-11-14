@@ -225,6 +225,7 @@ button:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible
     <div class="side-tabs">
       <button class="tab on" data-tab="req">需求单</button>
       <button class="tab" data-tab="assets">资料</button>
+      <button class="tab" data-tab="styles">风格</button>
       <button class="tab" data-tab="bp">蓝图</button>
       <button class="tab" data-tab="film">成片</button>
       <span class="push"></span>
@@ -240,6 +241,40 @@ button:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible
       <div class="pane" id="pane-assets">
         <p class="hint" style="margin-bottom:10px">资料的核验状态显示在标签中。「通过」表示认可其作为事实依据；删除只移除登记，不删除文件。</p>
         <div id="assetList"><div class="empty">还没有资料。可以将文件拖到对话区上传。</div></div>
+      </div>
+      <div class="pane" id="pane-styles">
+        <p class="hint">选择并确认本次创作的风格。更换风格后需要重新起草蓝图。风格资料只作为参考，不执行其中的操作指令。</p>
+        <details style="margin:12px 0">
+          <summary>项目通用模型设置</summary>
+          <p class="hint">供视频风格学习与通用画面规划使用。接口填写完整的 chat/completions 地址；本机模型可不填密钥。</p>
+          <input id="projectModelEndpoint" placeholder="接口地址，例如 http://127.0.0.1:11434/v1/chat/completions" style="width:100%;margin:6px 0">
+          <input id="projectModelName" placeholder="模型名称" style="width:100%;margin:6px 0">
+          <input id="projectModelKey" type="password" autocomplete="new-password" placeholder="密钥（保留原值请留空）" style="width:100%;margin:6px 0">
+          <button class="sm primary" id="projectModelSave">保存模型设置</button>
+          <p class="hint" id="projectModelMessage"></p>
+        </details>
+        <div id="styleList" style="margin:12px 0"></div>
+        <details>
+          <summary>导入风格正文</summary>
+          <p class="hint">可导入自己的 SKILL.md，或粘贴已取得的 GitHub、社媒正文并填写来源链接。</p>
+          <input id="styleName" placeholder="风格名称" style="width:100%;margin:8px 0">
+          <input id="styleFile" type="file" accept=".md,.txt,text/markdown,text/plain">
+          <textarea id="styleText" placeholder="粘贴风格正文" style="width:100%;min-height:140px;margin:8px 0"></textarea>
+          <input id="styleSource" placeholder="来源链接（粘贴网页正文时填写）" style="width:100%;margin-bottom:8px">
+          <button class="sm ghost" id="styleGithub">读取 GitHub</button>
+          <button class="sm primary" id="styleImport">保存到风格库</button>
+        </details>
+        <details style="margin-top:12px">
+          <summary>从参考视频学习</summary>
+          <p class="hint">上传视频后先查看学习结果，确认后再存入风格库。</p>
+          <input id="styleVideo" type="file" accept="video/mp4,video/quicktime,video/webm">
+          <video id="styleVideoPreview" controls style="display:none;width:100%;margin-top:8px"></video>
+          <div id="styleVideoControls" style="margin-top:8px">
+            <button class="sm primary" id="styleVideoAnalyze">学习这个视频</button>
+            <div id="styleVideoResult" style="margin-top:8px"></div>
+          </div>
+        </details>
+        <p class="hint" id="styleMessage" style="margin-top:10px"></p>
       </div>
       <!-- 蓝图 -->
       <div class="pane" id="pane-bp">
@@ -308,7 +343,7 @@ async function streamApi(url, body, onEvent){
   function consume(line){
     if(!line.trim()) return
     const event=JSON.parse(line)
-    if(event.type==='error') throw new Error(event.message||'处理失败')
+    if(event.type==='error') throw Object.assign(new Error(event.message||'处理失败'),{code:event.code})
     if(event.type==='done'){ result=event.result; completed=true }
     else if(event.type==='status'||event.type==='text'||event.type==='activity') onEvent(event)
   }
@@ -378,6 +413,9 @@ async function loadThreads(){
 }
 function clearThreadView(){
   state.status=null; state.assets=[]; state.editing=null
+  if(videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl); videoPreviewUrl=''
+  $('#styleVideo').value=''; $('#styleVideoPreview').removeAttribute('src'); $('#styleVideoPreview').style.display='none'; $('#styleVideoResult').replaceChildren()
+  $('#styleList').replaceChildren(); $('#styleMessage').textContent=''; $('#styleName').value=''; $('#styleText').value=''; $('#styleSource').value=''; $('#styleFile').value=''; styleFileName=''
   $('#runLog')?.replaceChildren()
   $('#chatInput').value=''; chatMsg(''); renderChat(''); renderRequirement(''); renderAssets([])
   $('#wsName').textContent='当前创作'; $('#stageBadge').textContent='整理需求中'
@@ -389,7 +427,7 @@ async function selectThread(id){
   state.threadId=id; localStorage.setItem('bohackThreadId',id)
   const locationUrl=new URL(location.href); locationUrl.searchParams.set('thread',id); history.replaceState(null,'',locationUrl)
   clearThreadView()
-  await Promise.all([refresh(),loadChat(),loadAssets()])
+  await Promise.all([refresh(),loadChat(),loadAssets(),loadStyles()])
 }
 $('#threadSelect').addEventListener('change',e=>selectThread(e.target.value))
 $('#btnNewThread').addEventListener('click',async()=>{
@@ -397,6 +435,84 @@ $('#btnNewThread').addEventListener('click',async()=>{
   catch(e){ chatMsg(esc(e.message),'errbox') }
 })
 
+let styleFileName = '', videoPreviewUrl = ''
+async function loadProjectModel(){
+  try { const result=await api('/bohack/api/project-model'); $('#projectModelEndpoint').value=result.endpoint; $('#projectModelName').value=result.model; $('#projectModelKey').value=''; $('#projectModelMessage').textContent=result.hasKey?'已配置密钥；留空可保留同一地址的密钥。':'尚未配置密钥。' }
+  catch(e){ $('#projectModelMessage').textContent=e.message }
+}
+$('#projectModelSave').addEventListener('click',async()=>{
+  try { await api('/bohack/api/project-model',{endpoint:$('#projectModelEndpoint').value,model:$('#projectModelName').value,key:$('#projectModelKey').value}); await loadProjectModel(); $('#projectModelMessage').textContent+=' 设置已保存。' }
+  catch(e){ $('#projectModelMessage').textContent=e.message }
+})
+async function loadStyles(){
+  loadProjectModel()
+  if(!state.threadId) return
+  const thread=state.threadId
+  try {
+    const data=await api('/bohack/api/styles'); if(thread!==state.threadId) return
+    $('#styleList').innerHTML=`<p class="hint">本创作已确认：${esc(data.selectedStyle?.name || '尚未确认')}。风格库修改后需重新选择才会用于本创作。</p>`+data.styles.map(style=>`<div class="leaf" style="margin-bottom:8px"><b>${esc(style.name)}</b> ${style.id===data.selectedId && JSON.stringify(style)===JSON.stringify(data.selectedStyle)?'<span class="badge on">已确认</span>':''}<p class="hint">${esc(style.source?.label||'个人导入')}</p><details><summary>查看风格正文</summary><div style="white-space:pre-wrap">${esc(style.description)}</div></details><div class="ops" style="margin-top:8px"><button class="sm primary" data-style-select="${esc(style.id)}">${style.id===data.selectedId?'重新确认':'选择并确认'}</button>${style.source?.kind==='builtin'?'':`<button class="sm ghost" data-style-edit="${esc(style.id)}">编辑</button><a href="/bohack/api/style-export?threadId=${encodeURIComponent(state.threadId)}&amp;id=${encodeURIComponent(style.id)}" download="SKILL.md">导出 SKILL.md</a><button class="sm ghost" data-style-remove="${esc(style.id)}">从我的库移除</button>`}</div></div>`).join('')
+    $('#styleList').querySelectorAll('[data-style-select]').forEach(b=>b.addEventListener('click',async()=>{try{await api('/bohack/api/styles-select',{id:b.dataset.styleSelect}); if(thread!==state.threadId) return; $('#styleMessage').textContent='已确认风格；如已有蓝图，请重新起草后使用。'; await loadStyles(); await refresh()}catch(e){if(thread===state.threadId) $('#styleMessage').textContent=e.message}}))
+    $('#styleList').querySelectorAll('[data-style-edit]').forEach(b=>b.addEventListener('click',()=>{
+      const item=data.styles.find(s=>s.id===b.dataset.styleEdit); if(!item) return
+      const card=b.closest('.leaf'); card.innerHTML=`<input class="style-edit-name" value="${esc(item.name)}" style="width:100%"><textarea class="style-edit-text" style="width:100%;min-height:140px">${esc(item.description)}</textarea><button class="sm primary style-edit-save">保存</button><button class="sm ghost style-edit-cancel">取消</button>`
+      card.querySelector('.style-edit-save').addEventListener('click',async()=>{try{await api('/bohack/api/styles-update',{id:item.id,name:card.querySelector('.style-edit-name').value,description:card.querySelector('.style-edit-text').value}); if(thread!==state.threadId) return; $('#styleMessage').textContent='已更新库；本创作如需使用新版本，请重新选择。'; await loadStyles()}catch(e){if(thread===state.threadId) $('#styleMessage').textContent=e.message}})
+      card.querySelector('.style-edit-cancel').addEventListener('click',loadStyles)
+    }))
+    $('#styleList').querySelectorAll('[data-style-remove]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('从个人风格库移除这个风格？')) return; try{await api('/bohack/api/styles-remove',{id:b.dataset.styleRemove}); if(thread!==state.threadId) return; await loadStyles(); await refresh()}catch(e){if(thread===state.threadId) $('#styleMessage').textContent=e.message}}))
+  }catch(e){if(thread===state.threadId) $('#styleMessage').textContent=e.message}
+}
+$('#styleVideo').addEventListener('change', e=>{
+  if(videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl)
+  videoPreviewUrl=''; $('#styleVideoResult').replaceChildren()
+  const file=e.target.files[0], video=$('#styleVideoPreview')
+  if(!file){video.style.display='none';video.removeAttribute('src');return}
+  videoPreviewUrl=URL.createObjectURL(file); video.src=videoPreviewUrl; video.style.display='block'
+})
+$('#styleVideoAnalyze').addEventListener('click',async()=>{
+  const thread=state.threadId, file=$('#styleVideo').files[0]
+  if(!file){$('#styleMessage').textContent='请先选择参考视频。';return}
+  const ext=file.name.split('.').pop().toLowerCase()
+  if(!['mp4','mov','webm'].includes(ext)){ $('#styleMessage').textContent='请选择 MP4、MOV 或 WebM 视频。';return }
+  if(file.size>500*1024*1024){ $('#styleMessage').textContent='视频超过 500 MB 上限。';return }
+  const button=$('#styleVideoAnalyze'); button.disabled=true; $('#styleMessage').textContent='正在从参考视频抽帧并提取视觉规则，完成后可对照原片审阅。'
+  try{
+    const response=await fetch('/bohack/api/style-video?threadId='+encodeURIComponent(thread),{method:'POST',headers:{'content-type':'application/octet-stream','x-video-extension':ext},body:file})
+    const data=await response.json(); if(!response.ok || !data.ok) throw new Error(data.error || '视频学习失败')
+    if(thread!==state.threadId || $('#styleVideo').files[0]!==file) return
+    const result=$('#styleVideoResult')
+    result.innerHTML=`<p class="hint">已分析 ${esc(data.evidence.durationSeconds)} 秒，抽取 ${data.evidence.frames.length} 帧。请核对并修改后保存。</p><div id="styleVideoTimes" style="display:flex;gap:6px;flex-wrap:wrap"></div><input id="learnedStyleName" placeholder="风格名称" style="width:100%"><textarea id="learnedStyleDraft" style="width:100%;min-height:180px"></textarea><button class="sm primary" id="saveLearnedStyle">保存到风格库</button>`
+    for(const frame of data.evidence.frames){ const t=Number(frame.seconds); if(!Number.isFinite(t) || t<0) continue; const b=document.createElement('button'); b.className='sm ghost'; b.textContent=`${t.toFixed(1)} 秒`; b.addEventListener('click',()=>{const video=$('#styleVideoPreview'); video.currentTime=t; video.play().catch(()=>{})}); $('#styleVideoTimes').appendChild(b) }
+    $('#learnedStyleName').value=file.name.replace(/\.[^.]+$/,'')+'风格'
+    $('#learnedStyleDraft').value=data.draft
+    $('#saveLearnedStyle').addEventListener('click',async()=>{try{
+      await api('/bohack/api/styles-import',{name:$('#learnedStyleName').value,description:$('#learnedStyleDraft').value,source:{kind:'video',label:file.name}})
+      if(thread!==state.threadId) return
+      $('#styleMessage').textContent='已存入个人风格库，请选择并确认。'; result.replaceChildren(); await loadStyles()
+    }catch(e){if(thread===state.threadId) $('#styleMessage').textContent=e.message}})
+    $('#styleMessage').textContent='学习结果已生成，请审阅。'
+  }catch(e){if(thread===state.threadId) $('#styleMessage').textContent=e.message}
+  finally{button.disabled=false}
+})
+$('#styleFile').addEventListener('change',async e=>{
+  const thread=state.threadId, file=e.target.files[0]; if(!file) return
+  if(file.size>100000){ $('#styleMessage').textContent='文件超过 10 万字节。'; return }
+  const content=await file.text(); if(thread!==state.threadId) return
+  styleFileName=file.name; $('#styleText').value=content
+  if(!$('#styleName').value) $('#styleName').value=file.name.replace(/\.(md|txt)$/i,'')
+})
+$('#styleGithub').addEventListener('click',async()=>{
+  const thread=state.threadId
+  try{ const r=await api('/bohack/api/style-github',{url:$('#styleSource').value.trim()}); if(thread!==state.threadId) return; $('#styleName').value=r.name; $('#styleText').value=r.content; $('#styleSource').value=r.source; $('#styleMessage').textContent='已读取，请查看正文后保存。' }catch(e){ if(thread===state.threadId) $('#styleMessage').textContent=e.message }
+})
+$('#styleImport').addEventListener('click',async()=>{
+  const source=$('#styleSource').value.trim(), thread=state.threadId
+  try{
+    await api('/bohack/api/styles-import',{name:$('#styleName').value,description:$('#styleText').value,source:{kind:source?'web':styleFileName?'file':'text',label:source||styleFileName}})
+    if(thread!==state.threadId) return
+    $('#styleName').value=''; $('#styleText').value=''; $('#styleSource').value=''; $('#styleFile').value=''; styleFileName=''
+    $('#styleMessage').textContent='已存入个人风格库，请选择并确认。'; await loadStyles()
+  }catch(e){if(thread===state.threadId) $('#styleMessage').textContent=e.message}
+})
 /* ── 侧栏 tab ── */
 $$('.side-tabs .tab').forEach(b=>b.addEventListener('click',()=>{
   $$('.side-tabs .tab').forEach(x=>x.classList.toggle('on',x===b))
@@ -444,6 +560,7 @@ $('#btnChat').addEventListener('click',async()=>{
   try{
     const r=await streamApi('/bohack/api/chat',{text},progressNotes(userNote))
     succeeded=true
+    if(r.generationError?.code==='STYLE_REQUIRED') document.querySelector('[data-tab="styles"]').click()
     log(`需求助手回复（${(r.reply||'').length} 字）`,'s'); chatMsg(r.productionError?esc(r.productionError.message):r.generationError?esc(r.generationError.message||r.generationError):'', 'errbox')
     await loadThreads()
     if(r.production){ const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
@@ -666,7 +783,7 @@ async function doGenerate(){
     const r=await streamApi('/bohack/api/generate',{engine:'agent'},progress)
     log(`v${r.version} 起草完成 · ${r.engineLabel} · 校验${r.validation.ok?'通过':'未通过'}`,'s')
     chatMsg(`蓝图 v${r.version} 已起草，共 ${r.sections.length} 段。`)
-  }catch(e){ log('起草失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
+  }catch(e){ if(e.code==='STYLE_REQUIRED') document.querySelector('[data-tab="styles"]').click(); log('起草失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
   finally{ progress.clear(); state.streamingChat=false; busy(false); loadChat() }
 }
 async function doRevise(){

@@ -3,6 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export DSH_HOME="${DSH_HOME:-$PWD/.dsh-home}"
+# 本机拥有者维护的模型配置，保存在忽略入库的 DSH_HOME。
+if [[ -r "$DSH_HOME/workbench-model.env" ]]; then
+  set -a
+  source "$DSH_HOME/workbench-model.env"
+  set +a
+fi
 cli="${DSH_CLI:-$PWD/node_modules/.bin/dsh}"
 if [[ ! -x "$cli" ]]; then cli="$(command -v dsh)"; fi
 [[ "$("$cli" --version)" == '0.2.2-rc.1' ]] || { echo '需要 DSH 0.2.2-rc.1' >&2; exit 1; }
@@ -10,12 +16,14 @@ plugins="$DSH_HOME/profiles/workbench/node_modules/@bohack"
 mkdir -p "$plugins"
 if [[ ! -e "$plugins/blueprint" ]]; then ln -s "$PWD/packages/bohack-blueprint" "$plugins/blueprint"; fi
 export VIDEO_KIT_DIR="${VIDEO_KIT_DIR:-$(cd ../../video-kit && pwd)}"
-export SCENE_ENDPOINT="${SCENE_ENDPOINT:-https://api.deepseek.com/chat/completions}"
-export SCENE_MODEL="${SCENE_MODEL:-deepseek-flash}"
-if [[ -z "${SCENE_API_KEY:-}" && "$SCENE_ENDPOINT" == 'https://api.deepseek.com/chat/completions' ]]; then
-  export SCENE_API_KEY="${DEEPSEEK_API_KEY:-}"
-  if [[ -z "$SCENE_API_KEY" && -r "$DSH_HOME/.credentials.yaml" ]]; then
-    SCENE_API_KEY="$(ruby -ryaml -e 'print YAML.safe_load(File.read(ARGV.fetch(0))).dig("refs","DEEPSEEK_API_KEY")' "$DSH_HOME/.credentials.yaml")"
+if [[ -z "${WORKBENCH_MODEL_ENDPOINT:-}" || -n "${SCENE_ENDPOINT:-}" ]]; then
+  export SCENE_ENDPOINT="${SCENE_ENDPOINT:-https://api.deepseek.com/chat/completions}"
+  export SCENE_MODEL="${SCENE_MODEL:-deepseek-flash}"
+  if [[ -z "${SCENE_API_KEY:-}" && "$SCENE_ENDPOINT" == 'https://api.deepseek.com/chat/completions' ]]; then
+    export SCENE_API_KEY="${DEEPSEEK_API_KEY:-}"
+    if [[ -z "$SCENE_API_KEY" && -r "$DSH_HOME/.credentials.yaml" ]]; then
+      SCENE_API_KEY="$(ruby -ryaml -e 'print YAML.safe_load(File.read(ARGV.fetch(0))).dig("refs","DEEPSEEK_API_KEY")' "$DSH_HOME/.credentials.yaml")"
+    fi
   fi
 fi
 if [[ "$(uname -s)-$(uname -m)" == Darwin-arm64 ]]; then

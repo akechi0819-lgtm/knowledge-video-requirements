@@ -59,7 +59,7 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
     if (id === 'legacy') { await metadata(id); return { service: legacyService, engine: legacyEngine } }
     await metadata(id) // Reject unknown threads instead of creating them implicitly.
     if (!instances.has(id)) {
-      const threadConfig = { ...config, workspace: threadDir(id) }
+      const threadConfig = { ...config, workspace: threadDir(id), styleLibraryRoot: root }
       const instance = syncInstructions(threadConfig.workspace).then(() => ({
         service: createService(ctx, threadConfig), engine: createEngine(ctx, threadConfig)
       })).catch(error => { instances.delete(id); throw error })

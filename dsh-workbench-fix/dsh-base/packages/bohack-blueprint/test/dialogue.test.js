@@ -9,6 +9,7 @@ test('restores history and blocks stale requirements', async () => {
   const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-dialogue-'))
   try {
     const service = createService({}, { workspace })
+    await service.styles.select({ id: 'general' })
     const inbox = path.join(workspace, 'inbox', '需求.md')
     let turn = 0, recovered = ''
     const engine = {
@@ -56,6 +57,7 @@ test('dialogue text materials are registered and reach blueprint generation', as
   const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-material-'))
   try {
     const service = createService({}, { workspace })
+    await service.styles.select({ id: 'general' })
     let received
     const engine = {
       async chatTurn() {

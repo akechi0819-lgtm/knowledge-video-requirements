@@ -44,3 +44,25 @@ test('streaming emits progress, isolates threads, preserves JSON and reports err
     assert.deepEqual(error.at(-1), { type: 'error', message: 'failed' })
   } finally { await new Promise(resolve => server.close(resolve)) }
 })
+
+test('video upload streams to temporary storage and returns review data without paths', async () => {
+  const { readFile, stat } = await import('node:fs/promises')
+  let tempPath
+  const analyzer = async ({videoPath, outputDir}) => {
+    tempPath = videoPath
+    assert.equal(await readFile(videoPath, 'utf8'), 'video bytes')
+    return { draft:'节奏明快', evidence:{durationSeconds:3,frames:[{seconds:1,path:outputDir+'/frame.jpg'}]} }
+  }
+  const handler = createWebHandler({}, {}, {}, null, analyzer)
+  const server = http.createServer(handler)
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
+  try {
+    const url=`http://127.0.0.1:${server.address().port}/bohack/api/style-video`
+    const invalid=await fetch(url,{method:'POST',headers:{'x-video-extension':'exe'},body:'x'})
+    assert.equal(invalid.status,400)
+    const response=await fetch(url,{method:'POST',headers:{'x-video-extension':'mp4'},body:'video bytes'})
+    const result=await response.json()
+    assert.deepEqual(result, {ok:true,draft:'节奏明快',evidence:{durationSeconds:3,frames:[{seconds:1}]}})
+    await assert.rejects(stat(tempPath), {code:'ENOENT'})
+  } finally { await new Promise(resolve=>server.close(resolve)) }
+})

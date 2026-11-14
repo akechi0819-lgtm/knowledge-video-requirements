@@ -6,9 +6,12 @@
  * the in-process capability service — they are NOT a team contract and carry
  * no authentication (bound to 127.0.0.1 by the shipped webserver config).
  */
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, stat, mkdtemp, open, rm } from 'node:fs/promises'
+import os from 'node:os'
+import { analyzeVideo } from './video-style.js'
 import { createReadStream } from 'node:fs'
 import path from 'node:path'
+import { readGithubStyle } from './github-style.js'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -47,7 +50,7 @@ function errorBody(e) {
   return { ok: false, error: String(e?.message || e), code: e?.code || 'BOHACK_ERROR' }
 }
 
-export function createWebHandler(legacyService, legacyEngine, ctx, threads) {
+export function createWebHandler(legacyService, legacyEngine, ctx, threads, videoAnalyzer = analyzeVideo) {
   const queues = new WeakMap()
   async function runTurn(engine, task) {
     const previous = queues.get(engine) || Promise.resolve()
@@ -101,6 +104,34 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads) {
         if (method === 'HEAD') res.end(); else createReadStream(file, { start, end }).pipe(res)
         return
       }
+      if (pathname === '/bohack/api/style-video' && method === 'POST') {
+        const extension = String(req.headers['x-video-extension'] || '').toLowerCase()
+        if (!['mp4', 'mov', 'webm'].includes(extension)) throw new Error('请选择 MP4、MOV 或 WebM 视频。')
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'bohack-style-video-'))
+        let result
+        try {
+          const videoPath = path.join(dir, `reference.${extension}`)
+          const handle = await open(videoPath, 'wx', 0o600)
+          try {
+            let size = 0
+            for await (const chunk of req) {
+              size += chunk.length
+              if (size > 500 * 1024 * 1024) throw new Error('视频超过 500 MB 上限。')
+              await handle.writeFile(chunk)
+            }
+            if (!size) throw new Error('视频文件为空。')
+          } finally { await handle.close() }
+          result = await videoAnalyzer({ videoPath, outputDir: dir, projectModel: await service.projectModel?.resolve() })
+        } finally { await rm(dir, { recursive: true, force: true }) }
+        json(res, 200, { ok: true, draft: result.draft, evidence: { durationSeconds: result.evidence.durationSeconds, frames: result.evidence.frames.map(frame => ({ seconds: frame.seconds })) } }); return
+      }
+      if (pathname === '/bohack/api/style-export' && method === 'GET') {
+        const markdown = await service.styles.exportMarkdown({ id: params.get('id') })
+        res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'content-disposition': 'attachment; filename=SKILL.md', 'cache-control': 'no-store' }); res.end(markdown); return
+      }
+      if (pathname === '/bohack/api/project-model' && method === 'GET') { json(res, 200, await service.projectModel.view()); return }
+      if (pathname === '/bohack/api/styles' && method === 'GET') { json(res, 200, await service.styles.list()); return }
+
       // ── read endpoints ──────────────────────────────────────────────────
       if (pathname === '/bohack/api/status' && method === 'GET') {
         json(res, 200, await service.status()); return
@@ -181,6 +212,12 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads) {
       }
       let out
       switch (pathname) {
+        case '/bohack/api/project-model': out = await service.projectModel.save(body); break
+        case '/bohack/api/style-github': out = await readGithubStyle(body); break
+        case '/bohack/api/styles-import': out = await service.styles.importStyle(body); break
+        case '/bohack/api/styles-update': out = await service.styles.update(body); break
+        case '/bohack/api/styles-select': out = await service.styles.select(body); break
+        case '/bohack/api/styles-remove': out = await service.styles.remove(body); break
         case '/bohack/api/ingest':   out = await service.ingest(body); break
         case '/bohack/api/generate':
           // fresh:true = 换车（新需求单 → 新蓝图会话），丢弃旧会话句柄。
@@ -207,7 +244,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads) {
     } catch (e) {
       try { ctx.logger?.warn?.('[bohack/web]', String(e?.stack || e)) } catch { /* ignore */ }
       if (!res.headersSent) json(res, 400, errorBody(e))
-      else { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify({ type: 'error', message: String(e?.message || e) }) + '\n'); res.end() }
+      else { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify({ type: 'error', code: e?.code, message: String(e?.message || e) }) + '\n'); res.end() }
     }
   }
 }

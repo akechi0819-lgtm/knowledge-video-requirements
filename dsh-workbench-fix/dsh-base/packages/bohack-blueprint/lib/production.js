@@ -19,9 +19,9 @@ export function createProduction(workspace, config = {}) {
     if (state.status === 'running' && !active) { state.status = 'interrupted'; state.error = '工作台已重启，制作中断，请重新制作。'; await save(state) }
     return state
   }
-  function run(script, args) {
+  function run(script, args, env = process.env) {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [path.join(kit, script), ...args], { cwd: kit, env: process.env, stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = spawn(process.execPath, [path.join(kit, script), ...args], { cwd: kit, env, stdio: ['ignore', 'ignore', 'pipe'] })
       let errors = ''
       child.stderr.on('data', chunk => { errors = (errors + chunk.toString()).slice(-4000) })
       child.on('error', reject)
@@ -67,7 +67,19 @@ export function createProduction(workspace, config = {}) {
       try { sceneConfig = JSON.parse(await readFile(path.join(workspace, 'hotpot-demo-scene.json'), 'utf8')) }
       catch (e) { if (e.code !== 'ENOENT') throw e }
       if (sceneConfig && sceneConfig.version !== 1) throw new Error('本创作的专用场景配置版本不支持。')
-      if (!sceneConfig && (!process.env.SCENE_API_KEY || !process.env.SCENE_ENDPOINT || !process.env.SCENE_MODEL)) throw new Error('未配置 SCENE_API_KEY、SCENE_ENDPOINT 或 SCENE_MODEL，无法生成场景。')
+      // Choosing a style explicitly routes this version through the style-aware renderer.
+      if (production.style) sceneConfig = null
+      const sceneMode = process.env.SCENE_MODE || 'api'
+      if (!sceneConfig && !['api', 'dsh'].includes(sceneMode)) throw new Error('SCENE_MODE 只支持 api 或 dsh。')
+      const customScene = !(await config.projectModel?.isSaved()) && Boolean(process.env.SCENE_ENDPOINT || process.env.SCENE_MODEL)
+      const projectModel = config.projectModel ? await config.projectModel.resolve() : { endpoint: process.env.WORKBENCH_MODEL_ENDPOINT, model: process.env.WORKBENCH_MODEL_NAME, key: process.env.WORKBENCH_MODEL_KEY }
+      const endpoint = customScene ? process.env.SCENE_ENDPOINT : projectModel.endpoint
+      const model = customScene ? process.env.SCENE_MODEL : projectModel.model
+      const key = customScene ? process.env.SCENE_API_KEY : projectModel.key
+      if (!sceneConfig && sceneMode === 'api' && (!model || !endpoint ||
+          (!key && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(endpoint).hostname)))) {
+        throw new Error('未配置可用的画面模型，请设置项目通用模型或 SCENE 专用模型。')
+      }
       await mkdir(root, { recursive: true })
       const id = randomUUID(), dir = path.join(root, id)
       await mkdir(dir)
@@ -80,7 +92,7 @@ export function createProduction(workspace, config = {}) {
           const scenes = path.join(dir, 'scenes'), film = path.join(dir, 'film')
           const sceneArgs = ['--input', path.join(dir, 'production.json'), '--output', scenes]
           if (sceneConfig) await run('scripts/hotpot-scenes.mjs', sceneArgs)
-          else await run('scripts/prepare-scenes.mjs', [...sceneArgs, '--endpoint', process.env.SCENE_ENDPOINT, '--model', process.env.SCENE_MODEL])
+          else await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', endpoint, '--model', model], { ...process.env, SCENE_API_KEY: key || '' })
           state.phase = '配音与渲染'; await save(state)
           const args = ['--prepared', path.join(scenes, 'production.json'), '--out', film]
           if (process.env.VIDEO_VOICE) args.push('--voice', process.env.VIDEO_VOICE)

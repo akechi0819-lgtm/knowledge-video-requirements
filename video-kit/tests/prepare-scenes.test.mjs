@@ -46,7 +46,8 @@ const base = () => ({ status: '准备制作', topic: '潮汐', userRequirements:
     facts: ['月球影响海水'], visual: '月球与海洋', narration: '月球影响潮汐。', notes: null, gaps: [] }] });
 
 test('preserves narration and confines model output to data', async () => {
-  const result = await runCase(base());
+  const input = base(); input.style = { id:'editorial', name:'杂志式图文', description:'暖色与留白', source:{kind:'text',label:'资料'} };
+  const result = await runCase(input);
   try {
     assert.equal(result.code, 0, result.stderr);
     const production = JSON.parse(await readFile(join(result.output, 'production.json')));
@@ -57,6 +58,7 @@ test('preserves narration and confines model output to data', async () => {
     assert.deepEqual(sent.userRequirements, ['简洁']);
     assert.equal(sent.notes, null);
     assert.deepEqual(sent.gaps, []);
+    assert.deepEqual(sent.visualStyle, { name:'杂志式图文', description:'暖色与留白' });
     const data = JSON.parse(await readFile(join(result.output, 'S01.scene.json')));
     assert.equal(data.script, undefined);
     assert.equal(data.layers[0].onclick, undefined);
@@ -101,16 +103,18 @@ test('DSH mode reads a completed native final event', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'prepare-scenes-dsh-test-'));
   try {
     const fake = join(dir, 'dsh');
-    await writeFile(fake, `#!/usr/bin/env node\nprocess.stdin.resume(); process.stdin.on('end', () => console.log(${JSON.stringify(JSON.stringify({type:'final',reason:{kind:'completed'},text:JSON.stringify(scene)}))}));\n`);
+    await writeFile(fake, `#!/usr/bin/env node\nlet data='';process.stdin.on('data', x=>data+=x);process.stdin.on('end', () => {require('fs').writeFileSync(${JSON.stringify(join(dir, 'request.txt'))},data);console.log(${JSON.stringify(JSON.stringify({type:'final',reason:{kind:'completed'},text:JSON.stringify(scene)}))})});\n`);
     await chmod(fake, 0o755);
     const input = join(dir, 'input.json'), output = join(dir, 'out');
-    await writeFile(input, JSON.stringify(base()));
+    const doc = base(); doc.style = { id:'editorial', name:'杂志式图文', description:'暖色与留白' };
+    await writeFile(input, JSON.stringify(doc));
     const child = spawn(process.execPath, [script, '--input', input, '--output', output, '--dsh'], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
     let stderr = '';
     child.stderr.on('data', chunk => stderr += chunk);
     const code = await new Promise(resolve => child.on('close', resolve));
     assert.equal(code, 0, stderr);
     assert.equal(JSON.parse(await readFile(join(output, 'production.json'))).sections[0].scene, 'S01.html');
+    assert.match(await readFile(join(dir, 'request.txt'), 'utf8'), /暖色与留白/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

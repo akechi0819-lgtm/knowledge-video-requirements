@@ -33,3 +33,6 @@ workspace/outbox/状态.json
 Thumbs.db
 
 workspace/threads/
+
+workspace/style-library.json
+workspace/style-selection.json

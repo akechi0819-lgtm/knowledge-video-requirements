@@ -42,6 +42,12 @@ test('production requires a current confirmed blueprint and executes the kit con
     assert.deepEqual(await readFile(path.join(bundle, exported.sections[0].image)), png)
     assert.equal(await readFile(await service.production.file('video'), 'utf8'), 'video')
     await assert.rejects(service.production.file('../video'), /不可用/)
+    await writeFile(path.join(kit, 'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv; if(!a.includes('--dsh')) throw Error('missing dsh mode'); await mkdir(a[5]); await writeFile(a[5]+'/production.json','{}')`)
+    process.env.SCENE_MODE = 'dsh'
+    delete process.env.SCENE_API_KEY
+    assert.equal((await service.production.start()).status, 'running')
+    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
+    assert.equal(state.status, 'completed', state.error)
     await writeFile(path.join(kit, 'scripts/hotpot-scenes.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv; await mkdir(a[5]); await writeFile(a[5]+'/production.json','{}')`)
     await writeFile(path.join(workspace, 'hotpot-demo-scene.json'), JSON.stringify({version:1}))
     delete process.env.SCENE_API_KEY
@@ -49,7 +55,7 @@ test('production requires a current confirmed blueprint and executes the kit con
     for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
     assert.equal(state.status, 'completed', state.error)
   } finally {
-    for (const key of ['SCENE_API_KEY','SCENE_ENDPOINT','SCENE_MODEL','VIDEO_VOICE','VOICE_NAME']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
+    for (const key of ['SCENE_API_KEY','SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE','VIDEO_VOICE','VOICE_NAME']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
     await rm(root, { recursive:true, force:true })
   }
 })
