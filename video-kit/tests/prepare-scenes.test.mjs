@@ -179,3 +179,24 @@ test('rejects omitted planned assets', async () => {
   try { assert.notEqual(result.code, 0); assert.match(result.stderr, /Missing asset id: traveler/); }
   finally { await rm(result.dir, {recursive:true, force:true}); }
 });
+
+
+test('preserves asset rotation and orbit and rejects invalid pivots', async () => {
+  const input = base();
+  input.sections[0].assets = [{id:'moon',name:'月球',type:'character',image:'assets/moon.svg'}];
+  const layer = {type:'asset',assetId:'moon',x:300,y:200,width:100,height:100,fill:'#ffffff',text:'',start:0,end:1,rotation:{from:0,to:-360},orbit:{cx:960,cy:450,from:0,to:360}};
+  const modelScene = {background:'#000000',layers:[layer]};
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+  const result = await runCase(input, modelScene, null, {'moon.svg':svg});
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    const data = JSON.parse(await readFile(join(result.output, 'S01.scene.json')));
+    assert.deepEqual(data.layers[0].rotation, {from:0,to:-360});
+    assert.deepEqual(data.layers[0].orbit, {cx:960,cy:450,from:0,to:360});
+    const html = await readFile(join(result.output, 'S01.html'), 'utf8');
+    assert.match(html, /orbitTransform \+ selfTransform/);
+  } finally { await rm(result.dir, {recursive:true, force:true}); }
+  const bad = await runCase(input, {background:'#000000',layers:[{...layer, orbit:{cx:2000,cy:450,from:0,to:360}}]}, null, {'moon.svg':svg});
+  try { assert.notEqual(bad.code, 0); assert.match(bad.stderr, /Invalid orbit/); }
+  finally { await rm(bad.dir, {recursive:true, force:true}); }
+});

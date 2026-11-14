@@ -36,5 +36,4 @@ fi
 if [[ -z "${VIDEO_PYTHON:-}" && "$(uname)" == Darwin ]] && python3 -c 'import numpy, PIL' 2>/dev/null; then
   export VIDEO_PYTHON="$(command -v python3)"
 fi
-if [[ "$(uname)" == Darwin && -z "${VIDEO_VOICE:-}" && -z "${VOICE_NAME:-}" ]]; then export VIDEO_VOICE=say:Tingting; fi
 exec "$cli" workbench --port "${WORKBENCH_PORT:-3099}" --no-open "$@"

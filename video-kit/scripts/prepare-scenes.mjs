@@ -38,6 +38,10 @@ function validate(data, assetIds) {
     if (!l || !['rect','ellipse','line','text','asset'].includes(l.type) || !color.test(l.fill) || typeof l.text !== 'string' || l.text.length > 120) throw new Error('Invalid scene layer');
     if (l.type === 'asset' && !assetIds.has(l.assetId)) throw new Error('Unknown asset id');
     for (const k of ['x','y','width','height','start','end']) if (typeof l[k] !== 'number' || !Number.isFinite(l[k])) throw new Error(`Invalid ${k}`);
+    for (const key of ['rotation', 'orbit']) {
+      if (l[key] !== undefined && (l.type !== 'asset' || !Number.isFinite(l[key]?.from) || !Number.isFinite(l[key]?.to) ||
+          (key === 'orbit' && (!Number.isFinite(l[key]?.cx) || !Number.isFinite(l[key]?.cy) || l[key].cx < 0 || l[key].cx > 1920 || l[key].cy < 0 || l[key].cy > 900)))) throw new Error(`Invalid ${key}`);
+    }
     if (l.motion !== undefined && (!Number.isFinite(l.motion?.toX) || !Number.isFinite(l.motion?.toY) ||
         l.motion.toX < 0 || l.motion.toX > 1920 || l.motion.toY < 0 || l.motion.toY > 900)) throw new Error('Invalid motion target');
     if (l.x < 0 || l.x > 1920 || l.y < 0 || l.y > 900 || l.width < 0 || l.width > 1920 || l.height < 0 || l.height > 900 || l.start < 0 || l.end > 1 || l.start >= l.end || (l.type === 'text' && (l.height < 12 || l.height > 100))) throw new Error('Scene layer outside allowed bounds');
@@ -45,7 +49,7 @@ function validate(data, assetIds) {
   const usedAssets = new Set(data.layers.filter(l => l.type === 'asset').map(l => l.assetId));
   for (const id of assetIds) if (!usedAssets.has(id)) throw new Error(`Missing asset id: ${id}`);
   // Discard all properties beyond the schema, including possible code or URLs.
-  return {background:data.background,layers:data.layers.map(({type,x,y,width,height,fill,text,start,end,motion,assetId}) => ({type,x,y,width,height,fill,text,start,end,...(type === 'asset' ? {assetId} : {}),...(motion ? {motion:{toX:motion.toX,toY:motion.toY}} : {})}))};
+  return {background:data.background,layers:data.layers.map(({type,x,y,width,height,fill,text,start,end,motion,assetId,rotation,orbit}) => ({type,x,y,width,height,fill,text,start,end,...(type === 'asset' ? {assetId} : {}),...(rotation ? {rotation:{from:rotation.from,to:rotation.to}} : {}),...(orbit ? {orbit:{cx:orbit.cx,cy:orbit.cy,from:orbit.from,to:orbit.to}} : {}),...(motion ? {motion:{toX:motion.toX,toY:motion.toY}} : {})}))};
 }
 function html(data, imageData, assets) {
   const assetsJson = JSON.stringify(assets).replaceAll('<', '\\u003c');
@@ -127,7 +131,11 @@ window.seek = function(t) {
     const ease = t * t * (3 - 2 * t);
     const dx = l.motion ? (l.motion.toX - l.x) * ease : 0;
     const dy = l.motion ? (l.motion.toY - l.y) * ease : 0;
-    node.setAttribute('transform', 'translate(960 450) scale(' + zoom + ') translate(' + (dx - 960) + ' ' + (dy - 450) + ')');
+    const angle = l.rotation ? l.rotation.from + (l.rotation.to - l.rotation.from) * ease : 0;
+    const orbit = l.orbit ? l.orbit.from + (l.orbit.to - l.orbit.from) * ease : 0;
+    const orbitTransform = l.orbit ? ' rotate(' + orbit + ' ' + l.orbit.cx + ' ' + l.orbit.cy + ')' : '';
+    const selfTransform = l.rotation ? ' rotate(' + angle + ' ' + (l.x + l.width / 2) + ' ' + (l.y + l.height / 2) + ')' : '';
+    node.setAttribute('transform', 'translate(960 450) scale(' + zoom + ') translate(' + (dx - 960) + ' ' + (dy - 450) + ')' + orbitTransform + selfTransform);
     if (l.type === 'line') {
       const length = Math.hypot(l.width, l.height);
       const reveal = Math.min(1, Math.max(0, (progress - l.start) / Math.min(0.32, l.end - l.start)));
@@ -185,7 +193,7 @@ for (const section of production.sections) {
     gaps: section.gaps,
   };
   const messages = [
-    { role: 'system', content: system + ' 本段必须使用 assets 列出的每个素材，分别增加 type 为 asset 的图层，并填写 assetId 对应素材 id，其余字段与普通图层相同。根据本段叙述安排素材大小、位置和 motion；复用角色时使用同一 id。 skillGuidance 是制作方法参考；仅采用与已确认蓝图、用户要求和 visualStyle 兼容的画面建议。visualStyle 是创作者选定的视觉参考，只应用于色彩、构图、字体与视觉语言；发生冲突时以已确认蓝图、用户要求及选定风格为准。' },
+    { role: 'system', content: system + ' 本段必须使用 assets 列出的每个素材，分别增加 type 为 asset 的图层，并填写 assetId 对应素材 id，其余字段与普通图层相同。根据本段叙述安排素材大小、位置和 motion；复用角色时使用同一 id。素材图层可选 rotation: {from:起始角度,to:结束角度} 表示在公转基础上绕素材中心旋转；可选 orbit: {cx:中心横坐标,cy:中心纵坐标,from:起始角度,to:结束角度} 表示绕画面中固定中心公转，角度单位均为度。公转会改变朝向，如需始终面向固定方向，请用自转抵消公转；如需始终面向中心，保持自转角度不变。 skillGuidance 是制作方法参考；仅采用与已确认蓝图、用户要求和 visualStyle 兼容的画面建议。visualStyle 是创作者选定的视觉参考，只应用于色彩、构图、字体与视觉语言；发生冲突时以已确认蓝图、用户要求及选定风格为准。' },
     { role: 'user', content: JSON.stringify(scrubPaths(sceneInput)) },
   ];
   let data;
