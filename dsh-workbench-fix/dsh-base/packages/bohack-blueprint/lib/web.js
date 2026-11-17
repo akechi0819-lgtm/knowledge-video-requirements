@@ -65,6 +65,12 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
     try { pathname = new URL(req.url || '/', 'http://localhost').pathname } catch { /* keep default */ }
     const method = (req.method || 'GET').toUpperCase()
 
+    // CSRF gate: this API has no authentication, so only loopback pages may call
+    // it, and POSTs must carry a custom header cross-origin simple requests cannot set.
+    const origin = req.headers.origin
+    if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin)) { text(res, 403, 'Forbidden'); return }
+    if (method === 'POST' && !req.headers['x-bohack-client']) { text(res, 403, 'Forbidden'); return }
+
     try {
       const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
       const asset = pathname.slice('/bohack/'.length)
@@ -94,7 +100,11 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
           if (ext === '.svg') headers['content-security-policy'] = "default-src 'none'; style-src 'unsafe-inline'"
           res.writeHead(200, headers)
           if (method === 'HEAD') res.end()
-          else createReadStream(file).pipe(res)
+          else {
+            const stream = createReadStream(file)
+            stream.on('error', () => { if (!res.headersSent) text(res, 500, 'read error'); res.destroy() })
+            stream.pipe(res)
+          }
         } catch (e) {
           if (e.code === 'ENOENT') { text(res, 404, 'Not Found'); return }
           throw e
@@ -165,7 +175,12 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         }
         headers['content-length'] = end - start + 1
         res.writeHead(code, headers)
-        if (method === 'HEAD') res.end(); else createReadStream(file, { start, end }).pipe(res)
+        if (method === 'HEAD') res.end()
+        else {
+          const stream = createReadStream(file, { start, end })
+          stream.on('error', () => { if (!res.headersSent) text(res, 500, 'read error'); res.destroy() })
+          stream.pipe(res)
+        }
         return
       }
       if (pathname === '/bohack/api/style-video' && method === 'POST') {
@@ -248,7 +263,13 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
           json(res, 400, { ok: false, error: '只允许读取 workspace 下的 inbox/outbox/rules/runs/dialogue' }); return
         }
         const root = service._internal.dirs.root
-        const buf = await readFile(path.resolve(root, rel), 'utf8')
+        // Symlinks/junctions can pass the string checks above; resolve before reading.
+        const resolved = await realpath(path.resolve(root, rel))
+        const rootResolved = await realpath(root)
+        if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) {
+          json(res, 400, { ok: false, error: '只允许读取 workspace 下的 inbox/outbox/rules/runs/dialogue' }); return
+        }
+        const buf = await readFile(resolved, 'utf8')
         text(res, 200, buf, 'text/plain; charset=utf-8'); return
       }
       if (pathname === '/bohack/api/health' && method === 'GET') {
@@ -291,20 +312,24 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
             if (body.fresh) engine.reset()
             return service.generate(body, engine, streaming ? emit : undefined)
           }); break
-        case '/bohack/api/revise':   out = await service.revise(body, engine); break
+        case '/bohack/api/revise':   out = await runTurn(engine, () => service.revise(body, engine)); break
         case '/bohack/api/confirm':  out = await service.confirm(body); break
         case '/bohack/api/feedback': out = await service.feedback(body); break
         case '/bohack/api/finalize': out = await service.finalize(body); break
         case '/bohack/api/production': out = await service.production.start(); break
         case '/bohack/api/chat':     out = await runTurn(engine, () => service.chat(body, engine, streaming ? emit : undefined)); break
-        case '/bohack/api/section':  out = await service.manualEdit(body, engine); break
-        case '/bohack/api/note':     out = await service.note(body, engine); break
+        case '/bohack/api/section':  out = await runTurn(engine, () => service.manualEdit(body, engine)); break
+        case '/bohack/api/note':     out = await runTurn(engine, () => service.note(body, engine)); break
         case '/bohack/api/lock':     out = await service.lock(body); break
         case '/bohack/api/assets-update': out = await service.updateAsset(body); break
         default:
           json(res, 404, { ok: false, error: `未知端点 ${pathname}` }); return
       }
-      if (threadId) await threads.touch(threadId, pathname === '/bohack/api/chat' ? body.text : null)
+      if (threadId) {
+        // touch is bookkeeping; its failure must not turn a successful turn into 400.
+        try { await threads.touch(threadId, pathname === '/bohack/api/chat' ? body.text : null) }
+        catch (e) { ctx.logger?.warn?.('[bohack/web] threads.touch', String(e?.message || e)) }
+      }
       if (streaming) { emit({ type: 'done', result: out }); res.end() }
       else json(res, 200, out)
     } catch (e) {

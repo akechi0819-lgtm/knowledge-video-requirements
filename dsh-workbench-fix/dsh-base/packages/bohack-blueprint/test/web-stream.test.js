@@ -28,7 +28,7 @@ test('streaming emits progress, isolates threads, preserves JSON and reports err
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${server.address().port}/bohack/api/`
   const request = async (endpoint, id, text, stream = true) => {
-    const response = await fetch(base + endpoint + '?threadId=' + id, { method: 'POST', headers: { 'content-type': 'application/json', ...(stream ? { accept: 'application/x-ndjson' } : {}) }, body: JSON.stringify({ text }) })
+    const response = await fetch(base + endpoint + '?threadId=' + id, { method: 'POST', headers: { 'content-type': 'application/json', 'x-bohack-client': '1', origin: new URL(base).origin, ...(stream ? { accept: 'application/x-ndjson' } : {}) }, body: JSON.stringify({ text }) })
     const body = await response.text()
     return stream ? body.trim().split('\n').map(JSON.parse) : JSON.parse(body)
   }
@@ -58,9 +58,9 @@ test('video upload streams to temporary storage and returns review data without 
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
   try {
     const url=`http://127.0.0.1:${server.address().port}/bohack/api/style-video`
-    const invalid=await fetch(url,{method:'POST',headers:{'x-video-extension':'exe'},body:'x'})
+    const invalid=await fetch(url,{method:'POST',headers:{'x-video-extension':'exe','x-bohack-client':'1'},body:'x'})
     assert.equal(invalid.status,400)
-    const response=await fetch(url,{method:'POST',headers:{'x-video-extension':'mp4'},body:'video bytes'})
+    const response=await fetch(url,{method:'POST',headers:{'x-video-extension':'mp4','x-bohack-client':'1'},body:'video bytes'})
     const result=await response.json()
     assert.deepEqual(result, {ok:true,draft:'节奏明快',evidence:{durationSeconds:3,frames:[{seconds:1}]}})
     await assert.rejects(stat(tempPath), {code:'ENOENT'})
@@ -87,7 +87,64 @@ test('asset review serves the thread preview and confirms its exact revision', a
     const res = await fetch(url+'?version=1&threadId=example')
     assert.equal(res.status, 200)
     assert.match((await res.json()).assets[0].previewUrl, /threadId=example/)
-    const confirm = await fetch(url+'-approve?threadId=example', {method:'POST', body:JSON.stringify({version:1,revisions:{guide:'r1'}})})
+    const confirm = await fetch(url+'-approve?threadId=example', {method:'POST', headers:{'content-type':'application/json','x-bohack-client':'1'}, body:JSON.stringify({version:1,revisions:{guide:'r1'}})})
     assert.equal((await confirm.json()).allApproved, true)
+  } finally { await new Promise(resolve => server.close(resolve)) }
+})
+
+test('CSRF gate rejects foreign origins and POSTs without the client header', async () => {
+  const threads = { get: async () => ({ service: {}, engine: {} }), create: async () => ({ id: 't1' }), touch: async () => {} }
+  const server = http.createServer(createWebHandler(null, null, {}, threads))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const post = (headers) => fetch(base + '/bohack/api/threads', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' })
+  try {
+    assert.equal((await post({ 'x-bohack-client': '1', origin: 'https://evil.example' })).status, 403)
+    assert.equal((await fetch(base + '/bohack/api/threads', { headers: { origin: 'https://evil.example' } })).status, 403)
+    assert.equal((await post({ origin: base })).status, 403)
+    assert.equal((await post({})).status, 403)
+    assert.equal((await post({ 'x-bohack-client': '1', origin: base })).status, 200)
+    assert.equal((await post({ 'x-bohack-client': '1', origin: `http://localhost:${server.address().port}` })).status, 200)
+    assert.equal((await post({ 'x-bohack-client': '1', origin: `http://[::1]:${server.address().port}` })).status, 200)
+    assert.equal((await post({ 'x-bohack-client': '1' })).status, 200)
+  } finally { await new Promise(resolve => server.close(resolve)) }
+})
+
+test('revise, section and note share the per-engine turn queue with chat', async () => {
+  const active = [], overlaps = []
+  const guard = async label => {
+    if (active.length) overlaps.push([active[0], label])
+    active.push(label)
+    await new Promise(resolve => setTimeout(resolve, 15))
+    active.pop()
+    return { ok: true, label }
+  }
+  const service = { chat: () => guard('chat'), revise: () => guard('revise'), manualEdit: () => guard('section'), note: () => guard('note') }
+  const engine = {}
+  const threads = { get: async () => ({ service, engine }), touch: async () => {} }
+  const server = http.createServer(createWebHandler(null, null, {}, threads))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${server.address().port}/bohack/api/`
+  const post = (endpoint, body) => fetch(base + endpoint + '?threadId=q', { method: 'POST', headers: { 'content-type': 'application/json', 'x-bohack-client': '1' }, body: JSON.stringify(body) })
+  try {
+    const results = await Promise.all([post('chat', { text: 'hi' }), post('revise', {}), post('section', {}), post('note', {})])
+    for (const res of results) assert.equal(res.status, 200)
+    assert.deepEqual(overlaps, [])
+  } finally { await new Promise(resolve => server.close(resolve)) }
+})
+
+test('thread touch failure does not turn a successful request into 400', async () => {
+  const service = { chat: async () => ({ ok: true, reply: 'ok' }) }
+  const threads = { get: async () => ({ service, engine: {} }), touch: async () => { throw new Error('touch down') } }
+  const warnings = []
+  const ctx = { logger: { warn: (...args) => warnings.push(args) } }
+  const server = http.createServer(createWebHandler(null, null, ctx, threads))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/bohack/api/chat?threadId=t`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-bohack-client': '1' }, body: JSON.stringify({ text: 'hi' }) })
+    assert.equal(res.status, 200)
+    assert.equal((await res.json()).reply, 'ok')
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0].join(' '), /touch down/)
   } finally { await new Promise(resolve => server.close(resolve)) }
 })

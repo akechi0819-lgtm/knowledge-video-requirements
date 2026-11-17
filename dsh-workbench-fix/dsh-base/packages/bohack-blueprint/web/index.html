@@ -304,6 +304,8 @@ input[type=file],input[type=checkbox]{box-shadow:none;background:transparent;pad
 const $ = s => document.querySelector(s)
 const $$ = s => [...document.querySelectorAll(s)]
 const state = { status:null, busy:false, editing:null, manual:false, tab:'req', assets:[], threadId:null, threads:[], pickingStyle:false }
+// 服务端要求所有 POST 带 x-bohack-client（跨域简单请求带不上该自定义头）。
+const apiFetch = (url, opt={}) => fetch(url, {...opt, headers:{...opt.headers, 'x-bohack-client':'1'}})
 
 function log(msg, kind=''){
   const el=$('#log') || null
@@ -331,7 +333,7 @@ async function api(url, body, threadId=state.threadId){
   const opt = body===undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}
   if (!url.startsWith('/bohack/api/threads') && !['/bohack/api/styles','/bohack/api/styles-import','/bohack/api/styles-update','/bohack/api/styles-remove','/bohack/api/style-github'].includes(url) && !threadId) throw new Error('请先选择创作')
   if(threadId && !url.startsWith('/bohack/api/threads')) url += (url.includes('?')?'&':'?')+'threadId='+encodeURIComponent(threadId)
-  const r = await fetch(url,opt)
+  const r = await apiFetch(url,opt)
   const j = await r.json().catch(()=>({ok:false,error:'响应不是 JSON ('+r.status+')'}))
   if(!r.ok || j.ok===false) throw new Error(j.error||('HTTP '+r.status))
   return j
@@ -339,7 +341,7 @@ async function api(url, body, threadId=state.threadId){
 
 async function streamApi(url, body, onEvent){
   if(!state.threadId) throw new Error('请先选择创作')
-  const response=await fetch(url+'?threadId='+encodeURIComponent(state.threadId),{
+  const response=await apiFetch(url+'?threadId='+encodeURIComponent(state.threadId),{
     method:'POST', headers:{'content-type':'application/json','accept':'application/x-ndjson'}, body:JSON.stringify(body)
   })
   if(!response.ok){
