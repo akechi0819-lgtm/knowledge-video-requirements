@@ -299,7 +299,11 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       switch (pathname) {
         case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.generatedAssets.generate({ ...await generatedContext(body.version), id: body.id })); break
         case '/bohack/api/generated-assets-approve': out = generatedUrls(await service.generatedAssets.approve({ ...await generatedContext(body.version), id: body.id, revisions: body.revisions })); break
-        case '/bohack/api/preview': out = { ok: true, scenes: await generatePreview((await service.status()).sections, await service.settings.load()) }; break
+        case '/bohack/api/preview': {
+          const current = await service.status()
+          out = { ok: true, scenes: await generatePreview(current.sections, await service.settings.load(), fetch, current.visualStyle?.style) }
+          break
+        }
         case '/bohack/api/style-github': out = await readGithubStyle(body); break
         case '/bohack/api/styles-import': out = await service.styles.importStyle(body); break
         case '/bohack/api/styles-update': out = await service.styles.update(body); break

@@ -92,3 +92,20 @@ test('chat context survives malformed assets.jsonl entries', async () => {
     assert.match(contextText, /坏备注/)
   } finally { await rm(workspace, { recursive: true, force: true }) }
 })
+
+
+test('asset diagnosis and repair skip malformed reference records', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-assets-'))
+  try {
+    const service = createService({}, { workspace })
+    const lines = [null, { id: 'bad-number', type: 'file', path: 123 }, { id: 'bad-missing', type: 'image' },
+      { id: 'good', name: '缺失原件', type: 'file', path: 'sources/missing.pdf' }]
+    await writeFile(path.join(workspace, 'assets.jsonl'), lines.map(JSON.stringify).join('\n') + '\n')
+    const engine = { async chatTurn() { throw new Error('unexpected engine call') } }
+    const diagnosis = await service.chat({ text: '哪些素材丢了？' }, engine)
+    assert.equal(diagnosis.ok, true)
+    assert.match(diagnosis.reply, /缺失原件/)
+    const repair = await service.chat({ text: '把缺失素材补齐继续制作' }, engine)
+    assert.equal(repair.ok, true)
+  } finally { await rm(workspace, { recursive: true, force: true }) }
+})

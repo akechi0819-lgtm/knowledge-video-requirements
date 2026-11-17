@@ -157,7 +157,7 @@ body:has(#studio:not([hidden])) .mast{
 #entryFiles button{border:0;background:transparent;padding:2px 5px;color:var(--faded)}
 #entryError{color:var(--danger);font:14px var(--sans);margin:12px 0 0}
 
-/* 入口氛围墙：只做气氛，不可选风格 */
+/* 入口氛围墙：可点选本次制作风格 */
 .entry-field{
   position:relative;z-index:1;
   flex:1 1 auto;min-height:0;
@@ -187,7 +187,7 @@ body:has(#studio:not([hidden])) .mast{
   transition:transform .7s var(--ease), filter .7s var(--ease);
 }
 .entry-tile img.entry-media{object-fit:fill}
-.entry-tile figcaption{
+.entry-tile .tile-name{
   position:absolute;left:0;right:0;bottom:0;z-index:1;
   padding:36px 16px 14px;
   font:600 14px/1.3 var(--sans);color:var(--ivory);
@@ -211,8 +211,8 @@ body:has(#studio:not([hidden])) .mast{
   transform:scale(1.08);
   filter:brightness(1.08) saturate(1.08);
 }
-.entry-tile:hover figcaption,
-.entry-tile:focus-visible figcaption{opacity:1;transform:none}
+.entry-tile:hover .tile-name,
+.entry-tile:focus-visible .tile-name{opacity:1;transform:none}
 .entry-tile:focus-visible{outline:2px solid var(--cobalt);outline-offset:3px}
 
 #entry:not(.is-ready) .entry-rise,
@@ -645,7 +645,7 @@ button:focus-visible,summary:focus-visible,a:focus-visible,select:focus-visible,
 @media(hover:none){
   .style-card .style-desc{max-height:4.6em;opacity:1}
   .style-card .style-caption{background:linear-gradient(transparent 10%,rgba(5,6,10,.92))}
-  .entry-tile figcaption{opacity:1;transform:none}
+  .entry-tile .tile-name{opacity:1;transform:none}
   .player-bar{opacity:1;transform:none;pointer-events:auto}
 }
 
@@ -686,3 +686,12 @@ button:focus-visible,summary:focus-visible,a:focus-visible,select:focus-visible,
   .film-orb{animation:none}
   .sec-card,.style-card,.style-current,.style-card .style-desc,.bpv-card,.bpv-card:hover,.bpv-card:focus-visible{transform:none}
 }
+
+.skill-choice{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:8px 0;color:var(--ink-soft);font:13px var(--sans)}
+.skill-choice select{min-width:12em;max-width:100%;font:inherit;cursor:pointer}
+.skill-choice option,.skill-choice optgroup{background:var(--bg-3);color:var(--ink)}
+.skill-choice span{color:var(--faded);line-height:1.5}
+.studio-skill{padding:4px 0 16px;margin-bottom:16px;border-bottom:1px solid var(--line)}
+.entry-tile{cursor:pointer;border:0;padding:0}
+.entry-tile[aria-pressed=true]{outline:2px solid var(--cobalt);outline-offset:2px}
+.entry-tile[aria-pressed=true] .tile-name{opacity:1;transform:none}

@@ -164,46 +164,47 @@ input[type=file],input[type=checkbox]{box-shadow:none;background:transparent;pad
       <textarea id="entryText" aria-label="视频创作主题" placeholder="我想做一期关于……的知识视频" required></textarea>
       <ul id="entryFiles" aria-label="本次参考资料" hidden></ul>
       <input type="file" id="entryPicker" multiple hidden>
+      <div class="skill-choice"><label for="entrySkill">制作风格 / Skill</label><select id="entrySkill"><option value="">默认制作方式</option></select><span id="entrySkillSummary"></span></div>
       <div class="entry-actions"><div class="entry-tools"><button type="button" class="attach" id="entryAttach" aria-describedby="fileHint">＋ 添加资料</button><span class="entry-key" id="fileHint">可拖入参考图、文字稿或 PDF · 每个最多 10 MB</span></div><button class="primary" id="entrySend">开始创作 <span aria-hidden="true">↗</span></button></div>
     </form><div id="entryError" role="alert"></div>
   </div>
-  <section class="entry-field" id="entryField" aria-label="讲界视觉氛围">
-    <figure class="entry-tile entry-tile-hero" tabindex="0" style="--i:0">
+  <section class="entry-field" id="entryField" aria-label="点选本次制作风格">
+    <button type="button" data-entry-style="andy-pixel-quest" aria-pressed="false" class="entry-tile entry-tile-hero" style="--i:0">
       <video class="entry-media" muted loop playsinline preload="metadata" src="/bohack/style-previews/andy.mp4"></video>
-      <figcaption>像素闯关</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:1">
+      <span class="tile-name">像素闯关</span>
+    </button>
+    <button type="button" data-entry-style="heychengc-concrete" aria-pressed="false" class="entry-tile" style="--i:1">
       <video class="entry-media" muted loop playsinline preload="metadata" src="/bohack/style-previews/hey.mp4"></video>
-      <figcaption>具象动态图解</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:2">
+      <span class="tile-name">具象动态图解</span>
+    </button>
+    <button type="button" data-entry-style="general" aria-pressed="false" class="entry-tile" style="--i:2">
       <img class="entry-media" src="/bohack/style-previews/general.svg" alt="">
-      <figcaption>简洁知识图解</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:3">
+      <span class="tile-name">简洁知识图解</span>
+    </button>
+    <button type="button" data-entry-style="editorial" aria-pressed="false" class="entry-tile" style="--i:3">
       <img class="entry-media" src="/bohack/style-previews/editorial.svg" alt="">
-      <figcaption>杂志式图文</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:4">
+      <span class="tile-name">杂志式图文</span>
+    </button>
+    <button type="button" data-entry-style="swiss-kinetic" aria-pressed="false" class="entry-tile" style="--i:4">
       <img class="entry-media" src="/bohack/style-previews/swiss-kinetic.svg" alt="">
-      <figcaption>瑞士动态排版</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:5">
+      <span class="tile-name">瑞士动态排版</span>
+    </button>
+    <button type="button" data-entry-style="huashu-vox" aria-pressed="false" class="entry-tile" style="--i:5">
       <img class="entry-media" src="/bohack/style-previews/huashu-vox.svg" alt="">
-      <figcaption>剪报调查</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:6">
+      <span class="tile-name">剪报调查</span>
+    </button>
+    <button type="button" data-entry-style="huashu-whiteboard" aria-pressed="false" class="entry-tile" style="--i:6">
       <img class="entry-media" src="/bohack/style-previews/huashu-whiteboard.svg" alt="">
-      <figcaption>白板手绘</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:7">
+      <span class="tile-name">白板手绘</span>
+    </button>
+    <button type="button" data-entry-style="vibe-night" aria-pressed="false" class="entry-tile" style="--i:7">
       <img class="entry-media" src="/bohack/style-previews/vibe-night.svg" alt="">
-      <figcaption>夜曲知识实验</figcaption>
-    </figure>
-    <figure class="entry-tile" tabindex="0" style="--i:8">
+      <span class="tile-name">夜曲知识实验</span>
+    </button>
+    <button type="button" data-entry-style="vibe-fable" aria-pressed="false" class="entry-tile" style="--i:8">
       <img class="entry-media" src="/bohack/style-previews/vibe-fable.svg" alt="">
-      <figcaption>寓言场景</figcaption>
-    </figure>
+      <span class="tile-name">寓言场景</span>
+    </button>
   </section>
 </main>
 <main class="app" id="studio" hidden>
@@ -230,6 +231,7 @@ input[type=file],input[type=checkbox]{box-shadow:none;background:transparent;pad
     <div class="side-body">
       <!-- 需求单 -->
       <div class="pane on" id="pane-req">
+        <div class="skill-choice studio-skill" id="blueprintSkillGallery"><label for="studioSkill">制作风格 / Skill</label><select id="studioSkill" disabled></select><span id="studioSkillSummary"></span><button type="button" class="sm ghost" id="replanWithSkill" hidden>按此 Skill 重新起草</button></div>
         <div class="doc" id="reqDoc"><div class="empty">需求单为空。在左侧写下第一句话，助手会开始整理。</div></div>
 
       </div>
@@ -322,7 +324,7 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 function chatMsg(html, cls='okbox'){ $('#chatMsg').innerHTML=html?`<div class="${cls}">${html}</div>`:'' }
 function busy(on,label){
   state.busy=on
-  for(const b of $$('#studio button:not(.tab):not([data-view]), #homeBtn, #recentList button')){
+  for(const b of $$('#studio button:not(.tab):not([data-view]), #studioSkill, #homeBtn, #recentList button')){
     if(on && !b.disabled){ b.dataset.busyDisabled=''; b.disabled=true }
     if(!on && b.hasAttribute('data-busy-disabled')){ delete b.dataset.busyDisabled; b.disabled=false }
   }
@@ -467,7 +469,7 @@ function showEntry(){
   playEntryEntrance()
 }
 $('#homeBtn').onclick=()=>{if(!state.busy) showEntry()}
-document.querySelector('.ws-dialog').addEventListener('close',()=>{if(state.threadId)loadBlueprintSkill(state.threadId).catch(e=>chatMsg(esc(e.message),'errbox'))})
+document.querySelector('.ws-dialog').addEventListener('close',()=>{loadEntrySkills().catch(e=>$('#entryError').textContent=e.message);if(state.threadId)loadBlueprintSkill(state.threadId).catch(e=>chatMsg(esc(e.message),'errbox'))})
 $('#settingsBtn').onclick=()=>window.BohackSettings.open()
 $('#recentList').onclick=async e=>{
   if(state.busy) return
@@ -514,7 +516,8 @@ $('#entryForm').onsubmit=async e=>{
   e.preventDefault()
   const text=$('#entryText').value.trim()
   if(!text || $('#entrySend').disabled) return
-  const controls=[$('#entrySend'),$('#entryAttach'),$('#entryText')]
+  const controls=[$('#entrySend'),$('#entryAttach'),$('#entryText'),$('#entrySkill')]
+  $('#entryField').inert=true
   controls.forEach(el=>el.disabled=true)
   $('#recent').inert=true
   drawEntryFiles();$('#entryError').textContent=''
@@ -525,14 +528,16 @@ $('#entryForm').onsubmit=async e=>{
       $('#entrySend').textContent='上传资料中…'
       await sendFile(item.file,draftThread); item.saved=true;drawEntryFiles()
     }
+    await api('/bohack/api/blueprint-skill',{id:$('#entrySkill').value || null},draftThread)
     await selectThread(draftThread)
+    $('#entrySkill').value=''; drawEntryChoice()
     draftThread=null; entryFiles.length=0;drawEntryFiles()
     $('#entryText').value=''; $('#chatInput').value=text; $('#btnChat').click()
   }catch(err){
     const target=$('#entry').hidden?$('#chatMsg'):$('#entryError')
     target.textContent=err.message
   }finally{
-    controls.forEach(el=>el.disabled=false);$('#recent').inert=false
+    controls.forEach(el=>el.disabled=false);$('#recent').inert=false;$('#entryField').inert=false
     $('#entrySend').textContent='开始创作 ↗';drawEntryFiles()
   }
 }
@@ -565,6 +570,7 @@ function chooseTab(tab){
   $('#modeBtn').hidden=tab!=='bp' || !state.status?.currentVersion
   $('.app')?.classList.toggle('film-focus', tab==='film')
   $('.side-body').scrollTop=0
+  if(tab==='req' || tab==='bp') $('#pane-'+tab).prepend($('#blueprintSkillGallery'))
   if(tab==='bp') renderFrames()
 }
 $$('.side-tabs .tab').forEach(b=>b.onclick=()=>chooseTab(b.dataset.tab))
@@ -612,6 +618,7 @@ $('#btnChat').addEventListener('click',async()=>{
     log(`需求助手回复（${(r.reply||'').length} 字）`,'s'); chatMsg(r.productionError?esc(r.productionError.message):r.generationError?esc(r.generationError.message||r.generationError):'', 'errbox')
     await loadThreads()
     if(r.production || r.confirmation || r.chooseRestyle || r.productionError){ const tab=$('[data-tab=film]'); tab.disabled=false; tab.click() }
+    if(r.chooseBlueprintSkill){chooseTab('req');$('#studioSkill').focus()}
     if(r.chooseRestyle){
       await refresh()
       const gallery=$('#filmStyles')
@@ -869,7 +876,7 @@ async function doGenerate(){
   try{
     const r=await streamApi('/bohack/api/generate',{engine:'agent'},progress)
     log(`v${r.version} 起草完成 · ${r.engineLabel} · 校验${r.validation.ok?'通过':'未通过'}`,'s')
-    chatMsg(`蓝图 v${r.version} 已起草，共 ${r.sections.length} 段。`)
+    chatMsg(`蓝图 v${r.version} 已起草，共 ${r.sections.length} 段。`); chooseTab('bp')
   }catch(e){ log('起草失败：'+e.message,'e'); chatMsg(esc(e.message),'errbox') }
   finally{ progress.clear(); state.streamingChat=false; busy(false); loadChat() }
 }
@@ -914,6 +921,7 @@ async function refresh(){
     if(id!==state.threadId) return
     renderRequirement(req.raw)
     state.status=s
+    syncStudioChoice(s)
     $('#wsName').textContent=s.requirement?.title||s.requirement?.topic||state.threads.find(t=>t.id===id)?.title||'当前创作'
     const badge=$('#stageBadge')
     if(!state.busy){
@@ -962,7 +970,7 @@ function bindStylePreviewMedia(root){
 }
 function setSkillGalleryDisabled(on){
   const gallery=$('#blueprintSkillGallery')
-  if(gallery) gallery.querySelectorAll('button').forEach(btn=>btn.disabled=on)
+  if(gallery) gallery.querySelectorAll('select,button').forEach(btn=>btn.disabled=on)
 }
 function setProductionStatus(message, kind){
   const el=$('#productionStatus')
@@ -992,7 +1000,7 @@ function productionNote(s){
   if(!p) return '将使用「'+(s.visualStyle?.style?.name || '简洁知识图解')+'」生成素材并制作成片。'
   if(p.status==='running') return ''
   if(p.status==='completed') return ''
-  return `制作${p.status==='interrupted'?'中断':'失败'}：${window.BohackFilm.failureMessage(p.error)}`
+  return '可在左侧问「制作停在哪一步了？」或说「继续制作」。'
 }
 function updateProductionAction(s){
   const btn=$('#btnProduction')
@@ -1141,19 +1149,53 @@ function scheduleRefresh(){
 }
 scheduleRefresh()
 
-async function chooseBlueprintSkill(id, skillId){
-  setSkillGalleryDisabled(true)
-  try{
-    await api('/bohack/api/blueprint-skill',{id:skillId})
-    if(id===state.threadId) await loadBlueprintSkill(id)
-  }catch(error){
-    if(id===state.threadId) setSkillGalleryDisabled(false)
+let entryLibrary=[]
+function fillSkillChoices(select,library,id){
+  const groups=[['视觉风格',false],['制作 Skill',true]]
+  select.replaceChildren(new Option('默认制作方式',''))
+  for(const [label,process] of groups){
+    const group=document.createElement('optgroup'); group.label=label
+    for(const item of library.filter(x=>(x.kind==='process')===process)) group.append(new Option(item.name,item.id))
+    if(group.children.length) select.append(group)
   }
+  select.value=id || ''
+}
+function drawEntryChoice(){
+  const value=$('#entrySkill').value
+  $('#entrySkillSummary').textContent=entryLibrary.find(x=>x.id===value)?.summary || ''
+  $$('[data-entry-style]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.entryStyle===value)))
+}
+async function loadEntrySkills(){
+  const {styles}=await api('/bohack/api/styles')
+  entryLibrary=styles;fillSkillChoices($('#entrySkill'),styles,$('#entrySkill').value);drawEntryChoice()
+}
+$('#entrySkill').onchange=drawEntryChoice
+$('#entryField').addEventListener('click',e=>{
+  const tile=e.target.closest('[data-entry-style]');if(!tile) return
+  $('#entrySkill').value=tile.dataset.entryStyle;drawEntryChoice()
+})
+function syncStudioChoice(s){
+  const picker=$('#studioSkill'), selected=s?.selectedBlueprintSkill
+  picker.value=selected?.id || ''
+  const item=state.styleLibrary?.find(x=>x.id===selected?.id)
+  const changed=s?.currentVersion && (selected?.name || '通用制作方法') !== s.blueprintSkill
+  $('#studioSkillSummary').textContent=changed?`蓝图 v${s.currentVersion} 仍使用「${s.blueprintSkill}」。重新起草后应用新选择。`:(item?.summary || '')
+  $('#replanWithSkill').hidden=!changed
+}
+$('#replanWithSkill').onclick=doGenerate
+$('#studioSkill').onchange=async e=>{
+  const thread=state.threadId, id=e.target.value
+  busy(true,'保存制作风格');setSkillGalleryDisabled(true)
+  try{await api('/bohack/api/blueprint-skill',{id:id || null},thread)}
+  catch(error){if(thread===state.threadId)chatMsg(esc(error.message),'errbox')}
+  finally{busy(false);if(thread===state.threadId){await refresh();setSkillGalleryDisabled(false)}}
 }
 async function loadBlueprintSkill(id){
-  const [library]=await Promise.all([api('/bohack/api/styles'),api('/bohack/api/blueprint-skill')])
+  const {styles}=await api('/bohack/api/styles')
   if(id!==state.threadId) return
-  state.styleLibrary=library.styles
+  state.styleLibrary=styles
+  fillSkillChoices($('#studioSkill'),styles,state.status?.selectedBlueprintSkill?.id)
+  setSkillGalleryDisabled(state.busy);syncStudioChoice(state.status)
   if(state.status) renderFilm(state.status)
 }
 
@@ -1162,7 +1204,7 @@ function renderFrames(){
   const sections=state.status?.sections, box=$('#frames')
   if(!sections?.length){box.replaceChildren();state.frameKey=null;return}
   if(state.tab!=='bp') return
-  const key=JSON.stringify([state.threadId,sections.map(({id,title,intent,visual,facts})=>[id,title,intent,visual,facts])])
+  const key=JSON.stringify([state.threadId,state.status.currentVersion,state.status.visualStyle?.style?.id,sections.map(({id,title,intent,visual,facts})=>[id,title,intent,visual,facts])])
   if(state.frameKey===key) return
   state.frameKey=key
   const result=previewCache.get(key)
@@ -1195,7 +1237,7 @@ function drawLandscape(){
  /* ── 启动 ── */
 ;(async function init(){
   try{
-    await loadThreads()
+    await Promise.all([loadThreads(),loadEntrySkills()])
     const id=new URLSearchParams(location.search).get('thread')
     if(id && state.threads.some(t=>t.id===id)) await selectThread(id)
     else if(id) $('#entryError').textContent='这条创作记录已无法打开，可以从最近创作中选择。'

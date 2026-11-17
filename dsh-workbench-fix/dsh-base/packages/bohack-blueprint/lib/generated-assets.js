@@ -41,20 +41,27 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
     await writeFile(temp, JSON.stringify(state, null, 2) + '\n')
     await rename(temp, stateFile(version))
   }
+  async function available(version, entry, sig) {
+    if (!entry || entry.signature !== sig) return false
+    try { await readFile(path.join(directory(version), entry.filename)); return true }
+    catch (e) { if (e.code === 'ENOENT') return false; throw e }
+  }
   async function status({ version, doc, style }) {
     validate(version, doc)
     const state = await readState(version), sig = signature(doc, style)
-    const assets = doc.assets.map(a => {
+    const assets = await Promise.all(doc.assets.map(async a => {
       const entry = state.entries[a.id]
-      const valid = entry?.signature === sig
-      return { ...a, revision: valid ? entry.filename : null, status: valid ? (entry.approved ? 'approved' : 'generated') : 'pending', previewUrl: valid ? `/bohack/api/generated-asset-file?version=${version}&id=${encodeURIComponent(a.id)}&rev=${encodeURIComponent(entry.filename)}` : null }
-    })
+      const valid = await available(version, entry, sig)
+      return { ...a, revision: valid ? entry.filename : null, status: valid ? (entry.approved ? 'approved' : 'generated') : 'pending', missingFile: entry?.signature === sig && !valid, previewUrl: valid ? `/bohack/api/generated-asset-file?version=${version}&id=${encodeURIComponent(a.id)}&rev=${encodeURIComponent(entry.filename)}` : null }
+    }))
     return { ok: true, version, assets, allApproved: assets.every(a => a.status === 'approved') }
   }
   async function generate({ version, doc, style, id }) {
     validate(version, doc)
     const state = await readState(version), sig = signature(doc, style)
-    const selected = id === undefined ? doc.assets.filter(a => state.entries[a.id]?.signature !== sig) : doc.assets.filter(a => a.id === id)
+    const selected = id === undefined
+      ? (await Promise.all(doc.assets.map(async a => await available(version, state.entries[a.id], sig) ? null : a))).filter(Boolean)
+      : doc.assets.filter(a => a.id === id)
     if (id !== undefined && !selected.length) throw new Error('素材不存在。')
     if (!selected.length) return status({ version, doc, style })
     const dsh = process.env.SCENE_MODE === 'dsh'

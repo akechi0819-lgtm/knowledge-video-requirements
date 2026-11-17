@@ -248,7 +248,8 @@ window.BohackFilm = (() => {
     if (filmBp) filmBp.textContent = s.currentVersion ? `蓝图 v${s.currentVersion}（${(s.sections || []).length} 段）` : '—'
     if (filmState) {
       const done = s.finalized?.version === s.currentVersion && s.stage === 'finalized'
-      filmState.textContent = p?.status === 'completed' ? '成片已出' : p?.status === 'running' ? (p.phase || '制作中') : done ? '已定稿' : '未定稿'
+      const labels = { completed:'成片已出', running:p?.phase || '制作中', failed:'制作失败', interrupted:'制作中断' }
+      filmState.textContent = labels[p?.status] || (done ? '已定稿' : '未定稿')
     }
     renderPhases(rail, p)
     if (line) {

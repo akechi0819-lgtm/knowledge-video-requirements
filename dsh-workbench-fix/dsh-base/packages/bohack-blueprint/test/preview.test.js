@@ -77,3 +77,15 @@ test('choices 为空或 content 为 null 时给出友好错误', async () => {
     await assert.rejects(generatePreview([{ id: 'B01' }], settings, request), /模型未返回文本内容/)
   }
 })
+
+test('章节预览采用版本保存的构图规则', async () => {
+  const style = {name:'像素冒险', description:'画面分为地图和状态栏'}
+  const request = async (_url, options) => {
+    const prompt = JSON.parse(options.body).messages[0].content
+    assert.ok(prompt.includes(style.name) && prompt.includes(style.description))
+    assert.doesNotMatch(prompt, /采用纸面、淡墨、朱砂/)
+    return {ok:true,json:async()=>({choices:[{message:{content:JSON.stringify({scenes:[{id:'B01',shapes:Array(5).fill(shape('M0 0 L10 10'))}]})}}]})}
+  }
+  const result = await generatePreview([{id:'B01'}],settings,request,style)
+  assert.equal(result[0].id,'B01')
+})

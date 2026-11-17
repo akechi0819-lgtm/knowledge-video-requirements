@@ -211,16 +211,23 @@ export function createProduction(workspace, config = {}) {
     for (const section of production.sections) {
       const visual = String(section.visual || '')
       const matches = assets.filter(a => visual.includes(a.name))
-      if (matches.length > 1) throw new Error(`${section.blueprintId} 匹配多张图片或重复文件名，请明确保留一张资料。`)
       if (!matches.length) {
         if (/\.(?:png|jpe?g)\b/i.test(visual)) throw new Error(`${section.blueprintId} 指定的图片未在本创作资料中登记。`)
         continue
       }
-      const asset = matches[0]
-      if (!/^sources\/[^/\\]+$/.test(asset.path || '')) throw new Error(`${section.blueprintId} 图片路径不在本创作上传目录。`)
-      const sourceRoot = await realpath(path.join(workspace, 'sources'))
-      const source = await realpath(path.join(workspace, asset.path))
-      if (path.dirname(source) !== sourceRoot) throw new Error(`${section.blueprintId} 图片不在本创作上传目录。`)
+      const available = []
+      for (const asset of matches) {
+        if (!/^sources\/[^/\\]+$/.test(asset.path || '')) throw new Error(`${section.blueprintId} 图片路径不在本创作上传目录。`)
+        try {
+          const source = await realpath(path.join(workspace, asset.path))
+          const sourceRoot = await realpath(path.join(workspace, 'sources'))
+          if (path.dirname(source) !== sourceRoot) throw new Error(`${section.blueprintId} 图片不在本创作上传目录。`)
+          available.push({asset, source})
+        } catch (e) { if (e.code !== 'ENOENT') throw e }
+      }
+      if (available.length > 1) throw new Error(`${section.blueprintId} 匹配多张图片或重复文件名，请明确保留一张资料。`)
+      if (!available.length) throw new Error(`${section.blueprintId} 图片文件缺失，请重新上传：${[...new Set(matches.map(a => a.name))].join('、')}。`)
+      const {asset, source} = available[0]
       const bytes = await readFile(source)
       const isPng = bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
       const isJpeg = bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))
@@ -231,7 +238,7 @@ export function createProduction(workspace, config = {}) {
       section.image = image
     }
   }
-  async function start() {
+  async function start({ regenerateAssetId } = {}) {
     if (active) throw new Error('本创作已有制作任务正在运行')
     active = true
     generation++
@@ -239,6 +246,7 @@ export function createProduction(workspace, config = {}) {
       const saved = await config.settings?.load() || {}
       await config.ensureVisual?.()
       const production = await exportProduction(workspace)
+      if (regenerateAssetId !== undefined && !production.assets?.some(asset => asset.id === regenerateAssetId)) throw new Error('要重做的素材不存在。')
       const missing = production.sections.filter(s => !s.narration?.trim()).map(s => s.blueprintId)
       if (missing.length) throw new Error(`缺少旁白：${missing.join('、')}；请补充后重新确认并定稿。`)
       let prior = null
@@ -269,6 +277,7 @@ export function createProduction(workspace, config = {}) {
       ;(async () => {
         try {
           const assetArgs = { version: Number(production.version.slice(1)), doc: production, style: production.style }
+          if (regenerateAssetId !== undefined) await config.generatedAssets.generate({ ...assetArgs, id: regenerateAssetId })
           const generated = production.assets?.length ? (await config.generatedAssets.generate(assetArgs)).assets : []
           if (generated.length) await mkdir(path.join(dir, 'assets'))
           for (const asset of generated) {
