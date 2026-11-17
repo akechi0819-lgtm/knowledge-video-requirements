@@ -31,6 +31,8 @@ const ASSETS_FILE = 'assets.jsonl'
 
 function now() { return new Date().toISOString() }
 function pad(n) { return String(n).padStart(2, '0') }
+function briefError(error) { return String(error || '').replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/).map(line => line.trim()).find(Boolean)?.slice(0, 240) || '' }
+function productionStatusLabel(status) { return ({ running:'制作中', failed:'失败', interrupted:'已中断', completed:'已完成' })[status] || status || '未记录' }
 
 export class ServiceError extends Error {
   constructor(message, code = 'BOHACK_ERROR') { super(message); this.code = code }
@@ -75,7 +77,12 @@ export function createService(ctx, config = {}) {
   const generatedAssets = createGeneratedAssets(root, { settings })
   const productionService = createProduction(root, { ...config, settings, generatedAssets, ensureVisual: async () => {
     const n = await latestVersion()
-    if ((await visualStyle(n))?.status === 'pending') await selectVisualStyle({ id: 'general', version: n })
+    if ((await visualStyle(n))?.status === 'pending') {
+      const versionSkill = await readJson(path.join(dirs.outbox, `蓝图_v${n}.技能.json`), null)
+      const chosen = await visualFromSkill(versionSkill || await styles.blueprintSkill())
+      if (chosen) await writeFile(visualPath(n), JSON.stringify({ status: 'selected', style: chosen }, null, 2) + '\n', 'utf8')
+      else await selectVisualStyle({ id: 'general', version: n })
+    }
   } })
   const styles = createStyles(root, config.styleLibraryRoot || root)
   const log = (...a) => { try { ctx.logger?.info?.('[bohack]', ...a) } catch { /* ignore */ } }
@@ -99,6 +106,13 @@ export function createService(ctx, config = {}) {
     try { style = JSON.parse(await readFile(stylePath(n), 'utf8')) }
     catch (e) { if (e.code !== 'ENOENT') throw e }
     return { version: n, status: 'legacy', style }
+  }
+  async function visualFromSkill(skill) {
+    if (!skill?.id || !(skill.description || skill.content)) return null
+    const item = skill.source ? null : (await styles.list()).styles.find(s => s.id === skill.id)
+    return { id: skill.id, name: skill.name, description: skill.description || skill.content,
+      ...(skill.source || item?.source ? { source: skill.source || item.source } : {}),
+      ...(skill.kind || item?.kind ? { kind: skill.kind || item.kind } : {}) }
   }
   async function selectVisualStyle({ id, version } = {}) {
     const n = await latestVersion(), state = await getState()
@@ -281,7 +295,8 @@ export function createService(ctx, config = {}) {
 
     const n = await latestVersion()
     const next = n + 1
-    const skill = await styles.blueprintSkill() || defaultProcessGuidance()
+    const selectedSkill = await styles.blueprintSkill()
+    const skill = selectedSkill || defaultProcessGuidance()
     const state = await getState()
     let previousDoc = null
     if (action === 'revise') {
@@ -335,7 +350,8 @@ export function createService(ctx, config = {}) {
     }
     const canonical = renderBlueprint(doc)
     await writeFile(versionPath(next), canonical, 'utf8')
-    await writeFile(visualPath(next), JSON.stringify({ status: 'pending', style: null }, null, 2) + '\n', 'utf8')
+    const selectedVisual = await visualFromSkill(selectedSkill)
+    await writeFile(visualPath(next), JSON.stringify(selectedVisual ? { status: 'selected', style: selectedVisual } : { status: 'pending', style: null }, null, 2) + '\n', 'utf8')
     await writeFile(path.join(dirs.outbox, `蓝图_v${next}.技能.json`), JSON.stringify(skill, null, 2) + '\n')
 
     const finalCheck = validateBlueprint(parseBlueprint(canonical), { quality: config.quality })
@@ -456,6 +472,7 @@ export function createService(ctx, config = {}) {
       hasRequirement: await exists(requirementPath()),
       hasFeedback: await exists(feedbackPath()),
       blueprintSkill: n ? (await readJson(path.join(dirs.outbox, `蓝图_v${n}.技能.json`), null))?.name || null : null,
+      selectedBlueprintSkill: (({ id, name }) => id ? { id, name } : null)(await styles.blueprintSkill() || {}),
       hasDelivery: await exists(deliveryPath()),
       pendingFeedback: state.pendingFeedback || null, pendingRestyle: state.pendingRestyle?.version === n ? state.pendingRestyle : null,
       finalized: state.finalized || null, visualStyle: await visualStyle(n),
@@ -657,6 +674,22 @@ export function createService(ctx, config = {}) {
     const initialVersion = await latestVersion()
     const stateBeforeAction = await getState()
     const alreadyFinalized = stateBeforeAction.stage === 'finalized' && stateBeforeAction.finalized?.version === initialVersion
+    const skillText = message.replace(/[“”「」『』"]/g, '')
+    const skillClause = skillText.split(/[，,；;。！？?]/, 1)[0]
+    const skillVerb = /(?:使用|采用|选用|选择|切换到|换成|用)/.test(skillClause)
+    const affirmativeSkill = !/(?:不|别|没|能|可否|可以|是否|如果|假如|讨论|询问).{0,5}(?:使用|采用|选用|选择|切换到|换成|用)/.test(skillClause) && !/(?:吗|可不可以)$/.test(skillClause)
+    const skillCandidates = !alreadyFinalized && skillVerb && affirmativeSkill ? (await styles.list()).styles : []
+    const skillHits = skillCandidates.flatMap(item => [item.id, item.name].filter(token => token && skillClause.includes(token)).map(token => ({ item, token })))
+    const fullSkills = [...new Map(skillHits.filter(hit => !skillHits.some(other => other.item.id !== hit.item.id && other.token.length > hit.token.length && other.token.includes(hit.token))).map(hit => [hit.item.id, hit])).values()]
+    const aliasSkills = skillCandidates.flatMap(item => item.kind === 'style' ? [...item.name.split(/[：:（(]/).slice(0, 1), item.name.slice(0, 2)].map(token => ({item, token})) : []).filter(hit => hit.token.length >= 2 && skillClause.includes(hit.token))
+    const skillMatches = fullSkills.length ? fullSkills : [...new Map(aliasSkills.sort((a, b) => a.token.length - b.token.length).map(hit => [hit.item.id, hit])).values()]
+    const skillRequested = !alreadyFinalized && skillVerb && affirmativeSkill && (skillMatches.length || /(?:风格|画风|技能|skill)/i.test(skillClause))
+    const skillHit = skillMatches.length === 1 ? skillMatches[0] : null
+    const remainder = skillHit ? skillText.replace(skillHit.token, '').replace(/(?:使用|采用|选用|选择|切换到|换成|用|这个|本次|这次|风格|画风|风|技能|skill|吧|了|就|作为|的|[，,。！!\s])/gi, '') : ''
+    const skillOnly = skillRequested && (!skillHit || !remainder)
+    let blueprintSkillSelection = null, chooseBlueprintSkill = false
+    if (skillRequested && skillHit) blueprintSkillSelection = (await styles.chooseBlueprintSkill({id:skillHit.item.id})).skill
+    else if (skillRequested) chooseBlueprintSkill = true
     const restyleText = message.replace(/[“”「」『』"]/g, '')
     const restyleAffirmative = affirmative(restyleText)
     const pendingRestyle = alreadyFinalized && stateBeforeAction.pendingRestyle?.version === initialVersion
@@ -670,9 +703,19 @@ export function createService(ctx, config = {}) {
     })
     const styleChoice = matches.length === 1 ? matches[0] : null
     const restyleAction = restyleRequest || (pendingRestyle && restyleAffirmative && styleChoice && restyleText.length <= styleChoice.name.length + 8)
+    const recoverRequest = affirmative(message) && /^(?:(?:(?:继续|恢复)(?:制作|生成)?|接着(?:做|制作)|重试)(?:吧|一下|了)?|(?:把|请)?(?:缺失|丢失的?|没有的?).{0,8}素材(?:补齐|补上|修复).{0,8}(?:继续|恢复|开始)(?:制作|生成|做)?[吧]*)[。！!，,\s]*$/.test(message)
+    const missingRegenerate = /素材.{0,6}(?:丢|缺|不见).{0,8}(?:重新生成|补齐|修复)/.test(message) && affirmative(message.replace('不见', '丢失'))
+    const assetRepair = (recoverRequest && /素材/.test(message)) || missingRegenerate
+    const namedMatch = message.match(/(?:重新生成|重做)(?:素材)?[「『“\"\s]*([^，,。！？?]+?)(?:[」』”\"\s]*(?:然后|并|再)?[，,。！？?]|$)/)
+    const namedText = namedMatch?.[1]?.replace(/[」』”\"\s]+$/g, '').replace(/(?:吧|吗)$/, '').trim()
+    const namedDoc = initialVersion && namedMatch ? (await show({ version: initialVersion })).doc : null
+    const namedRequest = Boolean(namedText && !/^(?:素材|视频|成片|画面|蓝图|需求|这一段|这段)/.test(namedText) && !restyleAction && (namedDoc?.assets?.some(a => a.name === namedText) || /素材/.test(message) || (initialVersion && /然后继续制作/.test(message))))
+    const assetIntent = namedRequest || assetRepair
+    const assetDiagnosis = /(?:检查|看看|哪些|什么).{0,12}素材.{0,8}(?:丢|缺|不见)|素材.{0,8}(?:丢|缺|不见).{0,8}(?:吗|哪些|什么)/.test(message)
+    const productionDiagnosis = /^(?:制作|生成|任务).{0,10}(?:停在|卡在|失败|中断|出错).{0,10}(?:哪|什么|原因|怎么)|^(?:为什么|怎么).{0,8}(?:失败|中断|停了|卡住)/.test(message)
     const produce = productionCommand(message, alreadyFinalized)
     const confirmAll = confirmAllRequest(message)
-    const directAction = initialVersion && (produce || confirmAll || restyleAction || cancelRestyle)
+    const directAction = (initialVersion && (produce || confirmAll || restyleAction || cancelRestyle)) || recoverRequest || assetDiagnosis || productionDiagnosis || assetIntent || skillOnly || chooseBlueprintSkill
     const t0 = Date.now()
     const historyText = await readFile(dialoguePath(), 'utf8').catch(() => '')
     const activities = []
@@ -695,9 +738,72 @@ export function createService(ctx, config = {}) {
       try { await saveRequirement(raw, turn.replaceBaseline === true) }
       catch (e) { if (e.code !== 'BASELINE_LOCKED') throw e; saveError = e; reply = e.message }
     } else if (turn?.requirementChanged && !await latestVersion()) await setState({ requirementDirty: true })
-    let production = null, productionError = null, confirmation = null, chooseRestyle = false
+    let production = null, productionError = null, confirmation = null, chooseRestyle = false, recovery = null, assetDiagnosisResult = null
     const semanticProduce = turn?.productionRequested && (explicitProductionApproval(message) || (alreadyFinalized && affirmative(message) && /(?:制作|生成|做|出).{0,8}(?:成片|视频|出来|起来)|(?:开始|直接).{0,6}(?:制作|做)/.test(message)))
-    if (cancelRestyle) {
+    let blueprintAssets = []
+    if (assetDiagnosis || assetIntent) {
+      const doc = initialVersion ? (await show({ version: initialVersion })).doc : null
+      blueprintAssets = doc?.assets || []
+      const visual = await visualStyle(initialVersion)
+      const generated = doc ? (await generatedAssets.status({ version: initialVersion, doc, style: visual?.style || null })).assets : []
+      const references = (await readAssetLines()).filter(a => a.path?.startsWith('sources/') && ['image', 'file'].includes(a.type))
+      const missingReferences = [], missingRequiredImages = [], presentImages = new Set()
+      for (const asset of references) {
+        const resolved = path.resolve(root, asset.path)
+        if (asset.type === 'image' && resolved.startsWith(dirs.sources + path.sep) && await exists(resolved)) presentImages.add(asset.name)
+        if (resolved.startsWith(dirs.sources + path.sep) && !await exists(resolved)) {
+          missingReferences.push(asset.name)
+          if (asset.type === 'image' && doc?.sections.some(section => section.visual?.includes(asset.name))) missingRequiredImages.push(asset.name)
+        }
+      }
+      assetDiagnosisResult = { missingGenerated: generated.filter(a => a.missingFile).map(a => a.name), pendingGenerated: generated.filter(a => a.status === 'pending' && !a.missingFile).map(a => a.name), missingReferences, missingRequiredImages: missingRequiredImages.filter(name => !presentImages.has(name)) }
+    }
+    if (skillOnly || chooseBlueprintSkill) {
+      reply = chooseBlueprintSkill ? '没有唯一匹配的风格或技能，请在风格库中选择。' : `已为本次创作选择「${blueprintSkillSelection.name}」。${initialVersion ? '当前蓝图仍沿用原风格，需要重新起草才能应用新选择。' : ''}`
+    } else if (namedRequest && !affirmative(restyleText)) {
+      const found = blueprintAssets.filter(a => a.name === namedText)
+      reply = found.length === 1 ? `素材「${namedText}」已在蓝图中登记；本次没有启动重做。` : `当前蓝图没有唯一匹配的素材「${namedText}」；本次没有启动重做。`
+    } else if (namedRequest) {
+      const found = blueprintAssets.filter(a => a.name === namedText)
+      const previous = await productionService.status()
+      if (!alreadyFinalized) reply = '请先确认当前蓝图并定稿。'
+      else if (found.length !== 1) reply = `当前蓝图没有唯一匹配的素材「${namedText}」，请提供准确名称。`
+      else if (previous?.status === 'running') reply = '制作正在进行，无需重复启动。'
+      else {
+        try {
+          production = await productionService.start({ regenerateAssetId: found[0].id })
+          reply = `已启动重做素材「${namedText}」并继续制作，可在成片页查看进度。`
+        } catch (e) {
+          productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
+          reply = `素材重做未启动：${productionError.message}`
+        }
+      }
+    } else if (assetDiagnosis && !assetRepair) {
+      const { missingGenerated, pendingGenerated, missingReferences } = assetDiagnosisResult
+      reply = `蓝图生成素材：${missingGenerated.length ? `文件丢失：${missingGenerated.join('、')}` : '未发现已生成文件丢失'}${pendingGenerated.length ? `；尚待生成或当前风格需重新生成：${pendingGenerated.join('、')}` : ''}。上传参考原件：${missingReferences.length ? `缺失 ${missingReferences.join('、')}，请重新上传` : '已登记的本地原件未发现缺失'}。`
+    } else if (productionDiagnosis || recoverRequest || assetRepair) {
+      const previous = await productionService.status()
+      recovery = { previousStatus: previous?.status || null, phase: previous?.phase || null, error: briefError(previous?.error) || null, action: 'none' }
+      const detail = previous ? `上次状态：${productionStatusLabel(previous.status)}；阶段：${previous.phase || '未记录'}${recovery.error ? `；错误：${recovery.error}` : ''}。` : '当前没有制作记录。'
+      if (productionDiagnosis) reply = detail
+      else if (assetRepair && assetDiagnosisResult.missingRequiredImages.length) reply = `${detail}上传参考原件缺失：${assetDiagnosisResult.missingRequiredImages.join('、')}，请重新上传后再制作。`
+      else if (previous?.status === 'running') reply = `${detail}任务仍在运行，无需重复启动。`
+      else if (previous?.status === 'completed' && (!assetRepair || (!assetDiagnosisResult.missingGenerated.length && !assetDiagnosisResult.pendingGenerated.length))) reply = `${detail}成片已完成${assetRepair ? '，没有需要补齐的生成素材' : '，如需重做请明确说明'}。`
+      else if ((!previous && !assetRepair) || (previous && !['failed', 'interrupted', ...(assetRepair ? ['completed'] : [])].includes(previous.status))) reply = detail
+      else if (!alreadyFinalized || (previous?.version && previous.version !== `v${initialVersion}`)) reply = `${detail}当前蓝图版本与原制作不一致，请先检查蓝图。`
+      else {
+        try {
+          onProgress?.({ type: 'status', text: '正在恢复制作' })
+          production = await productionService.start()
+          recovery.action = 'started'
+          reply = `${detail}已启动新的制作任务，可在成片页查看进度。`
+        } catch (e) {
+          productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
+          recovery.action = 'failed'
+          reply = `${detail}制作未启动：${productionError.message}`
+        }
+      }
+    } else if (cancelRestyle) {
       await setState({ pendingRestyle: null })
       reply = '已取消重绘。'
     } else if (restyleAction) {
@@ -716,7 +822,7 @@ export function createService(ctx, config = {}) {
           reply = `已选择「${styleChoice.name}」，重制已启动。可在成片页查看进度。`
         }
       } catch (e) {
-        productionError = { code: e.code || 'PRODUCTION_FAILED', message: String(e.message || e) }
+        productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
         reply = `${styleChoice && (await visualStyle(initialVersion))?.style?.id === styleChoice.id ? `已选择「${styleChoice.name}」，` : ''}重制未启动：${productionError.message}`
       }
     } else if (turn?.productionRequested || produce || confirmAll) {
@@ -744,10 +850,11 @@ export function createService(ctx, config = {}) {
           reply = `蓝图 v${initialVersion} 的成片制作已启动。可在成片页查看进度。`
         }
       } catch (e) {
-        productionError = { code: e.code || 'PRODUCTION_FAILED', message: String(e.message || e) }
+        productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
         reply = `${confirmAll ? '蓝图未定稿' : '成片制作未启动'}：${productionError.message}`
       }
     }
+    if (blueprintSkillSelection && initialVersion && !skillOnly && !turn?.blueprintRequested) reply += `\n\n已选择「${blueprintSkillSelection.name}」；当前蓝图仍沿用原风格，需要重新起草才能应用新选择。`
     await appendDialogue('user', message)
     await appendDialogue('assistant', reply)
     if (activities.length) {
@@ -760,9 +867,9 @@ export function createService(ctx, config = {}) {
         if (saveError) throw saveError
         onProgress?.({ type: 'status', text: '开始生成蓝图' })
         generation = await generate({}, engine, onProgress)
-      } catch (e) { generationError = { code: e.code || 'ENGINE_FAILED', message: String(e.message || e) } }
+      } catch (e) { generationError = { code: e.code || 'ENGINE_FAILED', message: briefError(e.message || e) } }
     }
-    return { ok: true, reply, generation, generationError, production, productionError, confirmation, chooseRestyle, finalized: (await getState()).stage === 'finalized', sessionId: engine.chatSessionId || null, at: now() }
+    return { ok: true, reply, generation, generationError, production, productionError, confirmation, chooseRestyle, blueprintSkillSelection: blueprintSkillSelection ? { id: blueprintSkillSelection.id, name: blueprintSkillSelection.name } : null, chooseBlueprintSkill, recovery, assetDiagnosis: assetDiagnosisResult, finalized: (await getState()).stage === 'finalized', sessionId: engine.chatSessionId || null, at: now() }
   }
 
   async function chatHistory() {
@@ -803,7 +910,8 @@ export function createService(ctx, config = {}) {
     doc.meta = { ...doc.meta, '版本': `v${next}`, '状态': '待确认', '来源': '手动编辑' }
     const canonical = renderBlueprint(doc)
     await writeFile(versionPath(next), canonical, 'utf8')
-    await writeFile(visualPath(next), JSON.stringify({ status: 'pending', style: null }, null, 2) + '\n', 'utf8')
+    const previousVisual = await visualStyle(n)
+    await writeFile(visualPath(next), JSON.stringify(previousVisual?.style ? { status: 'selected', style: previousVisual.style } : { status: 'pending', style: null }, null, 2) + '\n', 'utf8')
     try { await writeFile(path.join(dirs.outbox, `蓝图_v${next}.技能.json`), await readFile(path.join(dirs.outbox, `蓝图_v${n}.技能.json`))) } catch (e) { if (e.code !== 'ENOENT') throw e }
 
     await ensureDirs()

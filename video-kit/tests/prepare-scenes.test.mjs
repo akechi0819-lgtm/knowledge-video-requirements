@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import { defaultProcessGuidance } from '../../dsh-workbench-fix/dsh-base/packages/bohack-blueprint/lib/process-guidance.js';
 
 const script = resolve(fileURLToPath(new URL('../scripts/prepare-scenes.mjs', import.meta.url)));
@@ -79,7 +80,8 @@ test('preserves narration and confines model output to data', async () => {
     assert.deepEqual(sent.userRequirements, ['简洁']);
     assert.equal(sent.notes, null);
     assert.deepEqual(sent.gaps, []);
-    assert.deepEqual(sent.visualStyle, { name:'杂志式图文', description:'暖色与留白' });
+    assert.deepEqual(sent.visualStyle, input.style);
+    assert.deepEqual(sent.sequence.map(s => s.id), ['S01']);
     assert.deepEqual(sent.skillGuidance, defaultProcessGuidance());
     const data = JSON.parse(await readFile(join(result.output, 'S01.scene.json')));
     assert.equal(data.script, undefined);
@@ -90,6 +92,61 @@ test('preserves narration and confines model output to data', async () => {
     assert.ok(!html.includes('</script><script>evil()'));
     assert.ok(html.includes('\\u003c/script>'));
   } finally { await rm(result.dir, { recursive: true, force: true }); }
+});
+
+test('selected style guides composition and its camera is rendered', async () => {
+  const input = base(); input.style = {id:'andy-pixel-quest',name:'像素闯关',description:'有限色板，地图构图，镜头平移',source:{kind:'builtin',label:'参考'}};
+  input.skill = {id:'repo-skill:example',name:'制作方法',content:'完整技能方法，包含分镜和动作规则'};
+  const camera = {fromScale:1,toScale:1.25,fromX:0,fromY:0,toX:120,toY:-40};
+  const result = await runCase(input, {...scene,camera});
+  try {
+    assert.equal(result.code,0,result.stderr);
+    const prompt = result.requests[0].messages;
+    assert.match(prompt[0].content,/色彩、构图、文字层级、素材位置、运动方式和节奏/);
+    const sent = JSON.parse(prompt[1].content);
+    assert.deepEqual(sent.visualStyle,input.style); assert.deepEqual(sent.skillGuidance,input.skill);
+    assert.deepEqual(JSON.parse(await readFile(join(result.output,'S01.scene.json'))).camera,camera);
+    const html = await readFile(join(result.output,'S01.html'),'utf8');
+    assert.match(html,/camera\.fromScale \+ \(camera\.toScale - camera\.fromScale\) \* progress/);
+    assert.match(html,/960 \+ cameraX/);
+  } finally { await rm(result.dir,{recursive:true,force:true}); }
+});
+
+test('text and source image layouts produce different rendered properties', async () => {
+  const input = base(); input.sections[0].image = 'images/S01.png';
+  const png = Buffer.from('89504e470d0a1a0a00000000','hex');
+  const model = (box, anchor, font) => ({background:'#112233',imageLayout:box,layers:[{...scene.layers[0],textAnchor:anchor,fontFamily:font}]});
+  const a = await runCase(input,model({x:0,y:0,width:960,height:450},'start','serif'),png);
+  const b = await runCase(input,model({x:960,y:450,width:960,height:450},'end','monospace'),png);
+  function render(html) {
+    const elements = Object.fromEntries(['#stage','svg','g','#source-image','#sub'].map(key => [key,{style:{},attrs:{},classList:{add(){}},setAttribute(k,v){this.attrs[k]=v},appendChild(child){this.child=child}}]));
+    elements.svg.querySelector = () => elements.g;
+    const document = {querySelector: key => elements[key],createElementNS: () => ({style:{},attrs:{},setAttribute(k,v){this.attrs[k]=v}})};
+    const window = {STYLE:{video:{width:1920,height:1080},subtitle:{bottom:0,fontWeight:400,fontSize:30},font:{family:'sans-serif'}}};
+    vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],{document,window});
+    return {image:elements['#source-image'].style,text:elements.g.child.attrs};
+  }
+  try {
+    assert.equal(a.code,0,a.stderr); assert.equal(b.code,0,b.stderr);
+    const left = render(await readFile(join(a.output,'S01.html'),'utf8'));
+    const right = render(await readFile(join(b.output,'S01.html'),'utf8'));
+    assert.equal(left.image.left,'0%'); assert.equal(right.image.left,'50%');
+    assert.equal(left.text['text-anchor'],'start'); assert.equal(right.text['text-anchor'],'end');
+    assert.equal(left.text['font-family'],'serif'); assert.equal(right.text['font-family'],'monospace');
+  } finally { await rm(a.dir,{recursive:true,force:true}); await rm(b.dir,{recursive:true,force:true}); }
+});
+
+test('invalid optional layout fields are ignored or clamped', async () => {
+  const input = base(); input.sections[0].image = 'images/S01.png';
+  const invalid = {...scene,camera:{fromScale:-4,toScale:9,fromX:99999,fromY:0,toX:0,toY:0},imageLayout:{x:-5,y:850,width:5000,height:999},layers:[{...scene.layers[0],textAnchor:'unsafe',fontFamily:'url(evil)',motion:{toX:'bad'}}]};
+  const result = await runCase(input,invalid,Buffer.from('89504e470d0a1a0a00000000','hex'));
+  try {
+    assert.equal(result.code,0,result.stderr); assert.equal(result.requests.length,1);
+    const data=JSON.parse(await readFile(join(result.output,'S01.scene.json')));
+    assert.deepEqual(data.camera,{fromScale:0.5,toScale:2,fromX:1920,fromY:0,toX:0,toY:0});
+    assert.deepEqual(data.imageLayout,{x:0,y:850,width:1920,height:50});
+    assert.equal(data.layers[0].textAnchor,undefined); assert.equal(data.layers[0].fontFamily,undefined); assert.equal(data.layers[0].motion,undefined);
+  } finally { await rm(result.dir,{recursive:true,force:true}); }
 });
 
 test('missing narration fails before any request and names blueprint section', async () => {
@@ -232,7 +289,7 @@ test('fills omitted planned assets from the approved section', async () => {
 });
 
 
-test('preserves asset rotation and orbit and rejects invalid pivots', async () => {
+test('preserves valid asset rotation and orbit and ignores invalid pivots', async () => {
   const input = base();
   input.sections[0].assets = [{id:'moon',name:'月球',type:'character',image:'assets/moon.svg'}];
   const layer = {type:'asset',assetId:'moon',x:300,y:200,width:100,height:100,fill:'#ffffff',text:'',start:0,end:1,rotation:{from:0,to:-360},orbit:{cx:960,cy:450,from:0,to:360}};
@@ -248,7 +305,7 @@ test('preserves asset rotation and orbit and rejects invalid pivots', async () =
     assert.match(html, /orbitTransform \+ selfTransform/);
   } finally { await rm(result.dir, {recursive:true, force:true}); }
   const bad = await runCase(input, {background:'#000000',layers:[{...layer, orbit:{cx:null,cy:450,from:0,to:360}}]}, null, {'moon.svg':svg});
-  try { assert.notEqual(bad.code, 0); assert.match(bad.stderr, /layers\[0\].*orbit/); }
+  try { assert.equal(bad.code, 0, bad.stderr); assert.equal(JSON.parse(await readFile(join(bad.output,'S01.scene.json'))).layers[0].orbit,undefined); }
   finally { await rm(bad.dir, {recursive:true, force:true}); }
 });
 

@@ -64,6 +64,32 @@ test('素材脏图元反馈修正，修正仍无效时保留安全图元', async
   } finally { await rm(root,{recursive:true,force:true}) }
 })
 
+test('丢失的素材变为待生成，仅补齐丢失项并保留其他确认', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'asset-missing-'))
+  try {
+    let calls = 0
+    const assets = createGeneratedAssets(root, {settings:{load:async()=>({model:{baseUrl:'http://localhost',model:'test'}})}, request:async()=>{
+      calls++; return {ok:true,json:async()=>({choices:[{message:{content:JSON.stringify({shapes:[{d:`M0 0 L${calls} 1`,fill:'#123456',stroke:'none',width:1}]})}}]})}
+    }})
+    const args = {version:1,doc:{assets:[{id:'a',name:'船',type:'prop',description:'船',sections:['B01']},{id:'b',name:'书',type:'prop',description:'书',sections:['B01']}]},style:null}
+    const initial = await assets.generate(args)
+    const revisions = Object.fromEntries(initial.assets.map(a=>[a.id,a.revision]))
+    await assets.approve({...args,revisions})
+    await rm(await assets.file({...args,id:'a',revision:revisions.a}))
+    const missing = await assets.status(args)
+    assert.deepEqual(missing.assets.map(a=>a.status),['pending','approved'])
+    assert.deepEqual(missing.assets.map(a=>a.missingFile),[true,false])
+    assert.equal(missing.assets[0].revision,null); assert.equal(missing.assets[0].previewUrl,null)
+    const repaired = await assets.generate(args)
+    assert.equal(calls,3); assert.deepEqual(repaired.assets.map(a=>a.status),['generated','approved'])
+    assert.equal(repaired.assets[1].revision,revisions.b)
+    const before = await readFile(await assets.file({...args,id:'a',revision:repaired.assets[0].revision}),'utf8')
+    const rebuilt = await assets.generate({...args,id:'a'})
+    assert.equal(calls,4); assert.equal(rebuilt.assets[1].revision,revisions.b)
+    assert.notEqual(await readFile(await assets.file({...args,id:'a',revision:rebuilt.assets[0].revision}),'utf8'),before)
+  } finally { await rm(root,{recursive:true,force:true}) }
+})
+
 
 test('DSH 模式在隔离目录运行并生成素材', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'asset-dsh-test-'))

@@ -32,6 +32,10 @@ test('production requires a current confirmed blueprint and executes the kit con
     await writeFile(path.join(workspace, 'outbox/蓝图_v1.md'), doc('旁白一'))
     await service.finalize()
     assert.equal((await service.production.start()).status, 'running')
+    const ongoing = await service.chat({ text:'继续制作' }, { chatTurn: async () => { throw new Error('不应调用模型') } })
+    assert.equal(ongoing.recovery.previousStatus, 'running')
+    assert.equal(ongoing.production, null)
+    assert.match(ongoing.reply, /无需重复启动/)
     await assert.rejects(service.production.start(), /正在运行/)
     let state
     for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
@@ -101,7 +105,16 @@ test('image bindings reject missing, ambiguous and outside-workspace assets', as
     await assert.rejects(service.production.start(), /未在本创作资料中登记/)
     await service.addAsset({name:'火锅.png',type:'image',path:'../outside.png'})
     await assert.rejects(service.production.start(), /不在本创作上传目录/)
-    await service.addAsset({name:'火锅.png',type:'image',path:'sources/another.png'})
+    await writeFile(path.join(root,'assets.jsonl'), '')
+    await service.addAsset({name:'火锅.png',type:'image',path:'sources/missing.png'})
+    await assert.rejects(service.production.start(), /重新上传：火锅\.png/)
+    const png = Buffer.from('89504e470d0a1a0a00000000','hex')
+    await service.uploadAsset({name:'火锅.png',dataBase64:png.toString('base64')})
+    let state = await service.production.start()
+    assert.equal(state.status,'running')
+    assert.deepEqual(await readFile(path.join(root,'production',state.id,'images','S01.png')),png)
+    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
+    await service.uploadAsset({name:'火锅.png',dataBase64:png.toString('base64')})
     await assert.rejects(service.production.start(), /重复文件名/)
   } finally {
     for (const key of ['SCENE_API_KEY','SCENE_ENDPOINT','SCENE_MODEL']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
@@ -259,6 +272,10 @@ test('production generates and reuses assets while preserving their review statu
     state = await service.production.start()
     for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
     assert.equal(state.status, 'completed', state.error); assert.equal(calls, 1)
+    await assert.rejects(service.production.start({regenerateAssetId:'missing'}), /素材不存在/)
+    state = await service.production.start({regenerateAssetId:'A01'})
+    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
+    assert.equal(state.status, 'completed', state.error); assert.equal(calls, 2)
     await service.selectVisualStyle({id:'editorial',version:1})
     service.generatedAssets.generate = async () => { throw new Error('素材服务不可用') }
     state = await service.production.start()
@@ -444,4 +461,93 @@ test('failed scene production reuses matching completed sections only', async ()
     await service.selectVisualStyle({id:'editorial',version:1})
     const changed=await run();assert.equal(changed.status,'failed');assert.equal(changed.reusedScenesFrom,undefined)
   } finally {for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]}await rm(root,{recursive:true,force:true})}
+})
+
+test('chat diagnoses and resumes failed work without rerunning completed work', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-recovery-'))
+  const previous = process.env.SCENE_API_KEY
+  delete process.env.SCENE_API_KEY
+  try {
+    const service = createService({}, { workspace: root })
+    await service._internal.ensureDirs()
+    const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:id === 'B01' ? '展示 原图.png' : '画面', narration:'旁白', notes:'' })
+    await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
+    await service.finalize({ all:true, version:1 })
+    const finalized = (await service._internal.getState()).finalized
+    await mkdir(path.join(root,'production'), {recursive:true})
+    const statusPath = path.join(root,'production/status.json')
+    const state = { id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', status:'failed', phase:'生成画面', error:'画面服务失败\n    at internal.js:10\nsecret stack', version:'v1' }
+    await writeFile(statusPath, JSON.stringify(state))
+    const engine = { chatTurn: async () => { throw new Error('直接操作不应调用模型') } }
+    const diagnostic = await service.chat({ text:'制作停在哪一步了？' }, engine)
+    assert.match(diagnostic.reply, /生成画面.*画面服务失败/)
+    assert.doesNotMatch(diagnostic.reply, /internal.js|secret stack/)
+    for (const text of ['继续制作','恢复制作','接着做','重试']) {
+      const result = await service.chat({ text }, engine)
+      assert.equal(result.recovery.previousStatus, 'failed')
+      assert.equal(result.recovery.phase, '生成画面')
+      assert.equal(result.recovery.error, '画面服务失败')
+      assert.ok(result.production || result.productionError)
+      assert.deepEqual((await service._internal.getState()).finalized, finalized)
+    }
+    await writeFile(statusPath, JSON.stringify({...state, status:'running', phase:'配音与渲染', error:null}))
+    const interrupted = await service.chat({ text:'恢复制作' }, engine)
+    assert.equal(interrupted.recovery.previousStatus, 'interrupted')
+    assert.equal(interrupted.recovery.phase, '配音与渲染')
+    assert.ok(interrupted.production || interrupted.productionError)
+    await writeFile(statusPath, JSON.stringify({...state, status:'completed', phase:'制作完成', error:null}))
+    const done = await service.chat({ text:'继续制作' }, engine)
+    assert.match(done.reply, /成片已完成/)
+    assert.equal(done.production, null)
+    assert.equal(JSON.parse(await readFile(statusPath,'utf8')).id, state.id)
+    await service.addAsset({name:'旧资料.pdf', type:'file', path:'sources/旧资料.pdf'})
+    const noMissingWork = await service.chat({text:'把缺失的素材补齐，继续制作'}, engine)
+    assert.equal(noMissingWork.production, null)
+    assert.match(noMissingWork.reply, /没有需要补齐的生成素材/)
+    await service.addAsset({name:'原图.png', type:'image', path:'sources/原图.png'})
+    const missing = await service.chat({ text:'哪些素材丢了？' }, engine)
+    assert.deepEqual(missing.assetDiagnosis.missingReferences, ['旧资料.pdf', '原图.png'])
+    assert.match(missing.reply, /请重新上传/)
+    const repair = await service.chat({ text:'把缺失的素材补齐，继续制作' }, engine)
+    assert.equal(repair.production, null)
+    assert.match(repair.reply, /请重新上传/)
+    await service.uploadAsset({name:'原图.png',dataBase64:Buffer.from('image').toString('base64')})
+    const replaced = await service.chat({text:'把缺失的素材补齐，继续制作'}, engine)
+    assert.deepEqual(replaced.assetDiagnosis.missingRequiredImages, [])
+    assert.match(replaced.reply, /没有需要补齐的生成素材/)
+  } finally {
+    if (previous === undefined) delete process.env.SCENE_API_KEY; else process.env.SCENE_API_KEY = previous
+    await rm(root,{recursive:true, force:true})
+  }
+})
+
+test('chat regenerates only the named asset and rejects uncertain requests', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-asset-retry-'))
+  try {
+    const service = createService({}, {workspace:root})
+    await service._internal.ensureDirs()
+    const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const assets = [{id:'A01',name:'硝石晶体',type:'prop',description:'晶体',sections:['B01']}]
+    await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({topic:'测试',userRequirements:[],sections,assets,meta:{}}))
+    await service.finalize({all:true,version:1})
+    const engine = { chatTurn: async () => { throw new Error('不应调用模型') } }
+    const calls = []
+    service.production.start = async args => { calls.push(args); return {status:'running'} }
+    const result = await service.chat({text:'重新生成硝石晶体，然后继续制作'},engine)
+    assert.equal(result.production.status,'running')
+    assert.deepEqual(calls,[{regenerateAssetId:'A01'}])
+    for (const text of ['重新生成不存在素材，然后继续制作','重新生成硝石晶体吗？','不要重新生成硝石晶体']) {
+      const denied = await service.chat({text},engine)
+      assert.equal(denied.production,null,text)
+      assert.equal(calls.length,1,text)
+    }
+    for (const text of ['重新生成蓝图', '重新生成需求单', '重做这一段']) {
+      const normal = await service.chat({text}, {chatTurn: async () => ({reply:'交给对话处理'})})
+      assert.equal(normal.reply, '交给对话处理', text)
+      assert.equal(calls.length, 1)
+    }
+    const missing = await service.chat({text:'素材丢了，重新生成'},engine)
+    assert.equal(missing.production.status,'running')
+    assert.equal(calls.length,2)
+  } finally { await rm(root,{recursive:true,force:true}) }
 })

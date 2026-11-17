@@ -91,7 +91,7 @@ export function createStyles(workspace, libraryRoot = workspace) {
   async function chooseBlueprintSkill({ id }) {
     const skill = id ? (await list()).styles.find(item => item.id === id) : null
     if (id && !skill) throw new Error('所选 Skill 不在当前风格库中。')
-    const snapshot = skill ? { id: skill.id, name: skill.name, content: skill.description } : null
+    const snapshot = skill ? { id: skill.id, name: skill.name, content: skill.description, description: skill.description, source: skill.source, kind: skill.kind } : null
     await save(path.join(workspace, 'blueprint-skill.json'), snapshot)
     return { ok: true, skill: snapshot }
   }
