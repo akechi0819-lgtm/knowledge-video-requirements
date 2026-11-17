@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createService } from '../lib/service.js'
@@ -8,6 +9,10 @@ import { createProduction } from '../lib/production.js'
 import { renderBlueprint } from '../lib/blueprint.js'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+test('default DSH launcher can be executed directly on POSIX', { skip: process.platform === 'win32' }, async () => {
+  await access(new URL('../../../dsh.sh', import.meta.url), constants.X_OK)
+})
+
 test('production requires a current confirmed blueprint and executes the kit contract', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-'))
   const workspace = path.join(root, 'ws'), kit = path.join(root, 'kit')
