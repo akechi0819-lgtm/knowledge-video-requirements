@@ -6,6 +6,8 @@ import path from 'node:path'
 const exec = promisify(execFile)
 const LIMIT = 500 * 1024 * 1024
 
+function chatUrl(base){ const u=new URL(base); u.pathname=u.pathname.replace(/\/+$/,''); if(!/\/chat\/completions$/.test(u.pathname)) u.pathname+='/chat/completions'; return u }
+
 // Samples are visual evidence only: motion and timing between frames are unknown.
 export async function analyzeVideo({ videoPath, outputDir, projectModel }) {
   const shared = projectModel || { endpoint: process.env.WORKBENCH_MODEL_ENDPOINT, model: process.env.WORKBENCH_MODEL_NAME, key: process.env.WORKBENCH_MODEL_KEY }
@@ -42,7 +44,7 @@ export async function analyzeVideo({ videoPath, outputDir, projectModel }) {
   for (const frame of frames) content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${(await fs.readFile(frame.path)).toString('base64')}` } })
   let response
   try {
-    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages: [{ role: 'user', content }] }), signal: AbortSignal.timeout(180000) })
+    response = await fetch(chatUrl(endpoint), { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages: [{ role: 'user', content }] }), redirect: 'error', signal: AbortSignal.timeout(180000) })
   } catch { throw new Error('无法连接视觉模型，请检查地址、网络及模型是否运行。') }
   if (!response.ok) throw new Error(`视觉模型请求失败（HTTP ${response.status}），请检查模型是否支持图片输入及配置。`)
   let data

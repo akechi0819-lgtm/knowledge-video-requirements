@@ -6,6 +6,8 @@ import { safeShapes } from './safe-shapes.js'
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
+function chatUrl(base){ const u=new URL(base); u.pathname=u.pathname.replace(/\/+$/,''); if(!/\/chat\/completions$/.test(u.pathname)) u.pathname+='/chat/completions'; return u }
+
 // The model supplies geometry, never executable markup or code.
 export function renderAsset(shapes) {
   const usable = safeShapes(shapes)
@@ -56,14 +58,14 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
     if (id !== undefined && !selected.length) throw new Error('素材不存在。')
     if (!selected.length) return status({ version, doc, style })
     const dsh = process.env.SCENE_MODE === 'dsh'
-    let url, model, key, callDsh
+    let url, endpoint, model, key, callDsh
     if (dsh) {
       const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
       const kit = path.resolve(videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
       ;({ callDsh } = await import(pathToFileURL(path.join(kit, 'scripts/dsh-model.mjs')).href))
     } else {
       const config = await settings.load()
-      const endpoint = config.model?.baseUrl || process.env.SCENE_ENDPOINT || process.env.WORKBENCH_MODEL_ENDPOINT
+      endpoint = config.model?.baseUrl || process.env.SCENE_ENDPOINT || process.env.WORKBENCH_MODEL_ENDPOINT
       model = config.model?.model || process.env.SCENE_MODEL || process.env.WORKBENCH_MODEL_NAME
       key = config.model?.baseUrl ? config.model.apiKey : (process.env.SCENE_ENDPOINT ? process.env.SCENE_API_KEY : process.env.WORKBENCH_MODEL_KEY)
       if (!endpoint || !model) throw new Error('请先配置模型地址和名称。')
@@ -82,15 +84,16 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
       if (dsh) content = await callDsh(messages)
       else {
         try {
-          const response = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages, ...(/^mimo-v2\.[56](?:-pro)?$/i.test(model) ? { thinking: { type: 'disabled' } } : {}) }), signal: AbortSignal.timeout(600000) })
+          const response = await request(chatUrl(endpoint), { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages, ...(/^mimo-v2\.[56](?:-pro)?$/i.test(model) ? { thinking: { type: 'disabled' } } : {}) }), redirect: 'error', signal: AbortSignal.timeout(600000) })
           if (!response.ok) throw new Error(`素材「${asset.name}」生成失败（HTTP ${response.status}）。`)
           const data = await response.json()
-          content = data.choices[0].message.content
+          content = data.choices?.[0]?.message?.content
         } catch (error) {
           if (error.name === 'TimeoutError' || error.name === 'AbortError') throw new Error(`素材「${asset.name}」生成超时，请重试。`)
           throw error
         }
       }
+      if (typeof content !== 'string' || !content.trim()) throw new Error('模型未返回文本内容（choices 为空或 content 为 null）')
       try {
         const parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*|\s*```$/g, ''))
         svg = renderAsset(parsed.shapes)

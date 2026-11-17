@@ -1,4 +1,7 @@
 import { safeShapes } from './safe-shapes.js'
+
+function chatUrl(base){ const u=new URL(base); u.pathname=u.pathname.replace(/\/+$/,''); if(!/\/chat\/completions$/.test(u.pathname)) u.pathname+='/chat/completions'; return u }
+
 // The model supplies geometry only. Rendering never interprets model output as markup.
 export async function generatePreview(sections, settings, request = fetch) {
   if (!sections?.length) throw new Error('请先生成蓝图。')
@@ -16,11 +19,12 @@ export async function generatePreview(sections, settings, request = fetch) {
   let partial
   for (let attempt = 0; attempt < 2; attempt++) {
   let response, data
-  try { response = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages, ...(/^mimo-v2\.[56](?:-pro)?$/i.test(model) ? { thinking: { type: 'disabled' } } : {}) }), signal: AbortSignal.timeout(600000) }) }
+  try { response = await request(chatUrl(endpoint), { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages, ...(/^mimo-v2\.[56](?:-pro)?$/i.test(model) ? { thinking: { type: 'disabled' } } : {}) }), redirect: 'error', signal: AbortSignal.timeout(600000) }) }
   catch (error) { if (error.name === 'TimeoutError' || error.name === 'AbortError') throw new Error('场景示意生成超时，请重试。'); throw new Error('场景示意生成失败，请检查模型连接后重试。') }
   if (!response.ok) throw new Error(`场景示意生成失败（HTTP ${response.status}）。`)
   try { data = await response.json() } catch (error) { if (error.name === 'TimeoutError' || error.name === 'AbortError') throw new Error('场景示意生成超时，请重试。'); throw error }
   const content = data.choices?.[0]?.message?.content
+  if (typeof content !== 'string' || !content.trim()) throw new Error('模型未返回文本内容（choices 为空或 content 为 null）')
   try {
     const parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*|\s*```$/g, ''))
     if (!Array.isArray(parsed.scenes)) throw new Error('scenes 必须是数组')

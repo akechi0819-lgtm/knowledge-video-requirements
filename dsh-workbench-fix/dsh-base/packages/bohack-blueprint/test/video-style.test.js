@@ -31,3 +31,27 @@ test('视频抽帧附时间证据，传给视觉模型并标注局限；模型�
     await assert.rejects(fs.access(path.join(dir, 'failed/analysis.json')))
   } finally { process.env = old; globalThis.fetch = oldFetch; await fs.rm(dir, { recursive: true, force: true }) }
 })
+
+test('视觉模型地址归一化为 chat/completions 端点且禁止重定向', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'video-style-url-'))
+  const old = { ...process.env }, oldFetch = globalThis.fetch
+  try {
+    const video = path.join(dir, 'v.mp4'), probe = path.join(dir, 'probe'), ffmpeg = path.join(dir, 'ffmpeg')
+    await fs.writeFile(video, 'video')
+    await fs.writeFile(probe, '#!/bin/sh\nprintf \'{"format":{"duration":"2"},"streams":[{"codec_type":"video"}]}\'\n', { mode: 0o755 })
+    await fs.writeFile(ffmpeg, '#!/bin/sh\nfor last; do :; done\nprintf image > "$last"\n', { mode: 0o755 })
+    Object.assign(process.env, { VIDEO_FFPROBE: probe, VIDEO_FFMPEG: ffmpeg, WORKBENCH_VISION_MODEL: 'test', WORKBENCH_VISION_KEY: 'k' })
+    delete process.env.WORKBENCH_MODEL_KEY
+    const urls = []
+    globalThis.fetch = async (url, options) => {
+      urls.push(url)
+      assert.equal(options.redirect, 'error')
+      return new Response(JSON.stringify({ choices: [{ message: { content: '观察：画面以蓝色为主。' } }] }))
+    }
+    for (const endpoint of ['https://x/v1', 'https://x/v1/chat/completions', 'https://x/v1/']) {
+      process.env.WORKBENCH_VISION_ENDPOINT = endpoint
+      await analyzeVideo({ videoPath: video, outputDir: path.join(dir, 'out') })
+    }
+    assert.deepEqual(urls.map(String), Array(3).fill('https://x/v1/chat/completions'))
+  } finally { process.env = old; globalThis.fetch = oldFetch; await fs.rm(dir, { recursive: true, force: true }) }
+})
