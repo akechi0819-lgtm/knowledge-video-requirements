@@ -9,8 +9,13 @@ if (args[0] !== '--input' || args[2] !== '--output' || !((args.length === 5 && a
   console.error('Usage: node scripts/prepare-scenes.mjs --input production.json --output NEW_DIRECTORY --dsh | --endpoint URL --model MODEL');
   process.exit(1);
 }
-const input = resolve(args[1]), output = resolve(args[3]), endpoint = args[5], model = args[7];
+function normalizeChatEndpoint(value) {
+  const trimmed = value.replace(/\/+$/, '');
+  return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`;
+}
+const input = resolve(args[1]), output = resolve(args[3]), model = args[7];
 const dsh = args[4] === '--dsh';
+const endpoint = dsh ? undefined : normalizeChatEndpoint(args[5]);
 const key = process.env.SCENE_API_KEY;
 if (!dsh) {
   const url = new URL(endpoint);
@@ -170,7 +175,7 @@ window.seek = function(t) {
 
 // Send descriptive content to the model without exposing local paths.
 function scrubPaths(value) {
-  if (typeof value === 'string') return value.replace(/(?:[A-Za-z]:\\|\/)(?:[^\s，。；、：:（）()"'<>]+[\/\\])*[^\s，。；、：:（）()"'<>]+/g, '[本地路径]');
+  if (typeof value === 'string') return value.replace(/(?:(?<![A-Za-z])[A-Za-z]:[\\/][^\s，。；、：:（）()"'<>]+|\/(?:Users|home|root|tmp|var|etc|opt|mnt|media|private|workspace|data|srv)\/[^\s，。；、：:（）()"'<>]+)/g, '[本地路径]');
   if (Array.isArray(value)) return value.map(scrubPaths);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubPaths(item)]));
   return value;
@@ -241,10 +246,18 @@ for (const section of production.sections) {
         response_format: { type: 'json_object' },
         temperature: 0.3,
       }),
+      signal: AbortSignal.timeout(120000),
     });
-    if (!response.ok) throw new Error(`Scene request for ${section.id} failed: HTTP ${response.status}`);
+    if (!response.ok) {
+      if ((response.status === 429 || response.status >= 500) && attempt === 0) {
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+      throw new Error(`Scene request for ${section.id} failed: HTTP ${response.status}`);
+    }
     const result = await response.json();
-    content = result.choices[0].message.content;
+    content = result.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) throw new Error(`Scene response for ${section.id} is missing message content.`);
     }
     let parsed;
     try { parsed = JSON.parse(content); data = validate(parsed, assetIds); break; }

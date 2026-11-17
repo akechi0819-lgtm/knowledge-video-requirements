@@ -8,13 +8,30 @@ import { exportProduction } from '../scripts/export-production.js'
 
 const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
 
+function normalizeEndpoint(baseUrl, suffix) {
+  const trimmed = String(baseUrl).replace(/\/+$/, '')
+  return trimmed.endsWith(suffix) ? trimmed : trimmed + suffix
+}
+
 export function createProduction(workspace, config = {}) {
   const root = path.join(workspace, 'production')
   const stateFile = path.join(root, 'status.json')
   const kit = path.resolve(config.videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
   let active = false
   let generation = 0
-  async function save(state) { const temp = path.join(root, `.status-${randomUUID()}.tmp`); await writeFile(temp, JSON.stringify(state, null, 2) + '\n'); await rename(temp, stateFile); if (state.status === 'completed') await writeFile(path.join(root, state.id, 'completed.json'), JSON.stringify(state) + '\n') }
+  async function save(state) {
+    const temp = path.join(root, `.status-${randomUUID()}.tmp`)
+    await writeFile(temp, JSON.stringify(state, null, 2) + '\n')
+    // Windows antivirus / concurrent readers briefly lock the file, making rename fail with EPERM/EBUSY.
+    for (let attempt = 0; ; attempt++) {
+      try { await rename(temp, stateFile); break }
+      catch (e) {
+        if ((e.code === 'EPERM' || e.code === 'EBUSY') && attempt < 50) { await new Promise(r => setTimeout(r, 20 + Math.random() * 30)); continue }
+        throw e
+      }
+    }
+    if (state.status === 'completed') await writeFile(path.join(root, state.id, 'completed.json'), JSON.stringify(state) + '\n')
+  }
   async function exists(file) {
     try { await stat(file); return true } catch (e) { if (e.code === 'ENOENT') return false; throw e }
   }
@@ -101,9 +118,27 @@ export function createProduction(workspace, config = {}) {
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [path.join(kit, script), ...args], { cwd: kit, env, stdio: ['ignore', 'ignore', 'pipe'] })
       let errors = ''
+      let timedOut = false
+      let killTimer = null
+      const timeoutMs = Number(process.env.VIDEO_PRODUCTION_TIMEOUT_MS) || 30 * 60 * 1000
+      const watchdog = setTimeout(() => {
+        timedOut = true
+        child.kill('SIGTERM')
+        killTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+            else child.kill('SIGKILL')
+          }
+        }, 5000)
+      }, timeoutMs)
       child.stderr.on('data', chunk => { errors = (errors + chunk.toString()).slice(-4000) })
-      child.on('error', reject)
-      child.on('close', code => code === 0 ? resolve() : reject(new Error(`${script} 退出码 ${code}：${errors.trim()}`)))
+      child.on('error', error => { clearTimeout(watchdog); if (killTimer) clearTimeout(killTimer); reject(error) })
+      child.on('close', code => {
+        clearTimeout(watchdog)
+        if (killTimer) clearTimeout(killTimer)
+        if (timedOut) return reject(new Error(`${script} 制作超时（${Math.round(timeoutMs / 60000)} 分钟），已终止子进程。`))
+        code === 0 ? resolve() : reject(new Error(`${script} 退出码 ${code}：${errors.trim()}`))
+      })
     })
   }
   async function reusableScenes(production, dir) {
@@ -145,8 +180,10 @@ export function createProduction(workspace, config = {}) {
     const candidates = []
     if (prior?.status === 'completed') candidates.push(prior)
     for (const id of (await readdir(root)).filter(name => /^[0-9a-f-]{36}$/.test(name))) {
-      try { candidates.push(JSON.parse(await readFile(path.join(root, id, 'completed.json'), 'utf8'))) }
-      catch (e) { if (e.code !== 'ENOENT') throw e }
+      try {
+        const candidate = JSON.parse(await readFile(path.join(root, id, 'completed.json'), 'utf8'))
+        if (candidate && typeof candidate === 'object') candidates.push(candidate)
+      } catch { /* Missing or corrupt completion records are not reusable. */ }
     }
     candidates.sort ( (a, b) => (b.completedAt || '').localeCompare(a.completedAt || '') )
     const narration = production.sections.map(({ id, narration }) => ({ id, narration }))
@@ -256,7 +293,9 @@ export function createProduction(workspace, config = {}) {
               for (const id of reused.sections) for (const suffix of ['.html', '.scene.json']) await copyFile(path.join(reused.scenes, id + suffix), path.join(reuseDir, id + suffix))
               state.reusedScenesFrom = reused.id; state.reusedSceneSections = reused.sections; await save(state)
             }
-            await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', endpoint, '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir })
+            const dshBase = path.resolve(kit, '..', 'dsh-workbench-fix', 'dsh-base')
+            const dshCli = process.env.DSH_CLI || path.join(dshBase, process.platform === 'win32' ? 'dsh.cmd' : 'dsh.sh')
+            await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', normalizeEndpoint(endpoint, '/chat/completions'), '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir, DSH_CLI: dshCli })
           }
           state.phase = '配音与渲染'; await save(state)
           const audio = await reusableAudio(production, prior)
@@ -264,7 +303,7 @@ export function createProduction(workspace, config = {}) {
           if (saved.tts?.voice) args.push('--voice', `api:${saved.tts.voice}`)
           else if (process.env.VIDEO_VOICE) args.push('--voice', process.env.VIDEO_VOICE)
           else if (process.env.VOICE_NAME) args.push('--voice', `api:${process.env.VOICE_NAME}`)
-          await run('WORK/modules/video/pipeline.mjs', args, { ...process.env, VIDEO_TTS_CACHE_DIR: audio?.audio || '', ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: saved.tts.baseUrl } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
+          await run('WORK/modules/video/pipeline.mjs', args, { ...process.env, VIDEO_TTS_CACHE_DIR: audio?.audio || '', ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: normalizeEndpoint(saved.tts.baseUrl, saved.tts.protocol === 'mimo' ? '/chat/completions' : '/audio/speech') } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
           state.phase = '自动质检'; await save(state)
           await run('WORK/modules/video/verify.mjs', [path.join(film, 'mapping.json')])
           await Promise.all([stat(path.join(film, 'final.mp4')), readFile(path.join(film, 'mapping.json'), 'utf8').then(JSON.parse)])

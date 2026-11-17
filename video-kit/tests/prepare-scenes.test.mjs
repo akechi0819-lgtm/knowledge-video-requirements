@@ -17,7 +17,7 @@ const scene = {
   script: 'evil()',
 };
 
-async function runCase(production, modelScene = scene, imageBytes = null, assetFiles = {}, model = 'test', reuse = false) {
+async function runCase(production, modelScene = scene, imageBytes = null, assetFiles = {}, model = 'test', reuse = false, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'prepare-scenes-test-'));
   const input = join(dir, 'input.json');
   const output = join(dir, 'out');
@@ -25,23 +25,25 @@ async function runCase(production, modelScene = scene, imageBytes = null, assetF
   await writeFile(input, JSON.stringify(production));
   if (imageBytes) { await mkdir(join(dir, 'images')); await writeFile(join(dir, 'images/S01.png'), imageBytes); }
   if (Object.keys(assetFiles).length) { await mkdir(join(dir, 'assets')); for (const [name, contents] of Object.entries(assetFiles)) await writeFile(join(dir, 'assets', name), contents); }
-  const requests = [];
+  const requests = [], paths = [];
   const server = http.createServer(async (req, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
     requests.push(JSON.parse(body));
+    paths.push(req.url);
     res.setHeader('Content-Type', 'application/json');
+    if (options.handler) return options.handler(req, res, requests.length);
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(modelScene) } }] }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const child = spawn(process.execPath, [script, '--input', input, '--output', output,
-    '--endpoint', `http://127.0.0.1:${server.address().port}/v1/chat/completions`,
+    '--endpoint', `http://127.0.0.1:${server.address().port}${options.endpointPath ?? '/v1/chat/completions'}`,
     '--model', model], { env: { ...process.env, SCENE_API_KEY: 'test', VIDEO_SCENE_REUSE_DIR: reuse ? join(dir, 'reuse') : '' } });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk; });
   const code = await new Promise(resolve => child.on('close', resolve));
   await new Promise(resolve => server.close(resolve));
-  return { dir, output, requests, stderr, code };
+  return { dir, output, requests, paths, stderr, code };
 }
 
 const base = () => ({ status: '准备制作', topic: '潮汐', userRequirements: ['简洁'], notes: null,
@@ -150,13 +152,21 @@ test('null section is rejected before any request', async () => {
 test('DSH mode reads a completed native final event', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'prepare-scenes-dsh-test-'));
   try {
-    const fake = join(dir, 'dsh');
-    await writeFile(fake, `#!/usr/bin/env node\nlet data='';process.stdin.on('data', x=>data+=x);process.stdin.on('end', () => {require('fs').writeFileSync(${JSON.stringify(join(dir, 'request.txt'))},data);console.log(${JSON.stringify(JSON.stringify({type:'final',reason:{kind:'completed'},text:JSON.stringify(scene)}))})});\n`);
-    await chmod(fake, 0o755);
+    const fakeJs = join(dir, 'fake-dsh.js');
+    await writeFile(fakeJs, `let data='';process.stdin.on('data', x=>data+=x);process.stdin.on('end', () => {require('fs').writeFileSync(${JSON.stringify(join(dir, 'request.txt'))},data);console.log(${JSON.stringify(JSON.stringify({type:'final',reason:{kind:'completed'},text:JSON.stringify(scene)}))})});\n`);
+    let cli;
+    if (process.platform === 'win32') {
+      cli = join(dir, 'dsh.cmd');
+      await writeFile(cli, `@echo off\r\nnode "${fakeJs}" %*\r\n`);
+    } else {
+      cli = join(dir, 'dsh');
+      await writeFile(cli, `#!/usr/bin/env node\nrequire(${JSON.stringify(fakeJs)});\n`);
+      await chmod(cli, 0o755);
+    }
     const input = join(dir, 'input.json'), output = join(dir, 'out');
     const doc = base(); doc.style = { id:'editorial', name:'杂志式图文', description:'暖色与留白' };
     await writeFile(input, JSON.stringify(doc));
-    const child = spawn(process.execPath, [script, '--input', input, '--output', output, '--dsh'], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+    const child = spawn(process.execPath, [script, '--input', input, '--output', output, '--dsh'], { env: { ...process.env, DSH_CLI: cli } });
     let stderr = '';
     child.stderr.on('data', chunk => stderr += chunk);
     const code = await new Promise(resolve => child.on('close', resolve));
@@ -261,5 +271,52 @@ test('修正两轮仍含无效图层时保留有效图层并记录提醒', async
     const data = JSON.parse(await readFile(join(result.output,'S01.scene.json')));
     assert.equal(data.layers.length, 1);
     assert.ok(data.warning);
+  } finally { await rm(result.dir, {recursive:true, force:true}); }
+});
+
+test('scrubPaths 保留分数、日期、URL 与中文 slash，只替换真实本地路径', async () => {
+  const input = base();
+  input.sections[0].visual = '对比 1/3 与 2026/11/17，和/或 https://github.com/a/b';
+  input.sections[0].facts = ['来源 C:\\x\\y 与 /home/u/f', '/workspace/inbox/需求.md'];
+  const result = await runCase(input);
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    const sent = JSON.parse(result.requests[0].messages[1].content);
+    assert.equal(sent.visual, '对比 1/3 与 2026/11/17，和/或 https://github.com/a/b');
+    assert.deepEqual(sent.facts, ['来源 [本地路径] 与 [本地路径]', '[本地路径]']);
+  } finally { await rm(result.dir, {recursive:true, force:true}); }
+});
+
+test('endpoint 归一化：base URL 补全 chat/completions 且对完整地址幂等', async () => {
+  const fromBase = await runCase(base(), scene, null, {}, 'test', false, { endpointPath: '/v1' });
+  try { assert.equal(fromBase.code, 0, fromBase.stderr); assert.deepEqual(fromBase.paths, ['/v1/chat/completions']); }
+  finally { await rm(fromBase.dir, {recursive:true, force:true}); }
+  const fromFull = await runCase(base(), scene, null, {}, 'test', false, { endpointPath: '/v1/chat/completions/' });
+  try { assert.equal(fromFull.code, 0, fromFull.stderr); assert.deepEqual(fromFull.paths, ['/v1/chat/completions']); }
+  finally { await rm(fromFull.dir, {recursive:true, force:true}); }
+});
+
+test('429 首次失败后等待重试并成功', async () => {
+  const result = await runCase(base(), scene, null, {}, 'test', false, {
+    handler: (req, res, count) => {
+      if (count === 1) { res.statusCode = 429; res.end('{}'); return; }
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(scene) } }] }));
+    },
+  });
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.requests.length, 2);
+    assert.deepEqual(result.paths, ['/v1/chat/completions', '/v1/chat/completions']);
+  } finally { await rm(result.dir, {recursive:true, force:true}); }
+});
+
+test('响应缺少 message content 时抛出带 section id 的友好错误', async () => {
+  const result = await runCase(base(), scene, null, {}, 'test', false, {
+    handler: (req, res) => res.end(JSON.stringify({})),
+  });
+  try {
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /S01/);
+    assert.match(result.stderr, /missing message content/);
   } finally { await rm(result.dir, {recursive:true, force:true}); }
 });

@@ -9,7 +9,9 @@ export async function callDsh(messages) {
   try {
     return await new Promise((resolve, reject) => {
       const env = { ...process.env }
-      const child = spawn('dsh', ['headless', '--json', '--approval-policy', 'never', '-'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+      const cli = process.env.DSH_CLI || (process.platform === 'win32' ? 'dsh.cmd' : 'dsh')
+      const child = spawn(cli, ['headless', '--json', '--approval-policy', 'never', '-'], { cwd, env, shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+      const watchdog = setTimeout(() => child.kill(), 180000)
       let stdout = '', stderr = '', pending = '', toolUsed = false
       child.stdout.on('data', chunk => {
         stdout += chunk
@@ -23,8 +25,9 @@ export async function callDsh(messages) {
         }
       })
       child.stderr.on('data', chunk => { stderr += chunk })
-      child.on('error', reject)
+      child.on('error', error => { clearTimeout(watchdog); reject(error) })
       child.on('close', code => {
+        clearTimeout(watchdog)
         if (toolUsed) return reject(new Error('DSH attempted to use a tool; generation stopped.'))
         if (code !== 0) return reject(new Error(`DSH request failed: ${stderr.trim()}`))
         try {
