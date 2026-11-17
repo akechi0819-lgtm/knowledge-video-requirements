@@ -4,12 +4,16 @@ import os
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
+import warnings
 
 
 def synth_all(segments, audio, voice, rate, ffprobe, force=False):
     name = voice.removeprefix('say:')
-    if not name or rate != '+0%':
-        raise ValueError('say 配音需要音色名称和默认语速')
+    if not name:
+        raise ValueError('say 配音需要音色名称')
+    if rate != '+0%':
+        warnings.warn(f"接口/系统配音不支持语速 {rate}，已按默认 +0% 合成")
+        rate = '+0%'
     audio.mkdir(parents=True, exist_ok=True)
     results, fresh = [], []
     for segment in segments:

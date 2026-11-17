@@ -6,6 +6,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "WORK/modules/video"))
 import tts_api
@@ -74,5 +75,60 @@ class SpeechEndpointTest(unittest.TestCase):
             probe.return_value.stdout = '{"streams":[]}'
             with self.assertRaisesRegex(ValueError, "S1"):
                 render()
-            self.assertEqual(json.loads((Path(tmp) / "S1.json").read_text())["narration"], "第一段。")
+            self.assertEqual(json.loads((Path(tmp) / "S1.json").read_text(encoding="utf-8"))["narration"], "第一段。")
             self.assertEqual(send.call_count, 2)
+
+    def test_rate_downgraded_at_entry_and_cache_signature(self):
+        with TemporaryDirectory() as tmp, patch.dict('os.environ', {
+            'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a',
+            'VIDEO_TTS_PROTOCOL': 'speech'
+        }), patch.object(tts_api, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'audio')) as send, patch.object(tts_api.subprocess, 'run') as probe:
+            probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
+            segments = [{'id': 'S1', 'narration': '旁白'}]
+            with self.assertWarnsRegex(UserWarning, r'不支持语速 \+7%'):
+                result, fresh = tts_api.synth_all(segments, Path(tmp), 'api:test', '+7%', 'ffprobe')
+            self.assertEqual(fresh, ['S1'])
+            self.assertEqual(result[0]['rate'], '+0%')
+            saved = json.loads((Path(tmp) / 'S1.json').read_text(encoding='utf-8'))
+            self.assertEqual(saved['rate'], '+0%')
+            with self.assertWarnsRegex(UserWarning, r'不支持语速 \+7%'):
+                _, fresh = tts_api.synth_all(segments, Path(tmp), 'api:test', '+7%', 'ffprobe')
+            self.assertEqual(fresh, [])
+            _, fresh = tts_api.synth_all(segments, Path(tmp), 'api:test', '+0%', 'ffprobe')
+            self.assertEqual(fresh, [])
+            self.assertEqual(send.call_count, 1)
+
+    def test_urlerror_retried_then_succeeds(self):
+        with TemporaryDirectory() as tmp, patch.dict('os.environ', {
+            'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a'
+        }), patch.object(tts_api, 'urlopen', side_effect=[
+            URLError('connection refused'), URLError('timed out'), io.BytesIO(b'audio')]) as send, \
+                patch.object(tts_api.subprocess, 'run') as probe, patch.object(tts_api.time, 'sleep') as sleep:
+            probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
+            _, fresh = tts_api.synth_all([{'id': 'S1', 'narration': '旁白'}], Path(tmp), 'api:test', '+0%', 'ffprobe')
+            self.assertEqual(fresh, ['S1'])
+            self.assertEqual(send.call_count, 3)
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], [2, 5])
+
+    def test_urlerror_exhausted_raises_valueerror(self):
+        with TemporaryDirectory() as tmp, patch.dict('os.environ', {
+            'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a'
+        }), patch.object(tts_api, 'urlopen', side_effect=URLError('connection refused')) as send, \
+                patch.object(tts_api.subprocess, 'run') as probe, patch.object(tts_api.time, 'sleep') as sleep:
+            probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
+            with self.assertRaisesRegex(ValueError, r'\[S1\] 配音服务连接失败'):
+                tts_api.synth_all([{'id': 'S1', 'narration': '旁白'}], Path(tmp), 'api:test', '+0%', 'ffprobe')
+            self.assertEqual(send.call_count, 3)
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], [2, 5])
+            self.assertFalse((Path(tmp) / 'S1.json').exists())
+
+    def test_httperror_not_retried(self):
+        with TemporaryDirectory() as tmp, patch.dict('os.environ', {
+            'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a'
+        }), patch.object(tts_api, 'urlopen', side_effect=HTTPError('https://test.invalid/a', 500, 'boom', {}, None)) as send, \
+                patch.object(tts_api.subprocess, 'run') as probe, patch.object(tts_api.time, 'sleep') as sleep:
+            probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 500'):
+                tts_api.synth_all([{'id': 'S1', 'narration': '旁白'}], Path(tmp), 'api:test', '+0%', 'ffprobe')
+            self.assertEqual(send.call_count, 1)
+            sleep.assert_not_called()

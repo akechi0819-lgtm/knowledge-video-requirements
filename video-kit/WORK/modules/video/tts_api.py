@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+import time
+import warnings
 
 
 @contextmanager
@@ -39,7 +41,8 @@ def synth_all(segments, audio, voice, rate, ffprobe, force=False):
     if not endpoint or not model or not name:
         raise ValueError("接口配音需要 VIDEO_TTS_ENDPOINT、VIDEO_TTS_MODEL 和 --voice api:<音色>")
     if rate != "+0%":
-        raise ValueError("当前接口配音只支持默认语速")
+        warnings.warn(f"接口/系统配音不支持语速 {rate}，已按默认 +0% 合成")
+        rate = "+0%"
     from hashlib import sha256
     service_id = sha256(endpoint.encode()).hexdigest()
     audio.mkdir(parents=True, exist_ok=True)
@@ -57,8 +60,16 @@ def synth_all(segments, audio, voice, rate, ffprobe, force=False):
                 continue
         with TemporaryDirectory(dir=audio) as temp:
             sample = Path(temp) / "speech.mp3"
-            with speech_response(endpoint, model, name, narration, os.environ.get("VIDEO_TTS_KEY"), protocol) as response:
-                data = response.read()
+            # HTTPError is already a RuntimeError from speech_response and is not retried.
+            for attempt in range(3):
+                try:
+                    with speech_response(endpoint, model, name, narration, os.environ.get("VIDEO_TTS_KEY"), protocol) as response:
+                        data = response.read()
+                    break
+                except (URLError, TimeoutError) as error:
+                    if attempt == 2:
+                        raise ValueError(f"[{sid}] 配音服务连接失败：{getattr(error, 'reason', error)}") from error
+                    time.sleep((2, 5)[attempt])
             if protocol == "mimo":
                 try:
                     encoded = json.loads(data)["choices"][0]["message"]["audio"]["data"]

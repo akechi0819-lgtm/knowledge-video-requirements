@@ -26,10 +26,12 @@ def main() -> int:
     if voice.startswith("say:"):
         from tts_say import synth_all
         results, fresh = synth_all(segments, audio, voice, rate, ffprobe, force)
+        rate = "+0%"
         backend_name = "say"
     elif voice.startswith("api:"):
         from tts_api import synth_all
         results, fresh = synth_all(segments, audio, voice, rate, ffprobe, force)
+        rate = "+0%"
         backend_name = "speech-api"
     else:
         from tts import synth_all
