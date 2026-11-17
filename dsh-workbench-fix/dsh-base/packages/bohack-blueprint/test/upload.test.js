@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
@@ -40,7 +40,7 @@ test('HTTP upload accepts 10 MiB decoded and rejects larger files and requests',
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
     const url = `http://127.0.0.1:${server.address().port}/bohack/api/upload`
-    const post = body => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const post = body => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-bohack-client': '1' }, body: JSON.stringify(body) })
     const limit = 10 * 1024 * 1024
     const accepted = await post({ name: 'large.pdf', dataBase64: Buffer.alloc(limit).toString('base64') })
     assert.equal(accepted.status, 200)
@@ -52,5 +52,37 @@ test('HTTP upload accepts 10 MiB decoded and rejects larger files and requests',
   } finally {
     await new Promise(resolve => server.close(resolve))
     await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test('workspace file reads reject symlinks escaping the workspace but keep normal files', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-file-'))
+  const outside = await mkdtemp(path.join(tmpdir(), 'bohack-outside-'))
+  const service = createService({}, { workspace })
+  const server = http.createServer(createWebHandler(service, {}, {}, null))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${server.address().port}/bohack/api/file`
+  try {
+    const secret = path.join(outside, 'secret.md')
+    await writeFile(secret, 'workspace 之外的内容')
+    await mkdir(path.join(workspace, 'inbox'), { recursive: true })
+    let rel = 'inbox/escape.md'
+    try { await symlink(secret, path.join(workspace, rel), 'file') }
+    catch (e) {
+      // Windows without symlink privilege: a directory junction escapes the same way.
+      if (e.code !== 'EPERM' && e.code !== 'ENOTSUP') throw e
+      await symlink(outside, path.join(workspace, 'inbox', 'escape'), 'junction')
+      rel = 'inbox/escape/secret.md'
+    }
+    const escaped = await fetch(base + '?path=' + encodeURIComponent(rel))
+    assert.equal(escaped.status, 400)
+    await writeFile(path.join(workspace, 'inbox', 'note.md'), '正常内容')
+    const normal = await fetch(base + '?path=' + encodeURIComponent('inbox/note.md'))
+    assert.equal(normal.status, 200)
+    assert.equal(await normal.text(), '正常内容')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+    await rm(workspace, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
   }
 })

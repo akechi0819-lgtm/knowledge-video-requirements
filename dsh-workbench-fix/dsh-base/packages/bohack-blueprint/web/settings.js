@@ -1,5 +1,7 @@
 /* 工作台模型配置和风格 Skill 管理。 */
 (() => {
+  // 服务端要求所有 POST 带 x-bohack-client（跨域简单请求带不上该自定义头）。
+  const apiFetch = (url, opt={}) => fetch(url, {...opt, headers:{...opt.headers, 'x-bohack-client':'1'}})
   const style = document.createElement('style')
   style.textContent = `
     .ws-dialog{width:min(680px,calc(100% - 32px));max-height:calc(100dvh - 32px);padding:0;border:0;background:rgba(12,14,20,.92);color:var(--ink,#eceef3);box-shadow:var(--shadow-lift,0 28px 80px rgba(0,0,0,.45));font-family:var(--sans,sans-serif);border-radius:28px;backdrop-filter:blur(24px);animation:ws-in .45s cubic-bezier(0.16,1,0.3,1)}
@@ -48,7 +50,7 @@
   let data = null
   let threadId = null
   async function request(body) {
-    const response = await fetch('/bohack/api/settings', body === undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+    const response = await apiFetch('/bohack/api/settings', body === undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
     const result = await response.json()
     if (!response.ok || result.ok === false) throw new Error(result.error || `请求失败（${response.status}）`)
     return result.settings || result
@@ -82,7 +84,7 @@
       const current=++revision
       button.disabled=true;button.textContent='获取中…';message.textContent=''
       try {
-        const response=await fetch('/bohack/api/models',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({kind,baseUrl:address.value.trim(),apiKey:key.value,clearApiKey:form.elements[kind+'Clear'].checked})})
+        const response=await apiFetch('/bohack/api/models',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({kind,baseUrl:address.value.trim(),apiKey:key.value,clearApiKey:form.elements[kind+'Clear'].checked})})
         const result=await response.json()
         if(current!==revision) return
         if(!response.ok || result.ok===false) throw new Error(result.error || '获取失败')
@@ -170,7 +172,7 @@ document.querySelector('#styleVideoAnalyze').addEventListener('click',async()=>{
   if(file.size>500*1024*1024){ document.querySelector('#styleMessage').textContent='视频超过 500 MB 上限。';return }
   const button=document.querySelector('#styleVideoAnalyze'); button.disabled=true; document.querySelector('#styleMessage').textContent='正在从参考视频抽帧并提取视觉规则，完成后可对照原片审阅。'
   try{
-    const response=await fetch('/bohack/api/style-video?threadId='+encodeURIComponent(thread),{method:'POST',headers:{'content-type':'application/octet-stream','x-video-extension':ext},body:file})
+    const response=await fetch('/bohack/api/style-video?threadId='+encodeURIComponent(thread),{method:'POST',headers:{'content-type':'application/octet-stream','x-video-extension':ext,'x-bohack-client':'1'},body:file})
     const data=await response.json(); if(!response.ok || !data.ok) throw new Error(data.error || '视频学习失败')
     if(thread!==state.threadId || document.querySelector('#styleVideo').files[0]!==file) return
     const result=document.querySelector('#styleVideoResult')
