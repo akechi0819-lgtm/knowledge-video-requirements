@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, readFile, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createSettings } from '../lib/settings.js'
@@ -62,4 +62,60 @@ test('an imported design Skill binds to this blueprint and survives library edit
   await service.generate({},engine)
   assert.equal(selected.content,'使用墨线表现光影边界')
   assert.deepEqual(JSON.parse(await readFile(path.join(workspace,'outbox','蓝图_v1.技能.json'),'utf8')), selected)
+})
+
+test('concurrent updates serialize so no field is lost, even across instances', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-race-'))
+  try {
+    const a = createSettings(root), b = createSettings(root)
+    await Promise.all([
+      a.update({ model: { baseUrl: 'https://m.test/v1', apiKey: 'mk', model: 'm1' } }),
+      b.update({ tts: { baseUrl: 'https://t.test/v1', apiKey: 'tk', voice: 'v1', protocol: 'speech' } }),
+      a.update({ image: { baseUrl: 'https://i.test/v1', apiKey: 'ik', model: 'i1' } }),
+      b.update({ model: { model: 'm2' } }),
+      a.update({ tts: { voice: 'v2' } }),
+      b.update({ image: { model: 'i2' } }),
+    ])
+    const saved = await a.load()
+    assert.equal(saved.model.baseUrl, 'https://m.test/v1')
+    assert.equal(saved.model.apiKey, 'mk')
+    assert.equal(saved.model.model, 'm2')
+    assert.equal(saved.tts.apiKey, 'tk')
+    assert.equal(saved.tts.voice, 'v2')
+    assert.equal(saved.tts.protocol, 'speech')
+    assert.equal(saved.image.apiKey, 'ik')
+    assert.equal(saved.image.model, 'i2')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a corrupt settings.json degrades to empty settings while a missing one stays silent', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-corrupt-'))
+  try {
+    const warnings = []
+    const settings = createSettings(root, { logger: { warn: (...args) => warnings.push(args.join(' ')) } })
+    assert.deepEqual(await settings.load(), {})
+    assert.deepEqual(warnings, [], '文件不存在时不应告警')
+    await writeFile(path.join(root, 'settings.json'), '{ 坏掉的 JSON')
+    assert.deepEqual(await settings.load(), {})
+    assert.equal((await settings.get()).model.hasApiKey, false)
+    assert.ok(warnings.some(w => w.includes('settings.json')), '坏 JSON 应告警')
+    await settings.update({ model: { baseUrl: 'https://m.test/v1', apiKey: 'recovered' } })
+    assert.equal((await settings.load()).model.apiKey, 'recovered')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a trailing slash keeps the saved key but a different origin still clears it', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-slash-'))
+  try {
+    const settings = createSettings(root)
+    for (const type of ['model', 'tts', 'image']) {
+      await settings.update({ [type]: { baseUrl: 'https://api.test/v1/', apiKey: 'secret' } })
+      await settings.update({ [type]: { baseUrl: 'https://api.test/v1', model: 'm' } })
+      assert.equal((await settings.load())[type].apiKey, 'secret', `${type} 尾斜杠差异不应丢密钥`)
+      await settings.update({ [type]: { baseUrl: 'https://api.test/v1///' } })
+      assert.equal((await settings.load())[type].apiKey, 'secret')
+      await settings.update({ [type]: { baseUrl: 'https://other.test/v1' } })
+      assert.equal((await settings.load())[type].apiKey, '', `${type} 换主机仍须清空密钥`)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

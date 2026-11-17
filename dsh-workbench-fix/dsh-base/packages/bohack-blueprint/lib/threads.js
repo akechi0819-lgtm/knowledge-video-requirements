@@ -1,10 +1,16 @@
-import { cp, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createService } from './service.js'
 import { createEngine } from './engine.js'
 import { parseRequirement } from './blueprint.js'
+
+const INSTANCE_LIMIT = 32
+
+function warn(ctx, ...args) {
+  try { ctx.logger?.warn?.('[bohack/threads]', ...args) } catch { /* logging must never break the run */ }
+}
 
 export function createThreads(ctx, config, legacyService, legacyEngine) {
   const root = path.resolve(config.workspace || './workspace')
@@ -36,36 +42,61 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
   async function create({ title } = {}) {
     const id = randomUUID()
     const dir = path.join(threadsDir, id + ".creating")
-    await mkdir(dir, { recursive: true })
-    // Only shared instructions are seeded; project data always starts empty.
-    await syncInstructions(dir)
-    await cp(fileURLToPath(new URL('../vendor/scene_retrieval.py', import.meta.url)), path.join(dir, 'scene_retrieval.py'))
-    const at = new Date().toISOString()
-    const thread = { id, title: String(title || '新会话').trim() || '新会话', createdAt: at, updatedAt: at }
-    await writeFile(path.join(dir, 'thread.json'), JSON.stringify(thread, null, 2) + '\n')
-    await rename(dir, threadDir(id))
-    return thread
+    try {
+      await mkdir(dir, { recursive: true })
+      // Only shared instructions are seeded; project data always starts empty.
+      await syncInstructions(dir)
+      await cp(fileURLToPath(new URL('../vendor/scene_retrieval.py', import.meta.url)), path.join(dir, 'scene_retrieval.py'))
+      const at = new Date().toISOString()
+      const thread = { id, title: String(title || '新会话').trim() || '新会话', createdAt: at, updatedAt: at }
+      await writeFile(path.join(dir, 'thread.json'), JSON.stringify(thread, null, 2) + '\n')
+      await rename(dir, threadDir(id))
+      return thread
+    } catch (error) {
+      // A half-built "<uuid>.creating" dir is invisible to list(), so it must not survive the failure.
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+      throw error
+    }
   }
   async function list() {
     await mkdir(threadsDir, { recursive: true })
     const names = await readdir(threadsDir, { withFileTypes: true })
-    const threads = await Promise.all(names.filter(d => d.isDirectory() && validId(d.name)).map(d => metadata(d.name)))
+    const dirs = names.filter(d => d.isDirectory() && validId(d.name))
+    const settled = await Promise.allSettled(dirs.map(d => metadata(d.name)))
+    const threads = []
+    settled.forEach((result, i) => {
+      if (result.status === 'fulfilled') threads.push(result.value)
+      else warn(ctx, `会话 ${dirs[i].name} 元数据不可读，已跳过：`, String(result.reason?.message || result.reason))
+    })
     threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     const legacy = await legacyMetadata()
     return legacy ? [...threads, legacy] : threads
+  }
+  // Values are pending promises, so an evicted instance must settle before its engine is released.
+  async function evictOldest() {
+    while (instances.size > INSTANCE_LIMIT) {
+      const oldest = instances.keys().next().value
+      const instance = instances.get(oldest)
+      instances.delete(oldest)
+      await instance.then(({ engine }) => engine.reset()).catch(() => {})
+    }
   }
   async function get(id) {
     if (!id) return { service: legacyService, engine: legacyEngine }
     if (id === 'legacy') { await metadata(id); return { service: legacyService, engine: legacyEngine } }
     await metadata(id) // Reject unknown threads instead of creating them implicitly.
-    if (!instances.has(id)) {
-      const threadConfig = { ...config, workspace: threadDir(id), styleLibraryRoot: root, settingsRoot: root }
-      const instance = syncInstructions(threadConfig.workspace).then(() => ({
-        service: createService(ctx, threadConfig), engine: createEngine(ctx, threadConfig)
-      })).catch(error => { instances.delete(id); throw error })
-      instances.set(id, instance)
+    if (instances.has(id)) {
+      const instance = instances.get(id)
+      instances.delete(id); instances.set(id, instance)
+      return instance
     }
-    return instances.get(id)
+    const threadConfig = { ...config, workspace: threadDir(id), styleLibraryRoot: root, settingsRoot: root }
+    const instance = syncInstructions(threadConfig.workspace).then(() => ({
+      service: createService(ctx, threadConfig), engine: createEngine(ctx, threadConfig)
+    })).catch(error => { if (instances.get(id) === instance) instances.delete(id); throw error })
+    instances.set(id, instance)
+    await evictOldest()
+    return instance
   }
   async function touch(id, title) {
     if (!id || id === 'legacy') return

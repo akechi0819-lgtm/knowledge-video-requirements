@@ -40,3 +40,26 @@ test('rejects unsafe endpoints and malformed responses without exposing credenti
   await assert.rejects(listModels({ kind: 'image', baseUrl: 'https://example.test' }, {}, async () => ({ ok: true, json: async () => ({ error: 'secret' }) }), {}), /格式无效/)
   await assert.rejects(listModels({ kind: 'image', baseUrl: 'https://example.test' }, {}, async () => { throw new Error('secret') }, {}), e => !e.message.includes('secret'))
 })
+
+test('a trailing slash difference still hits the saved key, but another origin never does', async () => {
+  const calls = []
+  const request = async (url, options) => { calls.push([url.href, options]); return ok }
+  const trailing = {
+    model: { baseUrl: 'https://api.example/prefix/v1/chat/completions/', model: 'scene', apiKey: 'secret' },
+    tts: { baseUrl: 'https://voice.example/v1/audio/speech/', apiKey: 'voice' },
+  }
+  await listModels({ kind: 'model', baseUrl: 'https://api.example/prefix/v1/chat/completions' }, trailing, request, {})
+  assert.equal(calls[0][0], 'https://api.example/prefix/v1/models')
+  assert.equal(calls[0][1].headers.Authorization, 'Bearer secret')
+  await listModels({ kind: 'model', baseUrl: 'https://api.example/prefix/v1/chat/completions///' }, saved, request, {})
+  assert.equal(calls[1][1].headers.Authorization, 'Bearer secret')
+  await listModels({ kind: 'tts', baseUrl: 'https://voice.example/v1/audio/speech' }, trailing, request, {})
+  assert.equal(calls[2][0], 'https://voice.example/v1/models')
+  assert.equal(calls[2][1].headers.Authorization, 'Bearer voice')
+  await listModels({ kind: 'model', baseUrl: 'https://evil.example/prefix/v1/chat/completions' }, saved, request, {})
+  assert.equal(calls[3][1].headers.Authorization, undefined, '同路径不同主机不得继承密钥')
+  const env = { SCENE_ENDPOINT: 'https://scene.example/v1/chat/completions/', SCENE_MODEL: 'm', SCENE_API_KEY: 'hidden' }
+  const result = await listModels({ kind: 'model', baseUrl: 'https://scene.example/v1/chat/completions' }, {}, request, env)
+  assert.equal(calls[4][1].headers.Authorization, 'Bearer hidden')
+  assert.equal(JSON.stringify(result).includes('hidden'), false)
+})
