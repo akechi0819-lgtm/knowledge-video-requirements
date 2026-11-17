@@ -1,9 +1,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { createStyles } from '../lib/styles.js'
+import { createStyles, collectRepoSkills } from '../lib/styles.js'
+
+const skillFolders = ['ai-teardown', 'andy-vibe-knowledge', 'motion-design-prompt-generator', 'vibe-knowledge-film']
+
+async function seedSkills(root, label) {
+  for (const folder of skillFolders) {
+    const dir = path.join(root, '.agents', 'skills', folder)
+    await mkdir(dir, { recursive: true })
+    await writeFile(path.join(dir, 'SKILL.md'), `---\nname: ${label}-${folder}\n---\n${label} 的设计规则`)
+  }
+}
 
 test('personal library is shared but choices are isolated per creative thread', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'styles-'))
@@ -51,5 +61,72 @@ test('内置参考包含具名规则和可核对来源', async () => {
     assert.equal(listed.kind, 'style')
     assert.equal(listed.preview.kind, 'poster')
     assert.match(listed.summary, /手写标注/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a corrupt style library degrades to the builtins instead of failing the list', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'styles-corrupt-'))
+  try {
+    await writeFile(path.join(root, 'style-library.json'), '{ 坏掉的 JSON')
+    await mkdir(path.join(root, 'a'), { recursive: true })
+    await writeFile(path.join(root, 'a', 'style-selection.json'), '也不是 JSON')
+    const warnings = []
+    const service = createStyles(path.join(root, 'a'), root, { logger: { warn: (...args) => warnings.push(args.join(' ')) } })
+    const list = await service.list()
+    assert.equal(list.ok, true)
+    assert.equal(list.selectedId, null)
+    assert.ok(list.styles.some(s => s.id === 'general'))
+    assert.ok(warnings.some(w => w.includes('style-library.json')))
+    assert.ok(warnings.some(w => w.includes('style-selection.json')))
+    await service.select({ id: 'general' })
+    assert.equal((await service.selected()).id, 'general')
+    const imported = await service.importStyle({ name: '修复后', description: '规则', source: { kind: 'text' } })
+    assert.ok((await service.list()).styles.some(s => s.id === imported.style.id))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('repo skills are found at a repository root marked by .git, past a package.json', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'styles-repo-'))
+  try {
+    await mkdir(path.join(root, '.git'), { recursive: true })
+    await seedSkills(root, 'project')
+    const pkg = path.join(root, 'packages', 'bohack-blueprint')
+    await mkdir(path.join(pkg, 'lib'), { recursive: true })
+    // The package has its own package.json but no skills: it must not end the walk.
+    await writeFile(path.join(pkg, 'package.json'), '{"name":"@bohack/blueprint"}')
+    const skills = await collectRepoSkills(path.join(pkg, 'lib'))
+    assert.equal(skills.length, 4)
+    assert.ok(skills.every(s => s.kind === 'process' && String(s.id).startsWith('repo-skill:')))
+    assert.ok(skills.some(s => s.name === 'project-vibe-knowledge-film' && s.summary && s.description))
+    assert.deepEqual(await collectRepoSkills(root), skills)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('the walk stops at the repository root and never absorbs ancestor skills', async () => {
+  const outer = await mkdtemp(path.join(tmpdir(), 'styles-ancestor-'))
+  try {
+    await seedSkills(outer, 'unrelated')
+    for (const marker of ['dir', 'file']) {
+      const repo = path.join(outer, `repo-${marker}`)
+      const deep = path.join(repo, 'packages', 'bohack-blueprint', 'lib')
+      await mkdir(deep, { recursive: true })
+      if (marker === 'dir') await mkdir(path.join(repo, '.git'), { recursive: true })
+      else await writeFile(path.join(repo, '.git'), 'gitdir: /elsewhere\n')
+      assert.deepEqual(await collectRepoSkills(deep), [], `.git 作为${marker}时都应停止向上`)
+    }
+  } finally { await rm(outer, { recursive: true, force: true }) }
+})
+
+test('the walk gives up beyond the depth limit', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'styles-depth-'))
+  try {
+    await seedSkills(root, 'far')
+    const at = depth => path.join(root, ...Array.from({ length: depth }, (_, i) => `d${i}`))
+    const within = at(8)
+    await mkdir(within, { recursive: true })
+    assert.equal((await collectRepoSkills(within)).length, 4)
+    const beyond = at(9)
+    await mkdir(beyond, { recursive: true })
+    assert.deepEqual(await collectRepoSkills(beyond), [])
   } finally { await rm(root, { recursive: true, force: true }) }
 })

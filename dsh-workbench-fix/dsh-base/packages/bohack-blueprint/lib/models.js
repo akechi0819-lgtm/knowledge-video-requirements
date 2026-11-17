@@ -8,6 +8,11 @@ export function effectiveScene(settings, env = process.env) {
   }
 }
 
+// A trailing slash is the same endpoint, but a different origin must never inherit the saved key.
+function normalizeEndpoint(value) {
+  try { const url = new URL(value); url.pathname = url.pathname.replace(/\/+$/, ''); return url.href } catch { return value }
+}
+
 export async function listModels(input, settings, request = fetch, env = process.env) {
   const { kind } = input
   if (!['model', 'tts', 'image'].includes(kind)) throw new Error('不支持的模型类型。')
@@ -18,7 +23,8 @@ export async function listModels(input, settings, request = fetch, env = process
   try { url = new URL(baseUrl) } catch { throw new Error('请填写有效的模型地址。') }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || (!local && url.protocol !== 'https:')) throw new Error('模型地址应使用 HTTPS，本机环回可使用 HTTP，且不能包含凭据或查询参数。')
-  const savedKey = baseUrl === saved.baseUrl ? saved.apiKey : (effective && baseUrl === effective.baseUrl ? effective.apiKey : '')
+  const endpoint = normalizeEndpoint(baseUrl)
+  const savedKey = endpoint === normalizeEndpoint(saved.baseUrl) ? saved.apiKey : (effective && endpoint === normalizeEndpoint(effective.baseUrl) ? effective.apiKey : '')
   const key = input.clearApiKey ? '' : String(input.apiKey || savedKey || '')
   url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/(?:chat\/completions|audio\/speech|images\/generations)$/, '') + '/models'
   let response

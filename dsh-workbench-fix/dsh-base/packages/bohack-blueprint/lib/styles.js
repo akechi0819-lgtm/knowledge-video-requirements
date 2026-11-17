@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, rename, mkdir, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,6 +38,39 @@ const builtins = Object.freeze([
   { id: 'vibe-fable', name: '寓言场景：角色与变化仪表', summary: '用角色与场景承载机制，围绕一个可见指标展示变化。', description: '以人物或动物及明确场景承载行为机制，围绕一个持续可见的指标展示变化；同一角色和道具贯穿，结尾可回到开场场景，让变化本身说明结论。', source: { kind: 'builtin', label: 'https://github.com/zhaosenlin12-creator/vibe-know--skill#-最新一条-101-秒的完整成片（B 寓言）' } },
 ])
 
+const repoSkillSpecs = Object.freeze([
+  ['ai-teardown', '系列课程讲解，支持手绘、课程课件与代码画面。'],
+  ['andy-vibe-knowledge', '有旁白的知识短片，支持像素、图解和多种视觉风格。'],
+  ['motion-design-prompt-generator', '使用动态排版、图形和动画制作多类型动态设计视频。'],
+  ['vibe-knowledge-film', '无旁白字幕知识短片，用具象动画解释概念。'],
+])
+
+const SKILL_LOOKUP_DEPTH = 8
+const moduleDir = path.dirname(fileURLToPath(import.meta.url))
+
+async function hasGitMarker(dir) {
+  try { await stat(path.join(dir, '.git')); return true } catch { return false }
+}
+
+// The walk stops at the repository root so unrelated ancestor .agents/skills are never absorbed.
+// package.json is deliberately not a stop marker: packages/bohack-blueprint has one but no skills.
+export async function collectRepoSkills(startDir) {
+  let dir = path.resolve(startDir)
+  for (let depth = 0; depth <= SKILL_LOOKUP_DEPTH; depth++) {
+    try {
+      return await Promise.all(repoSkillSpecs.map(async ([folder, summary]) => {
+        const description = await readFile(path.join(dir, '.agents/skills', folder, 'SKILL.md'), 'utf8')
+        const name = description.match(/^name:\s*(.+)$/m)?.[1] || folder
+        return decorate({ id: `repo-skill:${name}`, name, summary, description, source: { kind: 'builtin', label: '项目 Skill' } }, 'process')
+      }))
+    } catch (e) { if (e.code !== 'ENOENT') throw e }
+    if (await hasGitMarker(dir)) return []
+    const parent = path.dirname(dir); if (parent === dir) return []
+    dir = parent
+  }
+  return []
+}
+
 const queues = new Map()
 async function exclusive(key, task) {
   const previous = queues.get(key) || Promise.resolve()
@@ -45,41 +78,27 @@ async function exclusive(key, task) {
   try { return await current } finally { if (queues.get(key) === current) queues.delete(key) }
 }
 
-export function createStyles(workspace, libraryRoot = workspace) {
+export function createStyles(workspace, libraryRoot = workspace, { logger } = {}) {
   const library = path.join(libraryRoot, 'style-library.json')
   const selection = path.join(workspace, 'style-selection.json')
+  const warn = (...args) => { try { logger?.warn?.('[bohack/styles]', ...args) } catch { /* ignore */ } }
   async function read(file, empty) {
     try { return JSON.parse(await readFile(file, 'utf8')) }
-    catch (e) { if (e.code === 'ENOENT') return empty; throw e }
+    catch (e) {
+      if (e.code === 'ENOENT') return empty
+      if (e instanceof SyntaxError) { warn(`${path.basename(file)} 不是有效 JSON，按空内容处理：`, String(e.message)); return empty }
+      throw e
+    }
   }
   async function save(file, data) {
     const dir = path.dirname(file); await mkdir(dir, { recursive: true })
     const temp = path.join(dir, `.style-${randomUUID()}.tmp`)
     await writeFile(temp, JSON.stringify(data, null, 2) + '\n'); await rename(temp, file)
   }
-  async function repoSkills() {
-    let dir = path.dirname(fileURLToPath(import.meta.url))
-    const specs = [
-      ['ai-teardown', '系列课程讲解，支持手绘、课程课件与代码画面。'],
-      ['andy-vibe-knowledge', '有旁白的知识短片，支持像素、图解和多种视觉风格。'],
-      ['motion-design-prompt-generator', '使用动态排版、图形和动画制作多类型动态设计视频。'],
-      ['vibe-knowledge-film', '无旁白字幕知识短片，用具象动画解释概念。'],
-    ]
-    while (true) {
-      try {
-        return await Promise.all(specs.map(async ([folder, summary]) => {
-          const description = await readFile(path.join(dir, '.agents/skills', folder, 'SKILL.md'), 'utf8')
-          const name = description.match(/^name:\s*(.+)$/m)?.[1] || folder
-          return decorate({ id: `repo-skill:${name}`, name, summary, description, source: { kind: 'builtin', label: '项目 Skill' } }, 'process')
-        }))
-      } catch (e) { if (e.code !== 'ENOENT') throw e }
-      const parent = path.dirname(dir); if (parent === dir) return []; dir = parent
-    }
-  }
   async function list() {
     const [data, choice] = await Promise.all([read(library, { styles: [] }), read(selection, { selectedId: null })])
     const styles = [
-      ...await repoSkills(),
+      ...await collectRepoSkills(moduleDir),
       ...builtins.map(item => decorate(item, 'style')),
       ...data.styles.map(item => decorate(item, 'style')),
     ]

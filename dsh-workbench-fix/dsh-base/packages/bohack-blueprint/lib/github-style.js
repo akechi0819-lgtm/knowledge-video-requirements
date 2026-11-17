@@ -16,7 +16,7 @@ export async function readGithubStyle(input, fetcher = fetch) {
   const raw = new URL('https://raw.githubusercontent.com')
   raw.pathname = '/' + parts.join('/')
   const response = await fetcher(raw, { redirect: 'error', signal: AbortSignal.timeout(20000) })
-  if (!response.ok) throw new Error('无法读取公开 SKILL.md，GitHub 返回 ' + response.status)
+  if (!response.ok) throw new Error('无法读取公开 SKILL.md，GitHub 返回 ' + response.status + '。若分支名含斜杠，请改用默认分支链接或手动粘贴文档内容。')
   const chunks = []
   let size = 0
   for await (const chunk of response.body) {
