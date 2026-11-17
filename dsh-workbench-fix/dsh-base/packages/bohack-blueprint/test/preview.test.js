@@ -55,3 +55,25 @@ test('MiMo 预览关闭思考并允许超过 90 秒，响应超时明确报错',
     assert.equal(timeout, 600000)
   } finally { AbortSignal.timeout = original }
 })
+
+test('模型地址归一化为 chat/completions 端点且禁止重定向', async () => {
+  const sections = [{ id: 'B01', title: '测试' }]
+  for (const baseUrl of ['https://x/v1', 'https://x/v1/chat/completions', 'https://x/v1/']) {
+    const urls = []
+    const request = async (url, options) => {
+      urls.push(url)
+      assert.equal(options.redirect, 'error')
+      return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ scenes: [{ id: 'B01', shapes: [shape('M0 0 L10 10')] }] }) } }] }) }
+    }
+    await generatePreview(sections, { model: { baseUrl, model: 'test', apiKey: 'k' } }, request)
+    assert.equal(urls.length, 1)
+    assert.equal(String(urls[0]), 'https://x/v1/chat/completions')
+  }
+})
+
+test('choices 为空或 content 为 null 时给出友好错误', async () => {
+  for (const data of [{ choices: [] }, { choices: [{ message: { content: null } }] }, {}]) {
+    const request = async () => ({ ok: true, json: async () => data })
+    await assert.rejects(generatePreview([{ id: 'B01' }], settings, request), /模型未返回文本内容/)
+  }
+})

@@ -72,7 +72,7 @@ test('DSH 模式在隔离目录运行并生成素材', async () => {
     const bin = path.join(root, 'bin'); await mkdir(bin)
     const executable = path.join(bin, 'dsh')
     const shapes = Array.from({ length: 5 }, () => ({ d: 'M 0 0 L 10 10 Z', fill: '#123456', stroke: 'none', width: 1 }))
-    await writeFile(executable, `#!/bin/sh\nprintf '%s\n' '${JSON.stringify({ type: 'final', reason: { kind: 'completed' }, text: JSON.stringify({ shapes }) })}'\n`)
+    await writeFile(executable, `#!/bin/sh\ncat > /dev/null\nprintf '%s\n' '${JSON.stringify({ type: 'final', reason: { kind: 'completed' }, text: JSON.stringify({ shapes }) })}'\n`)
     await chmod(executable, 0o755)
     process.env.SCENE_MODE = 'dsh'; process.env.PATH = bin + path.delimiter + oldPath
     const assets = createGeneratedAssets(root, { settings: { load: async () => ({}) } })
@@ -98,4 +98,34 @@ test('MiMo 素材关闭思考并允许超过 90 秒，响应超时明确报错',
     await assert.rejects(assets.generate({ version: 1, doc: { assets: [{ id: 'a', name: '书', type: 'prop', description: '书本', sections: ['B01'] }] }, style: null }), /生成超时/)
     assert.equal(timeout, 600000)
   } finally { AbortSignal.timeout = original; await rm(root, { recursive: true, force: true }) }
+})
+
+test('模型地址归一化为 chat/completions 端点且禁止重定向', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'asset-url-test-'))
+  try {
+    const shapes = Array.from({ length: 5 }, () => ({ d: 'M 0 0 L 10 10 Z', fill: '#123456', stroke: 'none', width: 1 }))
+    const doc = { assets: [{ id: 'a', name: '书', type: 'prop', description: '书本', sections: ['B01'] }] }
+    for (const [i, baseUrl] of ['https://x/v1', 'https://x/v1/chat/completions', 'https://x/v1/'].entries()) {
+      const urls = []
+      const assets = createGeneratedAssets(root, { settings: { load: async () => ({ model: { baseUrl, model: 'test', apiKey: 'k' } }) }, request: async (url, options) => {
+        urls.push(url)
+        assert.equal(options.redirect, 'error')
+        return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ shapes }) } }] }) }
+      } })
+      await assets.generate({ version: i + 1, doc, style: null })
+      assert.equal(urls.length, 1)
+      assert.equal(String(urls[0]), 'https://x/v1/chat/completions')
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('choices 为空或 content 为 null 时给出友好错误', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'asset-empty-test-'))
+  try {
+    const doc = { assets: [{ id: 'a', name: '书', type: 'prop', description: '书本', sections: ['B01'] }] }
+    for (const [i, data] of [{ choices: [] }, { choices: [{ message: { content: null } }] }, {}].entries()) {
+      const assets = createGeneratedAssets(root, { settings: { load: async () => ({ model: { baseUrl: 'http://localhost:1234', model: 'test' } }) }, request: async () => ({ ok: true, json: async () => data }) })
+      await assert.rejects(assets.generate({ version: i + 1, doc, style: null }), /模型未返回文本内容/)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
