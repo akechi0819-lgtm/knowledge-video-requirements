@@ -62,6 +62,21 @@ test('reuses complete supplied sections and generates only the remaining section
   } finally { await rm(result.dir, {recursive:true,force:true}); }
 });
 
+test('passes only relevant unimplemented declarations to the scene model', async () => {
+  const input = base();
+  input.declaredPending = [
+    {id:'A01', name:'月亮', description:'圆月', sections:['B03']},
+    {id:'A02', name:'太阳', description:'太阳', sections:['B04']},
+  ];
+  const result = await runCase(input);
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    const sent = JSON.parse(result.requests[0].messages[1].content);
+    assert.deepEqual(sent.declaredPending, [input.declaredPending[0]]);
+    assert.match(result.requests[0].messages[0].content, /不要求全部实现/);
+  } finally { await rm(result.dir, {recursive:true,force:true}); }
+});
+
 test('MiMo 场景制作请求关闭思考', async () => {
   const result = await runCase(base(), scene, null, {}, 'mimo-v2.6-pro');
   try { assert.equal(result.code, 0, result.stderr); assert.deepEqual(result.requests[0].thinking, { type: 'disabled' }); }
@@ -276,6 +291,25 @@ test('reuses one character across three independently directed scenes', async ()
       assert.ok(html.includes(Buffer.from(svg).toString('base64')));
     }
   } finally { await rm(result.dir, {recursive:true, force:true}); }
+});
+
+test('embeds both approved raster assets only in their assigned section', async () => {
+  const input = base();
+  input.sections.push({...input.sections[0], id:'S02', blueprintId:'B04'});
+  input.sections[0].assets = ['png','jpg'].map(ext => ({
+    id:ext, name:ext, type:'prop', image:`assets/${ext}.${ext}`
+  }));
+  const files = {'png.png':Buffer.from('89504e470d0a1a0a','hex'), 'jpg.jpg':Buffer.from('ffd8ff','hex')};
+  const result = await runCase(input, scene, null, files);
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    const assigned = await readFile(join(result.output,'S01.html'), 'utf8');
+    const other = await readFile(join(result.output,'S02.html'), 'utf8');
+    for (const [file, mime] of [['png.png','png'],['jpg.jpg','jpeg']]) {
+      const url = `data:image/${mime};base64,${files[file].toString('base64')}`;
+      assert.ok(assigned.includes(url)); assert.ok(!other.includes(url));
+    }
+  } finally { await rm(result.dir, {recursive:true,force:true}); }
 });
 
 test('rejects a model reference to an asset outside the section', async () => {

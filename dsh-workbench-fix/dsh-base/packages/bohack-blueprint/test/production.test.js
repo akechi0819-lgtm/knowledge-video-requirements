@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createService } from '../lib/service.js'
 import { createProduction } from '../lib/production.js'
-import { renderBlueprint } from '../lib/blueprint.js'
+import { renderBlueprint, parseBlueprint } from '../lib/blueprint.js'
+import { assignAssetPlan } from '../lib/asset-plan.js'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 test('default DSH launcher can be executed directly on POSIX', { skip: process.platform === 'win32' }, async () => {
@@ -24,10 +25,11 @@ test('production requires a current confirmed blueprint and executes the kit con
     await writeFile(path.join(kit, 'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv; const out=a[a.indexOf('--out')+1]; if(a[a.indexOf('--voice')+1]!=='say:Tingting') throw Error('wrong voice'); await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
     await writeFile(path.join(kit, 'WORK/modules/video/verify.mjs'), `import {readFile} from 'node:fs/promises'; JSON.parse(await readFile(process.argv[2]))`)
     Object.assign(process.env, { SCENE_API_KEY:'test', SCENE_ENDPOINT:'http://localhost/test', SCENE_MODEL:'test', VIDEO_VOICE:'say:Tingting', VOICE_NAME:'ignored' })
-    const service = createService({}, { workspace, videoKitDir: kit })
+    const service = createService({}, {productionMode:"structured",  workspace, videoKitDir: kit })
     await service._internal.ensureDirs()
     const png = Buffer.from('89504e470d0a1a0a00000000', 'hex')
-    await service.uploadAsset({ name:'火锅餐桌.png', dataBase64:png.toString('base64') })
+    const uploaded = await service.uploadAsset({ name:'火锅餐桌.png', dataBase64:png.toString('base64') })
+    await service.updateAsset({ id: uploaded.asset.id, action:'approve' })
     await assert.rejects(service.production.start())
     const section = (id, narration) => ({ id, title:id, intent:'讲什么', facts:[], visual:id === 'B01' ? '展示 火锅餐桌.png' : '画面', narration, notes:'' })
     const doc = narration => renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01', narration), section('B02','旁白二')], notes:'', meta:{'版本':'v1'} })
@@ -47,9 +49,8 @@ test('production requires a current confirmed blueprint and executes the kit con
     assert.equal(state.status, 'completed', state.error)
     const bundle = path.join(workspace, 'production', state.id)
     const exported = JSON.parse(await readFile(path.join(bundle, 'production.json')))
-    assert.equal(exported.sections[0].image, 'images/S01.png')
+    assert.equal(exported.sections[0].image, undefined)
     assert.equal(exported.sections[1].image, undefined)
-    assert.deepEqual(await readFile(path.join(bundle, exported.sections[0].image)), png)
     assert.equal(await readFile(await service.production.file('video'), 'utf8'), 'video')
     await assert.rejects(service.production.file('../video'), /不可用/)
     await writeFile(path.join(kit, 'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv; if(!a.includes('--dsh')) throw Error('missing dsh mode'); await mkdir(a[5]); await writeFile(a[5]+'/production.json','{}')`)
@@ -75,7 +76,7 @@ test('chat production requires a direct whole-blueprint approval and preserves r
   const previous = process.env.SCENE_API_KEY
   delete process.env.SCENE_API_KEY
   try {
-    const service = createService({}, { workspace: root })
+    const service = createService({}, {productionMode:"structured",  workspace: root })
     await service._internal.ensureDirs()
     const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
@@ -97,40 +98,10 @@ test('chat production requires a direct whole-blueprint approval and preserves r
   }
 })
 
-test('image bindings reject missing, ambiguous and outside-workspace assets', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'production-image-'))
-  const old = { ...process.env }
-  try {
-    Object.assign(process.env, { SCENE_API_KEY:'test', SCENE_ENDPOINT:'http://localhost', SCENE_MODEL:'test' })
-    const service = createService({}, { workspace: root })
-    await service._internal.ensureDirs()
-    const section = id => ({ id, title:id, intent:'内容', facts:[], visual:id === 'B01' ? '展示 火锅.png' : '画面', narration:'旁白', notes:'' })
-    await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
-    await service.confirm({all:true}); await service.finalize()
-    await assert.rejects(service.production.start(), /未在本创作资料中登记/)
-    await service.addAsset({name:'火锅.png',type:'image',path:'../outside.png'})
-    await assert.rejects(service.production.start(), /不在本创作上传目录/)
-    await writeFile(path.join(root,'assets.jsonl'), '')
-    await service.addAsset({name:'火锅.png',type:'image',path:'sources/missing.png'})
-    await assert.rejects(service.production.start(), /重新上传：火锅\.png/)
-    const png = Buffer.from('89504e470d0a1a0a00000000','hex')
-    await service.uploadAsset({name:'火锅.png',dataBase64:png.toString('base64')})
-    let state = await service.production.start()
-    assert.equal(state.status,'running')
-    assert.deepEqual(await readFile(path.join(root,'production',state.id,'images','S01.png')),png)
-    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
-    await service.uploadAsset({name:'火锅.png',dataBase64:png.toString('base64')})
-    await assert.rejects(service.production.start(), /重复文件名/)
-  } finally {
-    for (const key of ['SCENE_API_KEY','SCENE_ENDPOINT','SCENE_MODEL']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
-    await rm(root,{recursive:true,force:true})
-  }
-})
-
 test('production status reports per-section artifacts and serves mid-run files', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-progress-'))
   try {
-    const service = createService({}, { workspace: root })
+    const service = createService({}, {productionMode:"structured",  workspace: root })
     await service._internal.ensureDirs()
     const id = '11111111-1111-4111-8111-111111111111'
     const dir = path.join(root, 'production', id)
@@ -190,7 +161,7 @@ test('status does not overwrite stale running state while a new job starts', asy
     const stateFile = path.join(root, 'production', 'status.json')
     const old = {id:'11111111-1111-4111-8111-111111111111',status:'running'}
     await writeFile(stateFile, JSON.stringify(old))
-    const service = createProduction(root, {settings:{load:async () => { await gate; return {} }}})
+    const service = createProduction(root, {productionMode:"structured", settings:{load:async () => { await gate; return {} }}})
     const starting = service.start()
     const status = await service.status()
     assert.equal(status.status, 'running')
@@ -209,7 +180,7 @@ test('status does not overwrite stale running state while a new job starts', asy
 test('chat batch confirmation and production commands preserve finalized state', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-confirm-all-'))
   try {
-    const service = createService({}, { workspace: root })
+    const service = createService({}, {productionMode:"structured",  workspace: root })
     await service._internal.ensureDirs()
     const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
@@ -240,61 +211,6 @@ test('chat batch confirmation and production commands preserve finalized state',
   } finally { await rm(root,{recursive:true,force:true}) }
 })
 
-test('production generates and reuses assets while preserving their review status', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'production-auto-assets-'))
-  const kit = path.join(root, 'kit'), workspace = path.join(root, 'ws')
-  const old = { ...process.env }, originalFetch = globalThis.fetch
-  let calls = 0, release
-  const gate = new Promise(resolve => { release = resolve })
-  try {
-    await mkdir(path.join(kit, 'scripts'), { recursive:true })
-    await mkdir(path.join(kit, 'WORK/modules/video'), { recursive:true })
-    await writeFile(path.join(kit, 'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; await mkdir(process.argv[5]); await writeFile(process.argv[5]+'/production.json','{}')`)
-    await writeFile(path.join(kit, 'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv, out=a[a.indexOf('--out')+1]; await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
-    await writeFile(path.join(kit, 'WORK/modules/video/verify.mjs'), '')
-    Object.assign(process.env, {SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api'})
-    globalThis.fetch = async () => { calls++; await gate; return {ok:true,json:async () => ({choices:[{message:{content:JSON.stringify({shapes:Array.from({length:5}, () => ({d:'M0 0 L1 1',fill:'#000000',stroke:'none',width:0}))})}}]})} }
-    const service = createService({}, {workspace,videoKitDir:kit})
-    await service._internal.ensureDirs()
-    await writeFile(path.join(workspace, 'inbox/需求.md'), '# 主题\n潮汐\n')
-    const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
-    const assets = [{id:'A01',name:'船',type:'prop',description:'木船',sections:['B01']}]
-    const markdown = renderBlueprint({topic:'潮汐',userRequirements:[],sections,assets,meta:{}})
-    await service.generate({}, {produce:async () => ({markdown,engine:'test'})})
-    await service.confirm({all:true}); await service.finalize()
-    let state = await service.production.start()
-    assert.equal(state.status, 'running'); assert.equal(state.phase, '生成素材'); assert.equal(state.styleId, 'general')
-    assert.equal((await service.production.status()).phase, '生成素材')
-    await assert.rejects(service.production.start(), /正在运行/)
-    release()
-    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
-    assert.equal(state.status, 'completed', state.error)
-    const current = await service.status()
-    const args = {version:1,doc:current.doc,style:current.visualStyle.style}
-    assert.equal((await service.generatedAssets.status(args)).assets[0].status, 'generated')
-    const exported = JSON.parse(await readFile(path.join(workspace, 'production', state.id, 'production.json')))
-    assert.equal(exported.sections[0].assets[0].id, 'A01')
-    state = await service.production.start()
-    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
-    assert.equal(state.status, 'completed', state.error); assert.equal(calls, 1)
-    await assert.rejects(service.production.start({regenerateAssetId:'missing'}), /素材不存在/)
-    state = await service.production.start({regenerateAssetId:'A01'})
-    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
-    assert.equal(state.status, 'completed', state.error); assert.equal(calls, 2)
-    await service.selectVisualStyle({id:'editorial',version:1})
-    service.generatedAssets.generate = async () => { throw new Error('素材服务不可用') }
-    state = await service.production.start()
-    assert.equal(state.styleId, 'editorial')
-    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
-    assert.equal(state.status, 'failed'); assert.match(state.error, /素材服务不可用/)
-  } finally {
-    release(); globalThis.fetch = originalFetch
-    for (const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
-    await rm(root,{recursive:true,force:true})
-  }
-})
-
-
 test('colloquial whole-blueprint commands reach production, but negation does not', async () => {
   const previous = process.env.SCENE_API_KEY
   delete process.env.SCENE_API_KEY
@@ -302,7 +218,7 @@ test('colloquial whole-blueprint commands reach production, but negation does no
     for (const text of ['全部确认，开始制作', '都可以，直接做吧', '两段都确认，开始制作']) {
       const root = await mkdtemp(path.join(tmpdir(), 'production-colloquial-'))
       try {
-        const service = createService({}, { workspace: root })
+        const service = createService({}, {productionMode:"structured",  workspace: root })
         await service._internal.ensureDirs()
         const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
         await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
@@ -325,7 +241,7 @@ test('a new production reuses only complete scenes with matching inputs and asse
     await writeFile(path.join(kit, 'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv, out=a[a.indexOf('--out')+1]; await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
     await writeFile(path.join(kit, 'WORK/modules/video/verify.mjs'), '')
     Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api'})
-    const service = createService({}, {workspace,videoKitDir:kit})
+    const service = createService({}, {productionMode:"structured", workspace,videoKitDir:kit})
     await service._internal.ensureDirs()
     await writeFile(path.join(workspace, 'inbox/需求.md'), '# 主题\n潮汐\n')
     const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
@@ -335,8 +251,7 @@ test('a new production reuses only complete scenes with matching inputs and asse
     await service.confirm({all:true}); await service.finalize()
     const source = path.join(root,'asset.svg')
     await writeFile(source,'first')
-    service.generatedAssets.generate = async () => ({assets: assets.map(asset => ({...asset,revision:'r1'}))})
-    service.generatedAssets.file = async () => source
+    service.generatedAssets.availableFiles = async () => ({approved: assets.map(asset => ({...asset,path:source})), pending: []})
     async function complete() {
       let state = await service.production.start()
       for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
@@ -367,7 +282,7 @@ test('restyle asks when unspecified and applies the next named choice without re
   const previous = process.env.SCENE_API_KEY
   delete process.env.SCENE_API_KEY
   try {
-    const service = createService({}, { workspace: root })
+    const service = createService({}, {productionMode:"structured",  workspace: root })
     await service._internal.ensureDirs()
     const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
@@ -431,7 +346,7 @@ test('redrawing passes audio only from a completed job with identical narration'
     await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,readFile,writeFile,appendFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1],p=JSON.parse(await readFile(a[3])); await appendFile(${JSON.stringify(path.join(root,'sources'))},(process.env.VIDEO_TTS_CACHE_DIR||'none')+'\\n'); await mkdir(out); await mkdir(out+'/audio'); for(const s of p.sections){await writeFile(out+'/audio/'+s.id+'.mp3','audio');await writeFile(out+'/audio/'+s.id+'.json',JSON.stringify({id:s.id,narration:s.narration}))} await writeFile(out+'/final.mp4','video');await writeFile(out+'/mapping.json','{}')`)
     await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
     Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api'})
-    const service = createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    const service = createService({}, {productionMode:"structured", workspace,videoKitDir:kit}); await service._internal.ensureDirs()
     await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
     const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
     const markdown = renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
@@ -455,7 +370,7 @@ test('failed scene production reuses matching completed sections only', async ()
     await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises';const a=process.argv,out=a[a.indexOf('--out')+1];await mkdir(out);await writeFile(out+'/final.mp4','x');await writeFile(out+'/mapping.json','{}')`)
     await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
     Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api'})
-    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs(); await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
+    const service=createService({}, {productionMode:"structured", workspace,videoKitDir:kit}); await service._internal.ensureDirs(); await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
     const sections=['B01','B02','B03'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
     const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
     await service.generate({}, {produce:async()=>({markdown,engine:'test'})});await service.confirm({all:true});await service.finalize()
@@ -477,7 +392,7 @@ test('reusableAudio skips corrupt and null completed.json without throwing', asy
     await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile,readFile,appendFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1],p=JSON.parse(await readFile(a[3])); await appendFile(${JSON.stringify(path.join(root,'sources'))},(process.env.VIDEO_TTS_CACHE_DIR||'none')+'\\n'); await mkdir(out); await mkdir(out+'/audio'); for(const s of p.sections){await writeFile(out+'/audio/'+s.id+'.mp3','audio');await writeFile(out+'/audio/'+s.id+'.json',JSON.stringify({id:s.id,narration:s.narration}))} await writeFile(out+'/final.mp4','video');await writeFile(out+'/mapping.json','{}')`)
     await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
     Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api',SCENE_API_KEY:'test'})
-    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    const service=createService({}, {productionMode:'structured',workspace,videoKitDir:kit}); await service._internal.ensureDirs()
     await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
     const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
     const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
@@ -504,7 +419,7 @@ test('production normalizes scene and tts endpoints idempotently by protocol', a
     await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile,appendFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1]; await appendFile(${JSON.stringify(path.join(root,'tts-endpoints'))},(process.env.VIDEO_TTS_ENDPOINT||'none')+' '+(process.env.VIDEO_TTS_PROTOCOL||'none')+'\\n'); await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
     await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
     Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/v1/',SCENE_MODEL:'test',SCENE_MODE:'api',SCENE_API_KEY:'test'})
-    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    const service=createService({}, {productionMode:'structured',workspace,videoKitDir:kit}); await service._internal.ensureDirs()
     await writeFile(path.join(workspace,'settings.json'),JSON.stringify({tts:{baseUrl:'http://localhost/tts/',model:'m',voice:'茉莉',protocol:'speech',apiKey:'k'}}))
     await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
     const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
@@ -533,7 +448,7 @@ test('prepare-scenes subprocess gets default DSH_CLI and honors env override', a
     await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
     Object.assign(process.env,{SCENE_MODE:'dsh'})
     delete process.env.DSH_CLI
-    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    const service=createService({}, {productionMode:'structured',workspace,videoKitDir:kit}); await service._internal.ensureDirs()
     await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
     const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
     const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
@@ -558,7 +473,7 @@ test('run watchdog terminates a hung production and allows restarting', async ()
     await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1]; await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
     await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
     Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api',SCENE_API_KEY:'test',VIDEO_PRODUCTION_TIMEOUT_MS:'500'})
-    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    const service=createService({}, {productionMode:'structured',workspace,videoKitDir:kit}); await service._internal.ensureDirs()
     await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
     const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
     const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
@@ -579,7 +494,7 @@ test('chat diagnoses and resumes failed work without rerunning completed work', 
   const previous = process.env.SCENE_API_KEY
   delete process.env.SCENE_API_KEY
   try {
-    const service = createService({}, { workspace: root })
+    const service = createService({}, {productionMode:"structured",  workspace: root })
     await service._internal.ensureDirs()
     const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:id === 'B01' ? '展示 原图.png' : '画面', narration:'旁白', notes:'' })
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
@@ -615,14 +530,18 @@ test('chat diagnoses and resumes failed work without rerunning completed work', 
     const noMissingWork = await service.chat({text:'把缺失的素材补齐，继续制作'}, engine)
     assert.equal(noMissingWork.production, null)
     assert.match(noMissingWork.reply, /没有需要补齐的生成素材/)
-    await service.addAsset({name:'原图.png', type:'image', path:'sources/原图.png'})
+    const missingImage = await service.addAsset({name:'原图.png', type:'image', path:'sources/原图.png',trust:'vetted'})
+    await service.assignAsset({id:missingImage.asset.id, version:1, sections:['B01']})
     const missing = await service.chat({ text:'哪些素材丢了？' }, engine)
     assert.deepEqual(missing.assetDiagnosis.missingReferences, ['旧资料.pdf', '原图.png'])
     assert.match(missing.reply, /请重新上传/)
     const repair = await service.chat({ text:'把缺失的素材补齐，继续制作' }, engine)
     assert.equal(repair.production, null)
     assert.match(repair.reply, /请重新上传/)
-    await service.uploadAsset({name:'原图.png',dataBase64:Buffer.from('image').toString('base64')})
+    const replacement=await service.uploadAsset({name:'原图.png',dataBase64:Buffer.from('image').toString('base64')})
+    await service.updateAsset({id:replacement.asset.id,action:'approve'})
+    await service.assignAsset({id:missingImage.asset.id,version:1,sections:[]})
+    await service.assignAsset({id:replacement.asset.id,version:1,sections:['B01']})
     const replaced = await service.chat({text:'把缺失的素材补齐，继续制作'}, engine)
     assert.deepEqual(replaced.assetDiagnosis.missingRequiredImages, [])
     assert.match(replaced.reply, /没有需要补齐的生成素材/)
@@ -635,7 +554,7 @@ test('chat diagnoses and resumes failed work without rerunning completed work', 
 test('chat regenerates only the named asset and rejects uncertain requests', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-asset-retry-'))
   try {
-    const service = createService({}, {workspace:root})
+    const service = createService({}, {productionMode:"structured", workspace:root})
     await service._internal.ensureDirs()
     const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
     const assets = [{id:'A01',name:'硝石晶体',type:'prop',description:'晶体',sections:['B01']}]
@@ -661,4 +580,84 @@ test('chat regenerates only the named asset and rejects uncertain requests', asy
     assert.equal(missing.production.status,'running')
     assert.equal(calls.length,2)
   } finally { await rm(root,{recursive:true,force:true}) }
+})
+
+test('未实现的声明素材不阻塞成片，而是以声明随行交给片内实现', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-declared-'))
+  const old = { ...process.env }
+  try {
+    const kit = path.join(root, 'kit')
+    await mkdir(path.join(kit, 'scripts'), { recursive: true })
+    await mkdir(path.join(kit, 'WORK/modules/video'), { recursive: true })
+    await writeFile(path.join(kit, 'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv; await mkdir(a[5]); await writeFile(a[5]+'/production.json','{}')`)
+    await writeFile(path.join(kit, 'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv; const out=a[a.indexOf('--out')+1]; await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
+    await writeFile(path.join(kit, 'WORK/modules/video/verify.mjs'), `import {readFile} from 'node:fs/promises'; JSON.parse(await readFile(process.argv[2]))`)
+    Object.assign(process.env, { SCENE_API_KEY:'test', SCENE_ENDPOINT:'http://localhost/test', SCENE_MODEL:'test', VIDEO_VOICE:'say:Tingting' })
+    const service = createService({}, {productionMode:"structured",  workspace: root, videoKitDir: kit })
+    await service._internal.ensureDirs()
+    const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
+    const assets = [{ id:'box', name:'字符串盒子', type:'prop', description:'std::string 对象的横向盒子示意', sections:['B01'] }]
+    await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], assets, notes:'', meta:{'版本':'v1'} }))
+    await service.confirm({all:true}); await service.finalize()
+    // 声明素材从未生成、从未确认：成片仍能启动并完成。
+    assert.equal((await service.production.start()).status, 'running')
+    let state
+    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
+    assert.equal(state.status, 'completed', state.error)
+    const bundle = path.join(root, 'production', state.id)
+    const exported = JSON.parse(await readFile(path.join(bundle, 'production.json')))
+    assert.deepEqual(exported.declaredPending.map(a => a.id), ['box'])
+    const note = await readFile(path.join(bundle, '声明素材.md'), 'utf8')
+    assert.match(note, /字符串盒子/)
+    assert.match(note, /不要求全部实现/)
+  } finally {
+    for (const key of ['SCENE_API_KEY','SCENE_ENDPOINT','SCENE_MODEL','VIDEO_VOICE']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
+    await rm(root, { recursive:true, force:true })
+  }
+})
+
+
+test('only vetted production images bind and fulfilled declarations target their sections', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-ledger-')), old = {...process.env}
+  try {
+    const kit = path.join(root,'kit')
+    await mkdir(path.join(kit,'scripts'),{recursive:true}); await mkdir(path.join(kit,'WORK/modules/video'),{recursive:true})
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile} from 'node:fs/promises';const a=process.argv;await mkdir(a[5]);await writeFile(a[5]+'/production.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises';const a=process.argv,o=a[a.indexOf('--out')+1];await mkdir(o);await writeFile(o+'/final.mp4','x');await writeFile(o+'/mapping.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
+    Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api'})
+    const service=createService({}, {productionMode:"structured", workspace:root,videoKitDir:kit}); await service._internal.ensureDirs()
+    const sections=['B01','B02','B03'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:id==='B01'?'参考.png 未审.png 旧图.png':id==='B02'?'月亮.png':'星星.png',narration:'旁白'}))
+    const assets=[{id:'A01',name:'月亮.png',type:'prop',description:'月亮图',sections:['B02']},{id:'A02',name:'星星.png',type:'prop',description:'星星图',sections:['B03']}]
+    await writeFile(path.join(root,'outbox/蓝图_v1.md'),renderBlueprint({topic:'测试',userRequirements:[],sections,assets,meta:{}}))
+    await service.confirm({all:true}); await service.finalize()
+    const png=Buffer.from('89504e470d0a1a0a00000000','hex')
+    for(const name of ['参考.png','未审.png','旧图.png','moon.png','star.png']) await writeFile(path.join(root,'sources',name),png)
+    const ledger=[
+      {id:'ref',name:'参考.png',type:'image',path:'sources/参考.png',side:'blueprint',trust:'vetted'},
+      {id:'un',name:'未审.png',type:'image',path:'sources/未审.png',side:'videomake',trust:'unvetted'},
+      {id:'old',name:'旧图.png',type:'image',path:'sources/旧图.png',trust:'vetted'},
+      {id:'moon',name:'月亮.png',type:'image',path:'sources/moon.png',side:'videomake',trust:'vetted'},
+      {id:'star',name:'星星.png',type:'image',path:'sources/star.png',side:'videomake',trust:'vetted',generatedAssetId:'A02',generatedVersion:1},
+    ]
+    await writeFile(path.join(root,'assets.jsonl'),ledger.map(a=>JSON.stringify(a)).join('\n')+'\n')
+    const blueprint = parseBlueprint(await readFile(path.join(root,'outbox/蓝图_v1.md'),'utf8'))
+    await assignAssetPlan(root,1,blueprint,'old',['B01'])
+    await assignAssetPlan(root,1,blueprint,'moon',['B02'])
+    let state=await service.production.start(); for(let i=0;i<100;i++){state=await service.production.status();if(state.status!=='running')break;await sleep(20)}
+    assert.equal(state.status,'completed',state.error)
+    const dir=path.join(root,'production',state.id), doc=JSON.parse(await readFile(path.join(dir,'production.json')))
+    assert.equal(doc.sections[0].image,undefined)
+    assert.deepEqual(await readFile(path.join(dir,doc.sections[0].assets[0].image)),png)
+    assert.equal(doc.sections[1].assets.length,1)
+    assert.deepEqual(await readFile(path.join(dir,doc.sections[1].assets[0].image)),png)
+    assert.equal(doc.sections[1].image,undefined)
+    assert.equal(doc.sections[2].image,undefined)
+    const manifest=await readFile(path.join(dir,'现成素材','素材清单.md'),'utf8')
+    assert.doesNotMatch(manifest,/星星/)
+    assert.equal(doc.sections[2].assets,undefined)
+    assert.deepEqual(doc.declaredPending.map(a=>a.id),['A02'])
+    const note=await readFile(path.join(dir,'声明素材.md'),'utf8')
+    assert.match(note,/星星/); assert.doesNotMatch(note,/月亮/)
+  } finally { for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']) {if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]} await rm(root,{recursive:true,force:true}) }
 })

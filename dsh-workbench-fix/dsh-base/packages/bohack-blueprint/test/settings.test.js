@@ -119,3 +119,20 @@ test('a trailing slash keeps the saved key but a different origin still clears i
     }
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('agent routes and tool models are saved independently', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-routes-'))
+  try {
+    const settings = createSettings(root)
+    await settings.update({ requirementAgent: { provider: 'provider-a', model: 'a' }, videoAgent: { provider: 'provider-b', model: 'b' }, assetModel: { baseUrl: 'https://asset.example', model: 'draw', apiKey: 'asset-key' }, previewModel: { baseUrl: 'https://preview.example', model: 'preview', apiKey: 'preview-key' } })
+    const saved = await settings.load()
+    assert.deepEqual(saved.videoAgent, { provider: 'provider-b', model: 'b' })
+    assert.equal(saved.assetModel.apiKey, 'asset-key')
+    assert.equal(saved.previewModel.apiKey, 'preview-key')
+    const publicSettings = await settings.get()
+    assert.equal(publicSettings.assetModel.apiKey, undefined)
+    assert.equal(publicSettings.assetModel.hasApiKey, true)
+    await settings.update({ assetModel: { model: 'draw2' } })
+    assert.equal((await settings.load()).assetModel.apiKey, 'asset-key')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

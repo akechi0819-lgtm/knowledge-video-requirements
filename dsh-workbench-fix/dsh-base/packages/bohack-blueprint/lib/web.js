@@ -132,7 +132,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         const current = await service.status()
         if (!current.currentVersion || !current.doc || Number(version || current.currentVersion) !== current.currentVersion) throw new Error('请使用当前蓝图版本。')
         if (current.finalized?.version !== current.currentVersion || current.visualStyle?.status !== 'selected') throw new Error('请先确认蓝图并选择视觉参考。')
-        return { version: current.currentVersion, doc: current.doc, style: current.visualStyle?.style || null }
+        return { version: current.currentVersion, doc: { ...current.doc, assets: current.blueprintAssets }, style: current.visualStyle?.style || null }
       }
       function generatedUrls(result) {
         if (threadId) for (const asset of result.assets) if (asset.previewUrl) asset.previewUrl += `&threadId=${encodeURIComponent(threadId)}`
@@ -159,13 +159,15 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
 
       if (pathname === '/bohack/api/production-file' && (method === 'GET' || method === 'HEAD')) {
         const kind = params.get('kind')
-        const file = await service.production.file(kind, params.get('section'))
+        const file = await service.production.file(kind, params.get('section'), params.get('jobId'))
         const size = (await stat(file)).size
-        const type = kind === 'video' || kind === 'clip' ? 'video/mp4'
+        const type = kind === 'source' ? 'application/zip' : kind === 'video' || kind === 'clip' ? 'video/mp4'
           : kind === 'audio' ? 'audio/mpeg'
           : kind === 'scene' && file.endsWith('.html') ? 'text/html; charset=utf-8'
           : 'application/json; charset=utf-8'
         const headers = { 'content-type': type, 'cache-control': 'no-store', 'accept-ranges': 'bytes', 'x-content-type-options': 'nosniff' }
+        if (kind === 'source') headers['content-disposition'] = 'attachment; filename="video-source.zip"'
+        if (kind === 'scene') headers['content-security-policy'] = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
         let start = 0, end = size - 1, code = 200
         if (req.headers.range) {
           const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range)
@@ -200,8 +202,9 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
             }
             if (!size) throw new Error('视频文件为空。')
           } finally { await handle.close() }
-          const model = (await service.settings?.load())?.model
-          result = await videoAnalyzer({ videoPath, outputDir: dir, projectModel: model?.baseUrl ? { endpoint: model.baseUrl, model: model.model, key: model.apiKey } : undefined })
+          const saved = await service.settings?.load()
+          const model = saved?.styleAnalysisModel?.baseUrl ? saved.styleAnalysisModel : saved?.model
+          result = await videoAnalyzer({ videoPath, outputDir: dir, projectModel: model?.baseUrl ? { endpoint: model.baseUrl, model: model.model, key: model.apiKey, explicit: !!saved?.styleAnalysisModel?.baseUrl } : undefined })
         } finally { await rm(dir, { recursive: true, force: true }) }
         json(res, 200, { ok: true, draft: result.draft, evidence: { durationSeconds: result.evidence.durationSeconds, frames: result.evidence.frames.map(frame => ({ seconds: frame.seconds })) } }); return
       }
@@ -298,7 +301,8 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       let out
       switch (pathname) {
         case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.generatedAssets.generate({ ...await generatedContext(body.version), id: body.id })); break
-        case '/bohack/api/generated-assets-approve': out = generatedUrls(await service.generatedAssets.approve({ ...await generatedContext(body.version), id: body.id, revisions: body.revisions })); break
+        case '/bohack/api/generated-assets-approve': out = generatedUrls(await service.filmApprove({ ...await generatedContext(body.version), id: body.id, revisions: body.revisions })); break
+        case '/bohack/api/asset-implement': out = await service.implementAsset(body); break
         case '/bohack/api/preview': {
           const current = await service.status()
           out = { ok: true, scenes: await generatePreview(current.sections, await service.settings.load(), fetch, current.visualStyle?.style) }
@@ -320,12 +324,15 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         case '/bohack/api/confirm':  out = await service.confirm(body); break
         case '/bohack/api/feedback': out = await service.feedback(body); break
         case '/bohack/api/finalize': out = await service.finalize(body); break
-        case '/bohack/api/production': out = await service.production.start(); break
+        case '/bohack/api/production': out = await service.production.start({mode:body.mode,feedback:body.feedback}); break
         case '/bohack/api/chat':     out = await runTurn(engine, () => service.chat(body, engine, streaming ? emit : undefined)); break
         case '/bohack/api/section':  out = await runTurn(engine, () => service.manualEdit(body, engine)); break
         case '/bohack/api/note':     out = await runTurn(engine, () => service.note(body, engine)); break
         case '/bohack/api/lock':     out = await service.lock(body); break
+        case '/bohack/api/asset-assign': out = await service.assignAsset(body); break
         case '/bohack/api/assets-update': out = await service.updateAsset(body); break
+        case '/bohack/api/asset-realize': out = await service.realizeAsset(body); break
+        case '/bohack/api/asset-open': out = await service.openAsset(body); break
         default:
           json(res, 404, { ok: false, error: `未知端点 ${pathname}` }); return
       }

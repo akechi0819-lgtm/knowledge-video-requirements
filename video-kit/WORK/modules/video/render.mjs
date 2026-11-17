@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import STYLE, { MODULE_DIR } from './style.mjs';
 import { FF, assertClipPlayable } from './ffmpeg.mjs';
+import { installSceneRoutes } from './isolated-page.mjs';
 
 const run = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -40,6 +41,7 @@ export async function renderSegment(plan, audioFile, outDir) {
       '--num-raster-threads=1', '--disable-threaded-animation',
       '--disable-checker-imaging', '--run-all-compositor-stages-before-draw',
       '--hide-scrollbars', '--force-color-profile=srgb', '--font-render-hinting=none',
+      ...(process.env.VIDEO_ASSET_MANIFEST ? ['--disable-webrtc', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'] : []),
     ],
   });
 
@@ -50,13 +52,19 @@ export async function renderSegment(plan, audioFile, outDir) {
     const pageCount = Math.max(1, STYLE.capture.pages);
     const pages = [];
     for (let i = 0; i < pageCount; i++) {
-      const pg = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+      const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, serviceWorkers: 'block' });
+      if (process.env.VIDEO_ASSET_MANIFEST) {
+        const manifest = JSON.parse(fs.readFileSync(process.env.VIDEO_ASSET_MANIFEST, 'utf8'));
+        await installSceneRoutes(context, plan.scenePath, manifest.root, manifest.assets);
+      }
+      const pg = await context.newPage();
       // scene.html reads STYLE/PLAN while its own script executes, so they must
       // exist before any page script runs — not injected after goto.
       await pg.addInitScript(([style, pl]) => {
         window.STYLE = style; window.__PLAN__ = pl;
+        if (pl.role === "prepared_html") { window.RTCPeerConnection = undefined; window.webkitRTCPeerConnection = undefined; }
       }, [STYLE, plan]);
-      await pg.goto(pathToFileURL(plan.scenePath || path.join(MODULE_DIR, 'scene.html')).href);
+      await pg.goto(process.env.VIDEO_ASSET_MANIFEST ? 'https://video.invalid/scenes/scene.html' : pathToFileURL(plan.scenePath || path.join(MODULE_DIR, 'scene.html')).href);
       await pg.waitForFunction('typeof window.seek === "function" && !!window.__PLAN__ && !!window.STYLE');
       pages.push(pg);
     }

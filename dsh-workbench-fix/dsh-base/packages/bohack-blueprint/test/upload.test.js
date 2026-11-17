@@ -26,8 +26,19 @@ test('uploads preserve files and expose UTF-8 text to blueprint generation', asy
     await service.styles.select({ id: 'general' })
     await service.chat({ text: '整理需求' }, { async chatTurn() { return { reply: '已整理', requirementMarkdown: '# 主题\n测试' } } })
     let received
-    await assert.rejects(service.generate({}, { async produce(args) { received = args.textAssets; throw new Error('已收到') } }), /已收到/)
-    assert.deepEqual(received.map(a => a.note).sort(), ['第一份资料', '第二份资料'].sort())
+    await service.updateAsset({ id: first.asset.id, action: 'approve' })
+    let directory
+    await assert.rejects(service.generate({}, { async produce(args) { received = args.textAssets; directory = args.assetDirectory; throw new Error('已收到') } }), /已收到/)
+    assert.deepEqual(received.map(a => a.note), ['第一份资料'])
+    assert.ok(!JSON.stringify(directory).includes('第二份资料'))
+    const filmOnly = await service.uploadAsset({ name: '制作.txt', dataBase64: Buffer.from('制作原文').toString('base64'), side: 'videomake' })
+    assert.equal(filmOnly.asset.side, 'videomake')
+    await service.updateAsset({ id: filmOnly.asset.id, action: 'approve' })
+    await assert.rejects(service.generate({}, { async produce(args) { received = args.textAssets; directory = args.assetDirectory; throw new Error('已收到') } }), /已收到/)
+    assert.ok(!JSON.stringify({received, directory}).includes('制作原文'))
+    const ref = await service.uploadAsset({ name: '参考.svg', dataBase64: Buffer.from('<svg/>').toString('base64'), side: 'blueprint' })
+    assert.equal(ref.asset.side, 'blueprint')
+    await assert.rejects(service.uploadAsset({ name: 'x', dataBase64: 'AAAA', side: 'other' }), /用途无效/)
     await assert.rejects(upload('坏文件.txt', Buffer.from([0xff])), /UTF-8/)
     await assert.rejects(service.uploadAsset({ name: 'a.pdf', dataBase64: '%%%%' }), /Base64/)
   } finally { await rm(workspace, { recursive: true, force: true }) }

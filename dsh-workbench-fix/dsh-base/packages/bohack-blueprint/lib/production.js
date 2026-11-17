@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveAgent } from './settings.js'
 import { exportProduction } from '../scripts/export-production.js'
 
 const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
@@ -203,42 +204,74 @@ export function createProduction(workspace, config = {}) {
     }
     return null
   }
-  async function bindImages(production, dir) {
+  // 仅按素材清单中的账本 ID 绑定人工实物。
+  async function bindDeclaredAssets(production, pending, dir) {
     let raw
     try { raw = await readFile(path.join(workspace, 'assets.jsonl'), 'utf8') }
     catch (e) { if (e.code === 'ENOENT') raw = ''; else throw e }
-    const assets = raw.split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(a => a.type === 'image' && /\.(png|jpe?g)$/i.test(a.name || ''))
-    for (const section of production.sections) {
-      const visual = String(section.visual || '')
-      const matches = assets.filter(a => visual.includes(a.name))
-      if (!matches.length) {
-        if (/\.(?:png|jpe?g)\b/i.test(visual)) throw new Error(`${section.blueprintId} 指定的图片未在本创作资料中登记。`)
-        continue
-      }
-      const available = []
-      for (const asset of matches) {
-        if (!/^sources\/[^/\\]+$/.test(asset.path || '')) throw new Error(`${section.blueprintId} 图片路径不在本创作上传目录。`)
-        try {
-          const source = await realpath(path.join(workspace, asset.path))
-          const sourceRoot = await realpath(path.join(workspace, 'sources'))
-          if (path.dirname(source) !== sourceRoot) throw new Error(`${section.blueprintId} 图片不在本创作上传目录。`)
-          available.push({asset, source})
-        } catch (e) { if (e.code !== 'ENOENT') throw e }
-      }
-      if (available.length > 1) throw new Error(`${section.blueprintId} 匹配多张图片或重复文件名，请明确保留一张资料。`)
-      if (!available.length) throw new Error(`${section.blueprintId} 图片文件缺失，请重新上传：${[...new Set(matches.map(a => a.name))].join('、')}。`)
-      const {asset, source} = available[0]
-      const bytes = await readFile(source)
-      const isPng = bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
-      const isJpeg = bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))
-      if ((!isPng && !isJpeg) || (isPng !== /\.png$/i.test(asset.name))) throw new Error(`${section.blueprintId} 图片内容与 PNG/JPEG 文件名不符。`)
-      const image = `images/${section.id}.${isPng ? 'png' : 'jpg'}`
-      await mkdir(path.join(dir, 'images'), { recursive: true })
+    const ledger = raw.split('\n').filter(Boolean).map(line => JSON.parse(line))
+    const remaining = []
+    for (const declaration of pending) {
+      if (!declaration.ledgerId) { remaining.push(declaration); continue }
+      const asset = ledger.find(a => a.id === declaration.ledgerId && a.trust === 'vetted' && !a.declared && !a.generatedAssetId && a.path && (a.side === 'videomake' || (!a.side && a.type === 'image')))
+      if (!asset) { remaining.push(declaration); continue }
+      if (!/^sources\/[^/\\]+$/.test(asset.path)) throw new Error(`素材「${declaration.name}」路径不在本创作上传目录。`)
+      const source = await realpath(path.join(workspace, asset.path))
+      if (path.dirname(source) !== await realpath(path.join(workspace, 'sources'))) throw new Error(`素材「${declaration.name}」不在本创作上传目录。`)
+      const bytes = await readFile(source), ext = path.extname(asset.path).toLowerCase().replace('.jpeg', '.jpg')
+      if (!['.png', '.jpg', '.svg'].includes(ext)) throw new Error(`素材「${declaration.name}」不是支持的图片格式。`)
+      if (ext === '.png' && !bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+          ext === '.jpg' && !bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))) throw new Error(`素材「${declaration.name}」图片内容与文件名不符。`)
+      const image = `assets/${declaration.id}${ext}`
+      await mkdir(path.join(dir, 'assets'), { recursive: true })
       await copyFile(source, path.join(dir, image))
-      section.image = image
+      for (const section of production.sections.filter(s => declaration.sections.includes(s.blueprintId))) {
+        ;(section.assets ||= []).push({ id: declaration.id, name: declaration.name, type: declaration.type, image })
+      }
     }
+    return remaining
   }
-  async function start({ regenerateAssetId } = {}) {
+  /**
+   * 随行搬运层：凡「素材分身」且 vetted 的素材全部随片搬进视频工作区的
+   * 「现成素材/」文件夹，备注随行（素材清单.md：文件名→备注，身份说明而非
+   * 使用边界——用谁、用多少、怎么用由视频侧按画面需要自主决定）。漏斗在
+   * 备注审核层收口，不在蓝图指认层。旧条目（无 side 的 image）按素材语义兼容。
+   * 失败不阻断成片：搬运是增强，不是闸门。
+   */
+  async function bindReadyAssets(dir) {
+    let raw
+    try { raw = await readFile(path.join(workspace, 'assets.jsonl'), 'utf8') }
+    catch (e) { if (e.code === 'ENOENT') return; else throw e }
+    const assets = raw.split('\n').filter(Boolean).map(line => { try { return JSON.parse(line) } catch { return null } })
+      .filter(a => a && a.trust === 'vetted' && a.path && !a.declared && !a.generatedAssetId && (a.side === 'videomake' || (!a.side && a.type === 'image')))
+    if (!assets.length) return
+    const sourceRoot = await realpath(path.join(workspace, 'sources'))
+    await mkdir(path.join(dir, '现成素材'), { recursive: true })
+    const manifest = ['## 现成素材清单', '', '这是素材身份说明，不是使用边界——用谁、用多少、怎么用，按画面需要自主决定。蓝图正文里如有提及，意图以蓝图为准。', '']
+    const used = new Set()
+    for (const asset of assets) {
+      try {
+        const source = await realpath(path.join(workspace, asset.path))
+        if (path.dirname(source) !== sourceRoot) continue
+        let target = asset.name
+        if (used.has(target)) {
+          const ext = path.extname(target), base = path.basename(target, ext)
+          let i = 2
+          while (used.has(`${base}-${i}${ext}`)) i++
+          target = `${base}-${i}${ext}`
+        }
+        used.add(target)
+        await copyFile(source, path.join(dir, '现成素材', target))
+        manifest.push(`- 《${target}》${asset.note || '（无备注）'}`)
+      } catch (e) {
+        console.error(`[bohack/production] 素材《${asset.name}》随行搬运失败，已跳过：${String(e?.message || e)}`)
+      }
+    }
+    if (used.size) await writeFile(path.join(dir, '现成素材', '素材清单.md'), manifest.join('\n') + '\n', 'utf8')
+  }
+  async function start({ mode = config.productionMode || 'agent', feedback = '', regenerateAssetId } = {}) {
+    if (!['agent', 'structured'].includes(mode)) throw new Error('未知的视频制作方式。')
+    if (typeof feedback !== 'string' || (feedback.trim() && mode !== 'agent')) throw new Error('返工意见需提交给视频制作 Agent。')
     if (active) throw new Error('本创作已有制作任务正在运行')
     active = true
     generation++
@@ -251,70 +284,104 @@ export function createProduction(workspace, config = {}) {
       if (missing.length) throw new Error(`缺少旁白：${missing.join('、')}；请补充后重新确认并定稿。`)
       let prior = null
       try { prior = JSON.parse(await readFile(stateFile, 'utf8')) } catch (e) { if (e.code !== 'ENOENT') throw e }
+      const assetArgs = { version: Number(production.version.slice(1)), doc: production, style: production.style }
+      const previousJobId = prior?.status === 'completed' ? prior.id : prior?.previousJobId || null
+      if (feedback.trim() && !previousJobId) throw new Error('尚无已完成的成片可以返工。')
+      const previousDir = feedback.trim() && previousJobId ? path.join(root, previousJobId) : null
+      if (regenerateAssetId !== undefined) await config.generatedAssets.generate({ ...assetArgs, id: regenerateAssetId })
+      const { approved, pending } = production.assets?.length
+        ? await config.generatedAssets.availableFiles(assetArgs)
+        : { approved: [], pending: [] }
       let sceneConfig = null
       try { sceneConfig = JSON.parse(await readFile(path.join(workspace, 'hotpot-demo-scene.json'), 'utf8')) }
       catch (e) { if (e.code !== 'ENOENT') throw e }
       if (sceneConfig && sceneConfig.version !== 1) throw new Error('本创作的专用场景配置版本不支持。')
       // Choosing a style explicitly routes this version through the style-aware renderer.
-      if (production.assets?.length || production.style || production.skill) sceneConfig = null
+      if (approved.length || production.style || production.skill) sceneConfig = null
       const sceneMode = process.env.SCENE_MODE || 'api'
-      if (!sceneConfig && !['api', 'dsh'].includes(sceneMode)) throw new Error('SCENE_MODE 只支持 api 或 dsh。')
+      await mkdir(root, { recursive: true })
+      const id = randomUUID(), dir = path.join(root, id)
+      await mkdir(dir)
+      if (approved.length) {
+        await mkdir(path.join(dir, 'assets'))
+        for (const { id, name, type, sections, path: source } of approved) {
+          const image = `assets/${id}.svg`
+          await copyFile(source, path.join(dir, image))
+          for (const section of production.sections.filter(s => sections.includes(s.blueprintId))) {
+            ;(section.assets ||= []).push({ id, name, type, image })
+          }
+        }
+      }
+      const declaredPending = await bindDeclaredAssets(production, pending, dir)
+      if (declaredPending.length) production.declaredPending = declaredPending
+      if (declaredPending.length !== pending.length) sceneConfig = null
+      if (mode === 'structured' && !sceneConfig && !['api', 'dsh'].includes(sceneMode)) throw new Error('SCENE_MODE 只支持 api 或 dsh。')
       const customScene = Boolean(process.env.SCENE_ENDPOINT || process.env.SCENE_MODEL)
       const projectModel = { endpoint: process.env.WORKBENCH_MODEL_ENDPOINT, model: process.env.WORKBENCH_MODEL_NAME, key: process.env.WORKBENCH_MODEL_KEY }
       const endpoint = saved.model?.baseUrl || (customScene ? process.env.SCENE_ENDPOINT : projectModel.endpoint)
       const model = saved.model?.model || (customScene ? process.env.SCENE_MODEL : projectModel.model)
       const key = saved.model?.baseUrl ? saved.model.apiKey : customScene ? process.env.SCENE_API_KEY : projectModel.key
-      if (!sceneConfig && sceneMode === 'api' && (!model || !endpoint ||
+      if (mode === 'structured' && !sceneConfig && sceneMode === 'api' && (!model || !endpoint ||
           (!key && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(endpoint).hostname)))) {
         throw new Error('未配置可用的画面模型，请设置项目通用模型或 SCENE 专用模型。')
       }
-      await mkdir(root, { recursive: true })
-      const id = randomUUID(), dir = path.join(root, id)
-      await mkdir(dir)
-      await bindImages(production, dir)
-      const state = { id, status: 'running', phase: '生成素材', version: production.version, startedAt: new Date().toISOString(), styleId: production.style?.id || null, styleName: production.style?.name || null }
+      await bindReadyAssets(dir)
+      if (declaredPending.length) {
+        const lines = ['## 未实现的声明素材', '', '这些素材只有声明、还没有成品文件。不要求全部实现：画面需要时即席实现，或直接用其他方式表现，不得因此中断制作。', '',
+          ...declaredPending.map(a => `- 《${a.name}》（${a.sections.join('、')}）：${a.description}`)]
+        await writeFile(path.join(dir, '声明素材.md'), lines.join('\n') + '\n', 'utf8')
+      }
+      const agentRoute = resolveAgent(saved, 'videoAgent', {provider:config.provider || 'deepseek-official', model:config.model || 'deepseek-v4-pro'})
+      const state = { id, mode, previousJobId, ...(mode === 'agent' ? {sessionId:'bohack-video-'+id, agentRoute, feedback:feedback.trim()} : {}), status: 'running', phase: mode === 'agent' ? '启动视频制作 Agent' : '生成素材', version: production.version, startedAt: new Date().toISOString(), styleId: production.style?.id || null, styleName: production.style?.name || null }
+      await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
       await save(state)
       ;(async () => {
         try {
-          const assetArgs = { version: Number(production.version.slice(1)), doc: production, style: production.style }
-          if (regenerateAssetId !== undefined) await config.generatedAssets.generate({ ...assetArgs, id: regenerateAssetId })
-          const generated = production.assets?.length ? (await config.generatedAssets.generate(assetArgs)).assets : []
-          if (generated.length) await mkdir(path.join(dir, 'assets'))
-          for (const asset of generated) {
-            const source = await config.generatedAssets.file({ ...assetArgs, id: asset.id, revision: asset.revision })
-            const image = `assets/${asset.id}.svg`
-            await copyFile(source, path.join(dir, image))
-            for (const section of production.sections.filter(s => asset.sections.includes(s.blueprintId))) {
-              ;(section.assets ||= []).push({ id: asset.id, name: asset.name, type: asset.type, image })
+          const film = path.join(dir, 'film')
+          if (mode === 'agent') {
+            const { runVideoJob } = await import('./video-job.js')
+            const onProgress = async event => {
+              const phase = typeof event === 'string' ? event : event?.type === 'status' ? event.text : null
+              if (phase) { state.phase = phase; await save(state) }
             }
-          }
-          await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
-          state.phase = '生成画面'; await save(state)
-          const scenes = path.join(dir, 'scenes'), film = path.join(dir, 'film')
-          const sceneArgs = ['--input', path.join(dir, 'production.json'), '--output', scenes]
-          const reused = sceneConfig ? null : await reusableScenes(production, dir)
-          if (reused?.complete) { await cp(reused.scenes, scenes, { recursive: true }); state.reusedScenesFrom = reused.id; await save(state) }
-          else if (sceneConfig) await run('scripts/hotpot-scenes.mjs', sceneArgs)
-          else {
-            let reuseDir = ''
-            if (reused) {
-              reuseDir = path.join(dir, 'reused-scenes'); await mkdir(reuseDir)
-              for (const id of reused.sections) for (const suffix of ['.html', '.scene.json']) await copyFile(path.join(reused.scenes, id + suffix), path.join(reuseDir, id + suffix))
-              state.reusedScenesFrom = reused.id; state.reusedSceneSections = reused.sections; await save(state)
+            const generateAsset = async ({id:assetId}) => {
+              const planned = declaredPending.find(a => a.id === assetId)
+              if (!planned) throw new Error('只能为本次制作尚缺实物的素材生成候选。')
+              const result = await config.generatedAssets.generate({ ...assetArgs, id:assetId })
+              const item = result.assets.find(a => a.id === assetId)
+              return {id:assetId, status:item.status, revision:item.revision, message:'候选已送回资料页，作者可单独确认。'}
             }
-            const dshBase = path.resolve(kit, '..', 'dsh-workbench-fix', 'dsh-base')
-            const dshCli = process.env.DSH_CLI || path.join(dshBase, process.platform === 'win32' ? 'dsh.cmd' : 'dsh.sh')
-            await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', normalizeEndpoint(endpoint, '/chat/completions'), '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir, DSH_CLI: dshCli })
+            await runVideoJob({ctx:config.ctx, sessionId:state.sessionId, dir, production, kit,
+              settings:saved, ...agentRoute, feedback:feedback.trim(), previousDir, onProgress, generateAsset})
+            await sourceArchive(dir, kit)
+          } else {
+            state.phase = '生成画面'; await save(state)
+            const scenes = path.join(dir, 'scenes')
+            const sceneArgs = ['--input', path.join(dir, 'production.json'), '--output', scenes]
+            const reused = sceneConfig ? null : await reusableScenes(production, dir)
+            if (reused?.complete) { await cp(reused.scenes, scenes, { recursive: true }); state.reusedScenesFrom = reused.id; await save(state) }
+            else if (sceneConfig) await run('scripts/hotpot-scenes.mjs', sceneArgs)
+            else {
+              let reuseDir = ''
+              if (reused) {
+                reuseDir = path.join(dir, 'reused-scenes'); await mkdir(reuseDir)
+                for (const id of reused.sections) for (const suffix of ['.html', '.scene.json']) await copyFile(path.join(reused.scenes, id + suffix), path.join(reuseDir, id + suffix))
+                state.reusedScenesFrom = reused.id; state.reusedSceneSections = reused.sections; await save(state)
+              }
+              const dshBase = path.resolve(kit, '..', 'dsh-workbench-fix', 'dsh-base')
+              const dshCli = process.env.DSH_CLI || path.join(dshBase, process.platform === 'win32' ? 'dsh.cmd' : 'dsh.sh')
+              await run('scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', normalizeEndpoint(endpoint, '/chat/completions'), '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir, DSH_CLI: dshCli })
+            }
+            state.phase = '配音与渲染'; await save(state)
+            const audio = await reusableAudio(production, prior)
+            const args = ['--prepared', path.join(scenes, 'production.json'), '--out', film]
+            if (saved.tts?.voice) args.push('--voice', `api:${saved.tts.voice}`)
+            else if (process.env.VIDEO_VOICE) args.push('--voice', process.env.VIDEO_VOICE)
+            else if (process.env.VOICE_NAME) args.push('--voice', `api:${process.env.VOICE_NAME}`)
+            await run('WORK/modules/video/pipeline.mjs', args, { ...process.env, VIDEO_TTS_CACHE_DIR: audio?.audio || '', ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: normalizeEndpoint(saved.tts.baseUrl, saved.tts.protocol === 'mimo' ? '/chat/completions' : '/audio/speech') } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
+            state.phase = '自动质检'; await save(state)
+            await run('WORK/modules/video/verify.mjs', [path.join(film, 'mapping.json')])
           }
-          state.phase = '配音与渲染'; await save(state)
-          const audio = await reusableAudio(production, prior)
-          const args = ['--prepared', path.join(scenes, 'production.json'), '--out', film]
-          if (saved.tts?.voice) args.push('--voice', `api:${saved.tts.voice}`)
-          else if (process.env.VIDEO_VOICE) args.push('--voice', process.env.VIDEO_VOICE)
-          else if (process.env.VOICE_NAME) args.push('--voice', `api:${process.env.VOICE_NAME}`)
-          await run('WORK/modules/video/pipeline.mjs', args, { ...process.env, VIDEO_TTS_CACHE_DIR: audio?.audio || '', ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: normalizeEndpoint(saved.tts.baseUrl, saved.tts.protocol === 'mimo' ? '/chat/completions' : '/audio/speech') } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
-          state.phase = '自动质检'; await save(state)
-          await run('WORK/modules/video/verify.mjs', [path.join(film, 'mapping.json')])
           await Promise.all([stat(path.join(film, 'final.mp4')), readFile(path.join(film, 'mapping.json'), 'utf8').then(JSON.parse)])
           state.status = 'completed'; state.phase = '制作完成'; state.completedAt = new Date().toISOString()
         } catch (e) { state.status = 'failed'; state.error = String(e.message || e); state.completedAt = new Date().toISOString() }
@@ -323,11 +390,12 @@ export function createProduction(workspace, config = {}) {
       return state
     } catch (e) { active = false; throw e }
   }
-  async function file(kind, section) {
-    const state = await status()
+  async function file(kind, section, jobId) {
+    const state = jobId ? {id:jobId} : await status()
     if (!state?.id || !/^[0-9a-f-]{36}$/.test(state.id)) throw new Error('成片尚不可用')
     const dir = path.join(root, state.id)
     const kinds = {
+      source: path.join(dir, 'source.zip'),
       video: path.join(dir, 'film', 'final.mp4'),
       mapping: path.join(dir, 'film', 'mapping.json'),
     }
@@ -354,4 +422,25 @@ export function createProduction(workspace, config = {}) {
     return resolved
   }
   return { start, status, file }
+}
+
+// Archive only editable scenes, their declared images and timing data.
+async function sourceArchive(dir, kit) {
+  const script = [
+    'import pathlib, sys, zipfile',
+    'root = pathlib.Path(sys.argv[1])',
+    "with zipfile.ZipFile(root/'source.zip', 'w', compression=zipfile.ZIP_DEFLATED) as archive:",
+    "    for relative in ('production.json', 'scenes', 'assets', 'images', '现成素材', 'film/audio', 'film/mapping.json'):",
+    '        source = root / relative',
+    '        for file in (source.rglob("*") if source.is_dir() else [source]):',
+    '            if file.is_file() and file.resolve().is_relative_to(root.resolve()): archive.write(file, file.relative_to(root))',
+  ].join('\n')
+  await new Promise((resolve, reject) => {
+    const python = process.env.VIDEO_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
+    const child = spawn(python, ['-c', script, dir], {cwd:kit, stdio:['ignore','ignore','pipe']})
+    let error = ''
+    child.stderr.on('data', chunk => { error += chunk })
+    child.once('error', reject)
+    child.once('close', code => code === 0 ? resolve() : reject(new Error('源码归档失败：'+error.trim())))
+  })
 }

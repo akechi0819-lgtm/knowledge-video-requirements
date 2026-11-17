@@ -69,14 +69,17 @@ test('video upload streams to temporary storage and returns review data without 
 
 test('asset review serves the thread preview and confirms its exact revision', async () => {
   const service = {
-    status: async () => ({ currentVersion: 1, finalized: {version: 1}, doc: {assets: []}, visualStyle: {status: 'selected', style: {id:'general'}} }),
+    status: async () => ({ currentVersion: 1, finalized: {version: 1}, doc: {assets: [{id:'only-in-markdown'}]}, blueprintAssets: [{id:'guide',ledgerId:'library'}], visualStyle: {status: 'selected', style: {id:'general'}} }),
     generatedAssets: {
       status: async () => ({assets: [{previewUrl:'/bohack/api/generated-asset-file?version=1&id=guide&rev=r1'}]}),
-      approve: async ({version, revisions}) => {
-        assert.equal(version, 1)
-        assert.deepEqual(revisions, {guide:'r1'})
-        return {assets:[], allApproved:true}
-      },
+    },
+    filmApprove: async ({version, doc, style, id, revisions}) => {
+      assert.equal(version, 1)
+      assert.deepEqual(doc.assets, [{id:'guide', ledgerId:'library'}])
+      assert.deepEqual(style, {id:'general'})
+      assert.equal(id, 'guide')
+      if (revisions?.guide !== 'r1') throw new Error('素材已变化，请重新预览后确认。')
+      return {assets:[], allApproved:true}
     },
   }
   const threads = {get: async id => { assert.equal(id, 'example'); return {service} }, touch: async () => {}}
@@ -87,8 +90,16 @@ test('asset review serves the thread preview and confirms its exact revision', a
     const res = await fetch(url+'?version=1&threadId=example')
     assert.equal(res.status, 200)
     assert.match((await res.json()).assets[0].previewUrl, /threadId=example/)
-    const confirm = await fetch(url+'-approve?threadId=example', {method:'POST', headers:{'content-type':'application/json','x-bohack-client':'1'}, body:JSON.stringify({version:1,revisions:{guide:'r1'}})})
+    const approve = (body) => fetch(url+'-approve?threadId=example', {method:'POST', headers:{'content-type':'application/json','x-bohack-client':'1'}, body:JSON.stringify(body)})
+    const confirm = await approve({version:1,id:'guide',revisions:{guide:'r1'}})
+    assert.equal(confirm.status, 200)
     assert.equal((await confirm.json()).allApproved, true)
+    const stale = await approve({version:1,id:'guide',revisions:{guide:'old'}})
+    assert.equal(stale.status, 400)
+    assert.match((await stale.json()).error, /素材已变化/)
+    const wrongVersion = await approve({version:2,id:'guide',revisions:{guide:'r1'}})
+    assert.equal(wrongVersion.status, 400)
+    assert.match((await wrongVersion.json()).error, /当前蓝图版本/)
   } finally { await new Promise(resolve => server.close(resolve)) }
 })
 

@@ -10,7 +10,7 @@ import { exportProduction } from '../scripts/export-production.js'
 test('visual selection follows finalized blueprint versions', async () => {
   const workspace = await mkdtemp(path.join(tmpdir(), 'visual-selection-'))
   try {
-    const service = createService({}, { workspace })
+    const service = createService({}, {productionMode:"structured",  workspace })
     await service._internal.ensureDirs()
     await writeFile(path.join(workspace, 'inbox/需求.md'), '# 主题\n潮汐\n')
     const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:['事实'],visual:'画面',narration:'旁白',notes:''}))
@@ -49,7 +49,7 @@ test('visual selection follows finalized blueprint versions', async () => {
 test('chat confirmation finalizes and calls the shared production entry', async () => {
   const workspace = await mkdtemp(path.join(tmpdir(), 'visual-chat-'))
   try {
-    const service = createService({}, { workspace })
+    const service = createService({}, {productionMode:"structured",  workspace })
     await service._internal.ensureDirs()
     await writeFile(path.join(workspace, 'inbox/需求.md'), '# 主题\n潮汐\n')
     const sections = ['B01','B02'].map(id => ({id,title:id,intent:'讲解',facts:['事实'],visual:'画面',narration:'旁白',notes:''}))
@@ -62,13 +62,18 @@ test('chat confirmation finalizes and calls the shared production entry', async 
     assert.deepEqual(result.production, {started:true})
     assert.equal(result.productionError, null)
     assert.equal((await service.status()).stage, 'finalized')
+    let revision
+    service.production.start = async options => { revision = options; return {started:true} }
+    const edit = await service.chat({text:'第二段的转场太突然，请让它缓慢淡入'}, {chatTurn:async () => ({reply:'', filmRevisionNote:'第二段缓慢淡入'})})
+    assert.deepEqual(revision, {mode:'agent', feedback:'第二段缓慢淡入'})
+    assert.equal(edit.production.started, true)
   } finally { await rm(workspace,{recursive:true,force:true}) }
 })
 
 test('chat selects a blueprint skill before drafting and keeps it in the snapshot', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'blueprint-skill-chat-'))
   try {
-    const service = createService({}, {workspace:root})
+    const service = createService({}, {productionMode:"structured", workspace:root})
     await service._internal.ensureDirs()
     const noModel = {chatTurn:async () => {throw new Error('纯选择无需模型')}}
     const ambiguous = await service.chat({text:'用简洁知识图解和杂志式图文风格'}, noModel)
@@ -116,7 +121,7 @@ test('selected visual or repository skill reaches production and asset prompts',
   const root = await mkdtemp(path.join(tmpdir(), 'style-end-to-end-'))
   const old = {...process.env}, originalFetch = globalThis.fetch
   try {
-    const probe = createService({}, {workspace:path.join(root,'probe')})
+    const probe = createService({}, {productionMode:"structured", workspace:path.join(root,'probe')})
     const library = (await probe.styles.list()).styles
     const repo = library.find(item => item.kind === 'process')
     assert.ok(repo)
@@ -124,7 +129,7 @@ test('selected visual or repository skill reaches production and asset prompts',
       const workspace = path.join(root, String(i))
       let body
       globalThis.fetch = async (_url, options) => { body = JSON.parse(options.body); return {ok:true,json:async () => ({choices:[{message:{content:JSON.stringify({shapes:Array.from({length:5},()=>({d:'M0 0 L1 1',fill:'#000000',stroke:'none',width:0}))})}}]})} }
-      const service = createService({}, {workspace})
+      const service = createService({}, {productionMode:"structured", workspace})
       await service._internal.ensureDirs()
       await writeFile(path.join(workspace,'inbox/需求.md'), '# 主题\n测试\n')
       const chosen = (await service.styles.chooseBlueprintSkill({id})).skill

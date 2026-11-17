@@ -11,9 +11,9 @@ function chatUrl(base){ const u=new URL(base); u.pathname=u.pathname.replace(/\/
 // Samples are visual evidence only: motion and timing between frames are unknown.
 export async function analyzeVideo({ videoPath, outputDir, projectModel }) {
   const shared = projectModel || { endpoint: process.env.WORKBENCH_MODEL_ENDPOINT, model: process.env.WORKBENCH_MODEL_NAME, key: process.env.WORKBENCH_MODEL_KEY }
-  const endpoint = process.env.WORKBENCH_VISION_ENDPOINT || shared.endpoint
-  const model = process.env.WORKBENCH_VISION_MODEL || shared.model
-  const key = process.env.WORKBENCH_VISION_ENDPOINT ? process.env.WORKBENCH_VISION_KEY : (process.env.WORKBENCH_VISION_KEY || shared.key)
+  const endpoint = projectModel?.explicit ? shared.endpoint : process.env.WORKBENCH_VISION_ENDPOINT || shared.endpoint
+  const model = projectModel?.explicit ? shared.model : process.env.WORKBENCH_VISION_MODEL || shared.model
+  const key = projectModel?.explicit ? shared.key : process.env.WORKBENCH_VISION_ENDPOINT ? process.env.WORKBENCH_VISION_KEY : (process.env.WORKBENCH_VISION_KEY || shared.key)
   if (!endpoint || !model) throw new Error('请配置视觉模型地址和模型名称。')
   let url
   try { url = new URL(endpoint) } catch { throw new Error('视觉模型地址无效。') }

@@ -5,6 +5,7 @@ function chatUrl(base){ const u=new URL(base); u.pathname=u.pathname.replace(/\/
 // The model supplies geometry only. Rendering never interprets model output as markup.
 export async function generatePreview(sections, settings, request = fetch, style = null) {
   if (!sections?.length) throw new Error('请先生成蓝图。')
+  settings = { ...settings, model: settings.previewModel?.baseUrl ? settings.previewModel : settings.model }
   const count = Math.min(3, sections.length)
   const endpoint = settings.model?.baseUrl || process.env.SCENE_ENDPOINT || process.env.WORKBENCH_MODEL_ENDPOINT
   const model = settings.model?.model || process.env.SCENE_MODEL || process.env.WORKBENCH_MODEL_NAME

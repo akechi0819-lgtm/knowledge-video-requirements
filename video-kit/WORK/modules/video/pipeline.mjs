@@ -61,6 +61,19 @@ async function enforceGate(bpPath, allowUnconfirmed) {
   return { summary, gatePassed: summary.deliverable_to_video, preview: !summary.deliverable_to_video };
 }
 
+export function seedTtsCache(segments, source, audioDir, { skipMissing = false } = {}) {
+  fs.mkdirSync(audioDir, { recursive: true });
+  for (const seg of segments) {
+    const metadata = path.join(source, `${seg.id}.json`);
+    const mp3 = path.join(source, `${seg.id}.mp3`);
+    if (skipMissing && (!fs.existsSync(metadata) || !fs.existsSync(mp3))) continue;
+    const cache = JSON.parse(fs.readFileSync(metadata, 'utf8'));
+    const target = path.join(audioDir, `${seg.id}.mp3`);
+    fs.copyFileSync(mp3, target);
+    fs.writeFileSync(path.join(audioDir, `${seg.id}.json`), JSON.stringify({ ...cache, audio: target }));
+  }
+}
+
 async function synthesizeNarration(bpPath, audioDir, voice, force) {
   fs.mkdirSync(audioDir, { recursive: true });
   const outJson = path.join(audioDir, 'tts-result.json');
@@ -139,16 +152,7 @@ async function main() {
   if (args.prepared && fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`output directory is not empty: ${outDir}`);
   fs.mkdirSync(outDir, { recursive: true });
   const audioDir = path.join(outDir, 'audio');
-  if (args.prepared && process.env.VIDEO_TTS_CACHE_DIR) {
-    fs.mkdirSync(audioDir, { recursive: true });
-    for (const seg of bp.segments) {
-      const source = process.env.VIDEO_TTS_CACHE_DIR;
-      const cache = JSON.parse(fs.readFileSync(path.join(source, `${seg.id}.json`), 'utf8'));
-      const target = path.join(audioDir, `${seg.id}.mp3`);
-      fs.copyFileSync(path.join(source, `${seg.id}.mp3`), target);
-      fs.writeFileSync(path.join(audioDir, `${seg.id}.json`), JSON.stringify({ ...cache, audio: target }));
-    }
-  }
+  if (args.prepared && process.env.VIDEO_TTS_CACHE_DIR) seedTtsCache(bp.segments, process.env.VIDEO_TTS_CACHE_DIR, audioDir);
 
   console.log(`[gate] ${bp.blueprint_id} deliverable=${gate.gatePassed} preview=${gate.preview}`);
   console.log(`[out ] ${outDir}`);

@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
+import { parseBlueprint } from './blueprint.js'
 import { safeShapes } from './safe-shapes.js'
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -30,10 +31,23 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
       ids.add(a.id)
     }
   }
-  const signature = (doc, style) => hash({ assets: doc.assets, style })
-  async function readState(version) {
-    try { return JSON.parse(await readFile(stateFile(version), 'utf8')) }
+  const signature = (a, style) => 'asset:' + hash([a.ledgerId || a.id, a.name, a.type, a.description, style])
+  async function readState(version, doc, style) {
+    let state
+    try { state = JSON.parse(await readFile(stateFile(version), 'utf8')) }
     catch (e) { if (e.code === 'ENOENT') return { entries: {} }; throw e }
+    if (Object.values(state.entries).some(entry => !entry.signature.startsWith('asset:'))) {
+      let original
+      try { original = parseBlueprint(await readFile(path.join(root, 'outbox', `蓝图_v${version}.md`), 'utf8')).assets }
+      catch (error) { if (error.code !== 'ENOENT') throw error; original = doc.assets }
+      const oldSignature = hash({ assets: original, style })
+      for (const asset of doc.assets) {
+        const entry = state.entries[asset.id], previous = original.find(a => a.id === asset.id)
+        if (entry?.signature === oldSignature && previous && previous.description === asset.description && previous.name === asset.name && previous.type === asset.type)
+          entry.signature = signature(asset, style)
+      }
+    }
+    return state
   }
   async function writeState(version, state) {
     await mkdir(directory(version), { recursive: true })
@@ -48,30 +62,31 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
   }
   async function status({ version, doc, style }) {
     validate(version, doc)
-    const state = await readState(version), sig = signature(doc, style)
+    const state = await readState(version, doc, style)
     const assets = await Promise.all(doc.assets.map(async a => {
       const entry = state.entries[a.id]
-      const valid = await available(version, entry, sig)
-      return { ...a, revision: valid ? entry.filename : null, status: valid ? (entry.approved ? 'approved' : 'generated') : 'pending', missingFile: entry?.signature === sig && !valid, previewUrl: valid ? `/bohack/api/generated-asset-file?version=${version}&id=${encodeURIComponent(a.id)}&rev=${encodeURIComponent(entry.filename)}` : null }
+      const valid = await available(version, entry, signature(a, style))
+      return { ...a, revision: valid ? entry.filename : null, status: valid ? (entry.approved ? 'approved' : 'generated') : 'pending', missingFile: entry?.signature === signature(a, style) && !valid, previewUrl: valid ? `/bohack/api/generated-asset-file?version=${version}&id=${encodeURIComponent(a.id)}&rev=${encodeURIComponent(entry.filename)}` : null }
     }))
     return { ok: true, version, assets, allApproved: assets.every(a => a.status === 'approved') }
   }
   async function generate({ version, doc, style, id }) {
     validate(version, doc)
-    const state = await readState(version), sig = signature(doc, style)
+    const state = await readState(version, doc, style)
     const selected = id === undefined
-      ? (await Promise.all(doc.assets.map(async a => await available(version, state.entries[a.id], sig) ? null : a))).filter(Boolean)
+      ? (await Promise.all(doc.assets.map(async a => await available(version, state.entries[a.id], signature(a, style)) ? null : a))).filter(Boolean)
       : doc.assets.filter(a => a.id === id)
     if (id !== undefined && !selected.length) throw new Error('素材不存在。')
     if (!selected.length) return status({ version, doc, style })
-    const dsh = process.env.SCENE_MODE === 'dsh'
+    const dsh = process.env.SCENE_MODE === 'dsh' && !(await settings.load()).assetModel?.baseUrl
     let url, endpoint, model, key, callDsh
     if (dsh) {
       const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
       const kit = path.resolve(videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
       ;({ callDsh } = await import(pathToFileURL(path.join(kit, 'scripts/dsh-model.mjs')).href))
     } else {
-      const config = await settings.load()
+      const saved = await settings.load()
+      const config = { ...saved, model: saved.assetModel?.baseUrl ? saved.assetModel : saved.model }
       endpoint = config.model?.baseUrl || process.env.SCENE_ENDPOINT || process.env.WORKBENCH_MODEL_ENDPOINT
       model = config.model?.model || process.env.SCENE_MODEL || process.env.WORKBENCH_MODEL_NAME
       key = config.model?.baseUrl ? config.model.apiKey : (process.env.SCENE_ENDPOINT ? process.env.SCENE_API_KEY : process.env.WORKBENCH_MODEL_KEY)
@@ -113,7 +128,7 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
       }
       const filename = `${randomUUID()}.svg`
       await writeFile(path.join(directory(version), filename), svg, { flag: 'wx' })
-      state.entries[asset.id] = { filename, signature: sig, approved: false }
+      state.entries[asset.id] = { filename, signature: signature(asset, style), approved: false }
       await writeState(version, state)
     }
     return status({ version, doc, style })
@@ -122,10 +137,10 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
     validate(version, doc)
     const selected = id === undefined ? doc.assets : doc.assets.filter(a => a.id === id)
     if (!selected.length) throw new Error('没有可确认的素材。')
-    const state = await readState(version), sig = signature(doc, style)
+    const state = await readState(version, doc, style)
     for (const asset of selected) {
       const entry = state.entries[asset.id]
-      if (!entry || entry.signature !== sig) throw new Error(`请先生成当前版本的素材「${asset.name}」。`)
+      if (!entry || entry.signature !== signature(asset, style)) throw new Error(`请先生成当前版本的素材「${asset.name}」。`)
       if (!revisions || revisions[asset.id] !== entry.filename) throw new Error(`素材「${asset.name}」已变化，请重新预览后确认。`)
       await readFile(path.join(directory(version), entry.filename))
     }
@@ -135,28 +150,68 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
   }
   async function file({ version, doc, style, id, revision }) {
     validate(version, doc)
-    if (!doc.assets.some(a => a.id === id)) throw new Error('素材不存在。')
-    const entry = (await readState(version)).entries[id]
-    if (!entry || entry.signature !== signature(doc, style)) throw new Error('素材尚未生成或已过期。')
+    const asset = doc.assets.find(a => a.id === id)
+    if (!asset) throw new Error('素材不存在。')
+    const entry = (await readState(version, doc, style)).entries[id]
+    if (!entry || entry.signature !== signature(asset, style)) throw new Error('素材尚未生成或已过期。')
     if (!revision || revision !== entry.filename) throw new Error('素材预览已过期，请重新查看。')
     return path.join(directory(version), entry.filename)
   }
   async function approvedFiles({ version, doc, style }) {
     if (mutating) throw new Error('素材正在生成或确认，请稍后再试。')
     validate(version, doc)
-    const state = await readState(version), sig = signature(doc, style)
+    const state = await readState(version, doc, style)
     return Promise.all(doc.assets.map(async asset => {
       const entry = state.entries[asset.id]
-      if (!entry || entry.signature !== sig || !entry.approved) throw new Error(`素材「${asset.name}」尚未确认。`)
+      if (!entry || entry.signature !== signature(asset, style) || !entry.approved) throw new Error(`素材「${asset.name}」尚未确认。`)
       const file = path.join(directory(version), entry.filename)
       await readFile(file)
       return { id: asset.id, name: asset.name, type: asset.type, sections: asset.sections, path: file }
     }))
+  }
+  async function availableFiles({ version, doc, style }) {
+    validate(version, doc)
+    const state = await readState(version, doc, style)
+    const approved = [], pending = []
+    for (const asset of doc.assets) {
+      const entry = state.entries[asset.id]
+      if (!entry?.approved || !await available(version, entry, signature(asset, style))) { pending.push(asset); continue }
+      approved.push({ id: asset.id, name: asset.name, type: asset.type, sections: asset.sections, revision: entry.filename, path: path.join(directory(version), entry.filename) })
+    }
+    return { approved, pending }
+  }
+  async function drawOne(prompt) {
+    const messages = [{ role: 'user', content: prompt }]
+    let content
+    if (process.env.SCENE_MODE === 'dsh' && !(await settings.load()).assetModel?.baseUrl) {
+      const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
+      const kit = path.resolve(videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
+      const { callDsh } = await import(pathToFileURL(path.join(kit, 'scripts/dsh-model.mjs')).href)
+      content = await callDsh(messages)
+    } else {
+      const saved = await settings.load()
+      const config = { ...saved, model: saved.assetModel?.baseUrl ? saved.assetModel : saved.model }
+      const endpoint = config.model?.baseUrl || process.env.SCENE_ENDPOINT || process.env.WORKBENCH_MODEL_ENDPOINT
+      const model = config.model?.model || process.env.SCENE_MODEL || process.env.WORKBENCH_MODEL_NAME
+      const key = config.model?.baseUrl ? config.model.apiKey : (process.env.SCENE_ENDPOINT ? process.env.SCENE_API_KEY : process.env.WORKBENCH_MODEL_KEY)
+      if (!endpoint || !model) throw new Error('请先配置模型地址和名称。')
+      const url = new URL(endpoint)
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || (!local && url.protocol !== 'https:')) throw new Error('模型地址应使用 HTTPS，本机环回可使用 HTTP。')
+      if (!key && !local) throw new Error('远程模型需要配置密钥。')
+      const response = await request(chatUrl(endpoint), { method: 'POST', headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, messages, ...(/^mimo-v2\.[56](?:-pro)?$/i.test(model) ? { thinking: { type: 'disabled' } } : {}) }), redirect: 'error', signal: AbortSignal.timeout(600000) })
+      if (!response.ok) throw new Error(`素材生成失败（HTTP ${response.status}）。`)
+      content = (await response.json()).choices?.[0]?.message?.content
+      if (typeof content !== 'string' || !content.trim()) throw new Error('模型未返回文本内容（choices 为空或 content 为 null）')
+    }
+    let parsed
+    try { parsed = JSON.parse(String(content).trim().replace(/^```(?:json)?\s*|\s*```$/g, '')) } catch { throw new Error('素材返回格式无效。') }
+    return renderAsset(parsed.shapes)
   }
   async function exclusive(fn, args) {
     if (mutating) throw new Error('素材正在生成或确认，请稍后再试。')
     mutating = true
     try { return await fn(args) } finally { mutating = false }
   }
-  return { status, generate: args => exclusive(generate, args), approve: args => exclusive(approve, args), file, approvedFiles }
+  return { status, generate: args => exclusive(generate, args), approve: args => exclusive(approve, args), file, approvedFiles, availableFiles, drawOne }
 }

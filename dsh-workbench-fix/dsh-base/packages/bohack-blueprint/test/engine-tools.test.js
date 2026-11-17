@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createEngine } from '../lib/engine.js'
 
-const dialogueTools = ['save_requirement', 'add_text_asset', 'mark_requirement_changed', 'request_blueprint', 'request_confirm_and_produce']
+const dialogueTools = ['save_requirement', 'add_text_asset', 'mark_requirement_changed', 'request_blueprint', 'request_blueprint_revision', 'realize_asset', 'request_video_revision', 'request_confirm_and_produce']
 const dangerousTools = ['bash', 'read', 'write', 'apply_patch', 'subagent']
 
 function mockContext(globalNames) {
@@ -33,7 +33,7 @@ function mockContext(globalNames) {
     ctx: {
       agentPresets: {
         async mount(_agentCtx, preset) {
-          assert.ok(['standard', 'blueprint'].includes(preset))
+          assert.ok(['standard', 'bohack-chat', 'blueprint'].includes(preset))
           for (const name of globalNames) globals.add(name)
         },
       },
@@ -63,7 +63,7 @@ function mockContext(globalNames) {
 }
 
 for (const globals of [['web_search', 'skill'], ['web_search', 'skill', ...dangerousTools]]) {
-  test(`dialogue keeps web search and all five requirement tools with globals: ${globals.join(', ')}`, async (t) => {
+  test(`dialogue keeps web search and all requirement tools with globals: ${globals.join(', ')}`, async (t) => {
     const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-engine-tools-'))
     t.after(() => rm(workspace, { recursive: true, force: true }))
     const skillDir = path.join(workspace, '.agents', 'skills', 'knowledge-video-requirement')

@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseBlueprint, validateBlueprint } from '../lib/blueprint.js'
+import { assetPlan } from '../lib/asset-plan.js'
 
 export function requestedDuration(requirements) {
   const values = requirements.flatMap(text => {
@@ -22,6 +23,7 @@ export async function exportProduction(workspace) {
     readdir(outbox),
   ])
   const state = JSON.parse(stateText)
+  if (state.requirementNeedsRevision) throw new Error('需求基线已更新，请先据新需求生成或修订蓝图。')
   const n = state.finalized?.version
   const versions = names.map(name => /^蓝图_v(\d+)\.md$/.exec(name)).filter(Boolean).map(m => Number(m[1]))
   if (state.stage !== 'finalized' || !Number.isInteger(n) || n < 1 || state.finalized.file !== 'outbox/交付.md' || Math.max(...versions) !== n) {
@@ -59,7 +61,7 @@ export async function exportProduction(workspace) {
   return {
     skill,
     status: '准备制作', version: `v${n}`, topic: doc.topic,
-    userRequirements: doc.userRequirements, notes: doc.notes.trim(), assets: doc.assets,
+    userRequirements: doc.userRequirements, notes: doc.notes.trim(), assets: await assetPlan(workspace, n, doc),
     targetDurationSeconds: requestedDuration(doc.userRequirements),
     style,
     sections: doc.sections.map((s, i) => ({

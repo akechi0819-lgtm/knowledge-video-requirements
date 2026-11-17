@@ -22,7 +22,20 @@
   const dialog = document.createElement('dialog')
   dialog.className = 'ws-dialog'
   dialog.setAttribute('aria-labelledby', 'ws-title')
-  dialog.innerHTML = `<div class="ws-inner"><div class="ws-head"><div><p class="ws-kicker">制作选项</p><h2 id="ws-title">工作台设置</h2></div><button class="ws-close" type="button" aria-label="关闭设置">×</button></div><form><section class="ws-section"><h3>成片场景模型</h3><p class="ws-help">此配置用于章节画面预览及成片场景生成，不影响需求对话和蓝图模型。密钥留空时保留已保存的密钥。</p><div class="ws-grid"><label class="ws-field full">接口地址<input name="baseUrl" type="url" placeholder="https://…" autocomplete="url"></label><label class="ws-field">模型名称<input name="model" autocomplete="off"></label><label class="ws-field">API 密钥<input name="apiKey" type="password" autocomplete="new-password"></label></div><label class="ws-field"><input name="modelClear" type="checkbox"> 清除已保存的密钥</label><p class="ws-help ws-key-state" style="margin-top:8px"></p></section><section class="ws-section"><h3>配音模型</h3><p class="ws-help">用于成片配音。密钥留空时保留已保存的密钥。</p><div class="ws-grid"><label class="ws-field full">完整接口地址<input name="ttsBaseUrl" type="url"></label><label class="ws-field">模型名称<input name="ttsModel"></label><label class="ws-field">音色<input name="ttsVoice"></label><label class="ws-field">协议<select name="ttsProtocol"><option value="speech">speech</option><option value="mimo">mimo</option></select></label><label class="ws-field">API 密钥<input name="ttsApiKey" type="password" autocomplete="new-password"></label></div><label class="ws-field"><input name="ttsClear" type="checkbox"> 清除已保存的密钥</label><p class="ws-help ws-tts-key-state"></p></section><section class="ws-section"><h3>生图模型</h3><p class="ws-help">当前仅保存配置，成片流程尚未调用生图。密钥留空时保留已保存的密钥。</p><div class="ws-grid"><label class="ws-field full">接口地址<input name="imageBaseUrl" type="url"></label><label class="ws-field">模型名称<input name="imageModel"></label><label class="ws-field">API 密钥<input name="imageApiKey" type="password" autocomplete="new-password"></label></div><label class="ws-field"><input name="imageClear" type="checkbox"> 清除已保存的密钥</label><p class="ws-help ws-image-key-state"></p></section><p class="ws-status" role="status" aria-live="polite"></p><div class="ws-actions"><button class="ws-cancel" type="button">取消</button><button class="ws-save" type="submit">保存设置</button></div></form></div>`
+  dialog.innerHTML = `<div class="ws-inner"><div class="ws-head"><div><p class="ws-kicker">制作选项</p><h2 id="ws-title">工作台设置</h2></div><button class="ws-close" type="button" aria-label="关闭设置">×</button></div><form><section class="ws-section"><h3>成片场景模型</h3><p class="ws-help">此配置用于原结构化成片场景生成，并作为未单独配置的工具模型默认值。密钥留空时保留已保存的密钥。</p><div class="ws-grid"><label class="ws-field full">接口地址<input name="baseUrl" type="url" placeholder="https://…" autocomplete="url"></label><label class="ws-field">模型名称<input name="model" autocomplete="off"></label><label class="ws-field">API 密钥<input name="apiKey" type="password" autocomplete="new-password"></label></div><label class="ws-field"><input name="modelClear" type="checkbox"> 清除已保存的密钥</label><p class="ws-help ws-key-state" style="margin-top:8px"></p></section><section class="ws-section"><h3>配音模型</h3><p class="ws-help">用于成片配音。密钥留空时保留已保存的密钥。</p><div class="ws-grid"><label class="ws-field full">完整接口地址<input name="ttsBaseUrl" type="url"></label><label class="ws-field">模型名称<input name="ttsModel"></label><label class="ws-field">音色<input name="ttsVoice"></label><label class="ws-field">协议<select name="ttsProtocol"><option value="speech">speech</option><option value="mimo">mimo</option></select></label><label class="ws-field">API 密钥<input name="ttsApiKey" type="password" autocomplete="new-password"></label></div><label class="ws-field"><input name="ttsClear" type="checkbox"> 清除已保存的密钥</label><p class="ws-help ws-tts-key-state"></p></section><section class="ws-section"><h3>生图模型</h3><p class="ws-help">当前仅保存配置，成片流程尚未调用生图。密钥留空时保留已保存的密钥。</p><div class="ws-grid"><label class="ws-field full">接口地址<input name="imageBaseUrl" type="url"></label><label class="ws-field">模型名称<input name="imageModel"></label><label class="ws-field">API 密钥<input name="imageApiKey" type="password" autocomplete="new-password"></label></div><label class="ws-field"><input name="imageClear" type="checkbox"> 清除已保存的密钥</label><p class="ws-help ws-image-key-state"></p></section><p class="ws-status" role="status" aria-live="polite"></p><div class="ws-actions"><button class="ws-cancel" type="button">取消</button><button class="ws-save" type="submit">保存设置</button></div></form></div>`
+  const agentKinds = [['requirementAgent','需求 Agent'], ['blueprintAgent','蓝图 Agent'], ['videoAgent','视频 Agent']]
+  const toolKinds = [['assetModel','素材图工具'], ['previewModel','蓝图示意工具'], ['styleAnalysisModel','风格分析工具']]
+  const formRoot = dialog.querySelector('form')
+  for (const [kind, title] of agentKinds) {
+    const section = document.createElement('section'); section.className = 'ws-section'
+    section.innerHTML = `<h3>${title}</h3><p class="ws-help">填写 DSH 宿主的 provider ID 和模型名；留空沿用原默认配置。更改后下一次调用会创建新的 Agent 会话。</p><div class="ws-grid"><label class="ws-field">Provider ID<input name="${kind}Provider"></label><label class="ws-field">模型名称<input name="${kind}Model"></label></div>`
+    formRoot.insertBefore(section, formRoot.querySelector('.ws-status'))
+  }
+  for (const [kind, title] of toolKinds) {
+    const section = document.createElement('section'); section.className = 'ws-section'
+    section.innerHTML = `<h3>${title}</h3><p class="ws-help">留空继承原成片场景模型；配置接口地址后使用此处模型。密钥留空保留已保存密钥。</p><div class="ws-grid"><label class="ws-field full">接口地址<input name="${kind}BaseUrl" type="url"></label><label class="ws-field">模型名称<input name="${kind}Model"></label><label class="ws-field">API 密钥<input name="${kind}ApiKey" type="password" autocomplete="new-password"></label></div><label class="ws-field"><input name="${kind}Clear" type="checkbox"> 清除已保存的密钥</label><p class="ws-help ws-${kind}-key-state"></p>`
+    formRoot.insertBefore(section, formRoot.querySelector('.ws-status'))
+  }
   document.body.append(dialog)
   const form = dialog.querySelector('form')
   const status = dialog.querySelector('.ws-status')
@@ -113,7 +126,13 @@
       form.elements[kind + 'ApiKey'].value = ''
       dialog.querySelector('.ws-' + kind + '-key-state').textContent = data[kind]?.hasApiKey ? '已保存密钥。' : '尚未保存密钥。'
     }
-    for (const kind of ['model', 'tts', 'image']) form.elements[kind + 'Clear'].checked = false
+    for (const [kind] of agentKinds) for (const field of ['provider', 'model']) form.elements[kind + field[0].toUpperCase() + field.slice(1)].value = data[kind]?.[field] || ''
+    for (const [kind] of toolKinds) {
+      for (const field of ['baseUrl', 'model']) form.elements[kind + field[0].toUpperCase() + field.slice(1)].value = data[kind]?.[field] || ''
+      form.elements[kind + 'ApiKey'].value = ''
+      dialog.querySelector('.ws-' + kind + '-key-state').textContent = data[kind]?.hasApiKey ? '已保存密钥。' : '尚未保存密钥。'
+    }
+    for (const kind of ['model', 'tts', 'image', ...toolKinds.map(([k]) => k)]) form.elements[kind + 'Clear'].checked = false
 
   }
   dialog.querySelector('.ws-close').onclick = () => dialog.close()
@@ -121,7 +140,10 @@
   form.addEventListener('submit', async event => {
     event.preventDefault(); status.textContent = ''; const save = dialog.querySelector('.ws-save'); save.disabled = true
     try {
-      await request({model:{baseUrl:form.elements.baseUrl.value.trim(),model:form.elements.model.value.trim(),apiKey:form.elements.apiKey.value,clearApiKey:form.elements.modelClear.checked},tts:{baseUrl:form.elements.ttsBaseUrl.value.trim(),model:form.elements.ttsModel.value.trim(),voice:form.elements.ttsVoice.value.trim(),protocol:form.elements.ttsProtocol.value.trim(),apiKey:form.elements.ttsApiKey.value,clearApiKey:form.elements.ttsClear.checked},image:{baseUrl:form.elements.imageBaseUrl.value.trim(),model:form.elements.imageModel.value.trim(),apiKey:form.elements.imageApiKey.value,clearApiKey:form.elements.imageClear.checked}})
+      const extra = {}
+      for (const [kind] of agentKinds) extra[kind] = { provider: form.elements[kind + 'Provider'].value.trim(), model: form.elements[kind + 'Model'].value.trim() }
+      for (const [kind] of toolKinds) extra[kind] = { baseUrl: form.elements[kind + 'BaseUrl'].value.trim(), model: form.elements[kind + 'Model'].value.trim(), apiKey: form.elements[kind + 'ApiKey'].value, clearApiKey: form.elements[kind + 'Clear'].checked }
+      await request({...extra,model:{baseUrl:form.elements.baseUrl.value.trim(),model:form.elements.model.value.trim(),apiKey:form.elements.apiKey.value,clearApiKey:form.elements.modelClear.checked},tts:{baseUrl:form.elements.ttsBaseUrl.value.trim(),model:form.elements.ttsModel.value.trim(),voice:form.elements.ttsVoice.value.trim(),protocol:form.elements.ttsProtocol.value.trim(),apiKey:form.elements.ttsApiKey.value,clearApiKey:form.elements.ttsClear.checked},image:{baseUrl:form.elements.imageBaseUrl.value.trim(),model:form.elements.imageModel.value.trim(),apiKey:form.elements.imageApiKey.value,clearApiKey:form.elements.imageClear.checked}})
       await load(); dialog.close()
     } catch (error) { status.textContent = `保存失败：${error.message}` } finally { save.disabled = false }
   })

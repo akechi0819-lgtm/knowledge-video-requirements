@@ -68,8 +68,21 @@ test('dialogue text materials are registered and reach blueprint generation', as
     await service.chat({ text: '整理需求，并参考：火山灰可以影响航空。' }, engine)
     const assets = await service.listAssets()
     assert.equal(assets.assets[0].note, '火山灰可以影响航空。')
+    await service.updateAsset({ id: assets.assets[0].id, action: 'approve' })
     await assert.rejects(service.generate({}, engine), /已收到资料/)
     assert.equal(received[0].name, '资料摘录')
     assert.equal(received[0].note, '火山灰可以影响航空。')
+  } finally { await rm(workspace, { recursive: true, force: true }) }
+})
+
+test('需求上下文不注入制作专用文字并容忍缺失路径', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-chat-material-'))
+  try {
+    const service = createService({}, { workspace })
+    await service.uploadAsset({ name: '制作.txt', dataBase64: Buffer.from('只供成片的全文').toString('base64'), side: 'videomake' })
+    await service.addAsset({ name: '无路径', type: 'text', note: '内联文字' })
+    let context
+    await service.chat({ text: '我想讲火山' }, { async chatTurn(args) { context = args.contextText; return { reply: '记下了' } } })
+    assert.ok(!context.includes('只供成片的全文'))
   } finally { await rm(workspace, { recursive: true, force: true }) }
 })

@@ -43,7 +43,7 @@ window.BohackFilm = (() => {
   }
 
   function headline(p) {
-    if (!p) return '从蓝图生成素材，再合成为视频。'
+    if (!p) return '按定稿蓝图制作画面、旁白和视频。'
     if (p.status === 'failed') return p.error ? `制作失败：${failureMessage(p.error)}` : '制作失败，请重新制作。'
     if (p.status === 'interrupted') return '制作中断，已保留已完成的段落，可以重新开始。'
     if (p.status === 'completed') {
@@ -55,6 +55,7 @@ window.BohackFilm = (() => {
     const withScene = sections.filter(s => s.scene).length
     const withAudio = sections.filter(s => s.audio).length
     const withClip = sections.filter(s => s.clip).length
+    if (p.phase === '正在制作视频') return '视频 Agent 正在读取蓝图和素材，设计画面。'
     if (p.phase === '生成素材') return '正在为当前蓝图准备动画素材。'
     if (p.phase === '生成画面') {
       const current = sections.find(s => !s.scene)
@@ -71,18 +72,13 @@ window.BohackFilm = (() => {
     return p.phase ? `正在${p.phase}。` : '正在制作成片。'
   }
 
-  function phaseIndex(phase, status) {
-    if (status === 'completed' || phase === '制作完成') return PHASES.length - 1
-    const i = PHASES.indexOf(phase)
-    return i < 0 ? 0 : i
-  }
-
   function renderPhases(rail, p) {
     if (!p || p.status === 'completed') { rail.hidden = true; rail.replaceChildren(); return }
-    const idx = phaseIndex(p.phase, p.status)
+    const phases = p.mode === 'agent' ? ['启动视频制作 Agent', '生成配音', '编写画面', '预览画面', '配音与渲染', '自动质检', '制作完成'] : PHASES
+    const idx = Math.max(0, phases.indexOf(p.phase === '正在制作视频' ? '编写画面' : p.phase))
     const failed = p.status === 'failed' || p.status === 'interrupted'
     rail.hidden = false
-    rail.innerHTML = PHASES.map((name, i) => {
+    rail.innerHTML = phases.map((name, i) => {
       const state = failed && i === idx ? 'is-fail' : i < idx || p.status === 'completed' ? 'is-done' : i === idx ? 'is-on' : ''
       return `<li class="${state}"><span class="phase-dot" aria-hidden="true"></span><span>${name}</span></li>`
     }).join('')
@@ -120,7 +116,7 @@ window.BohackFilm = (() => {
     const preferred = sections.find(s => s.id === sectionId && s.clip) || sections.filter(s => s.clip).at(-1)
     if (preferred) return { kind: 'clip', src: fileUrl(threadId, 'clip', preferred.id), section: preferred.id }
     const scene = sections.find(s => s.id === sectionId && s.sceneKind === 'html') || sections.find(s => s.sceneKind === 'html')
-    if (scene) return { kind: 'scene', src: fileUrl(threadId, 'scene', scene.id), section: scene.id }
+    if (scene && p.mode !== 'agent') return { kind: 'scene', src: fileUrl(threadId, 'scene', scene.id), section: scene.id }
     return { kind: 'waiting' }
   }
 
@@ -218,6 +214,7 @@ window.BohackFilm = (() => {
     }).join('')
     const downloads = p.status === 'completed' ? `<p class="film-downloads">
       <a href="${fileUrl(threadId, 'video')}" download="final.mp4">下载成片</a>
+      ${p.mode === 'agent' ? `<a href="${fileUrl(threadId, 'source')}" download="source.zip">下载源码</a>` : ''}
       <a href="${fileUrl(threadId, 'mapping')}" download="mapping.json">下载段落映射</a>
       ${p.source === 'external' ? `<a href="/bohack/api/file?threadId=${encodeURIComponent(threadId)}&path=outbox%2F%E5%88%B6%E4%BD%9C%E8%93%9D%E5%9B%BE.md" target="_blank" rel="noopener">制作蓝图</a><a href="/bohack/api/file?threadId=${encodeURIComponent(threadId)}&path=outbox%2F%E5%BD%92%E6%A1%A3%E9%AA%8C%E6%94%B5.md" target="_blank" rel="noopener">归档验收</a>` : ''}
     </p>` : ''
@@ -229,6 +226,10 @@ window.BohackFilm = (() => {
         <span class="player-time">0:00 / ${formatClock(total)}</span>
       </div>
     </div>${downloads}`
+    if (p.previousJobId) {
+      const previous = new URL(fileUrl(threadId, 'video'), location.origin); previous.searchParams.set('jobId', p.previousJobId)
+      player.insertAdjacentHTML('beforeend', `<details><summary>对照上一版</summary><video controls preload="metadata" src="${esc(previous.pathname + previous.search)}"></video></details>`)
+    }
     player._ctl = bindPlayer(player, p, threadId)
     return player._ctl
   }

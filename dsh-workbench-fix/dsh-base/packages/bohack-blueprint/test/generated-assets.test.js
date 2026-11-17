@@ -21,6 +21,9 @@ test('素材生成、确认、单项重建及风格变更均隔离版本与生�
     const revisions = Object.fromEntries(generated.assets.map(a => [a.id, a.revision]))
     await assert.rejects(assets.approve(args), /重新预览/ )
     await assets.approve({ ...args, revisions })
+    const reassigned = {assets: [{...doc.assets[0], sections:['B02']}]}
+    const assignedFiles = await assets.availableFiles({...args,doc:reassigned})
+    assert.deepEqual(assignedFiles.approved.map(item => [item.id,item.sections,item.revision]), [['hero',['B02'],revisions.hero]])
     const oldUrl = (await assets.status(args)).assets[0].previewUrl
     await assets.generate(args)
     assert.equal(calls.length, 2)
