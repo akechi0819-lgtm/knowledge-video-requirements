@@ -445,3 +445,109 @@ test('failed scene production reuses matching completed sections only', async ()
     const changed=await run();assert.equal(changed.status,'failed');assert.equal(changed.reusedScenesFrom,undefined)
   } finally {for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]}await rm(root,{recursive:true,force:true})}
 })
+
+test('reusableAudio skips corrupt and null completed.json without throwing', async () => {
+  const root = await mkdtemp(path.join(tmpdir(),'production-audio-corrupt-'))
+  const kit = path.join(root,'kit'), workspace = path.join(root,'ws'), old = {...process.env}
+  try {
+    await mkdir(path.join(kit,'scripts'),{recursive:true}); await mkdir(path.join(kit,'WORK/modules/video'),{recursive:true})
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `import {mkdir,readFile,writeFile} from 'node:fs/promises'; const a=process.argv,p=JSON.parse(await readFile(a[3])); await mkdir(a[5]); for(const s of p.sections){s.scene=s.id+'.html';await writeFile(a[5]+'/'+s.scene,'html');await writeFile(a[5]+'/'+s.id+'.scene.json','{}')} await writeFile(a[5]+'/production.json',JSON.stringify(p))`)
+    await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile,readFile,appendFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1],p=JSON.parse(await readFile(a[3])); await appendFile(${JSON.stringify(path.join(root,'sources'))},(process.env.VIDEO_TTS_CACHE_DIR||'none')+'\\n'); await mkdir(out); await mkdir(out+'/audio'); for(const s of p.sections){await writeFile(out+'/audio/'+s.id+'.mp3','audio');await writeFile(out+'/audio/'+s.id+'.json',JSON.stringify({id:s.id,narration:s.narration}))} await writeFile(out+'/final.mp4','video');await writeFile(out+'/mapping.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
+    Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api',SCENE_API_KEY:'test'})
+    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
+    const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
+    await service.generate({},{produce:async()=>({markdown,engine:'test'})}); await service.confirm({all:true}); await service.finalize()
+    async function complete(){let s=await service.production.start();for(let i=0;i<100;i++){s=await service.production.status();if(s.status!=='running')break;await sleep(20)}assert.equal(s.status,'completed',s.error);return s}
+    const first=await complete()
+    const badDir=path.join(workspace,'production','22222222-2222-4222-8222-222222222222')
+    await mkdir(badDir,{recursive:true}); await writeFile(path.join(badDir,'completed.json'),'{broken json')
+    const nullDir=path.join(workspace,'production','33333333-3333-4333-8333-333333333333')
+    await mkdir(nullDir,{recursive:true}); await writeFile(path.join(nullDir,'completed.json'),'null')
+    await complete()
+    const sources=(await readFile(path.join(root,'sources'),'utf8')).trim().split('\n')
+    assert.equal(sources[0],'none')
+    assert.equal(sources[1],path.join(workspace,'production',first.id,'film','audio'))
+  } finally {for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE','SCENE_API_KEY']){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]}await rm(root,{recursive:true,force:true})}
+})
+
+test('production normalizes scene and tts endpoints idempotently by protocol', async () => {
+  const root=await mkdtemp(path.join(tmpdir(),'production-endpoint-'))
+  const kit=path.join(root,'kit'), workspace=path.join(root,'ws'), old={...process.env}
+  try {
+    await mkdir(path.join(kit,'scripts'),{recursive:true}); await mkdir(path.join(kit,'WORK/modules/video'),{recursive:true})
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile,appendFile} from 'node:fs/promises'; const a=process.argv; await mkdir(a[5]); await appendFile(${JSON.stringify(path.join(root,'scene-endpoints'))},a[a.indexOf('--endpoint')+1]+'\\n'); await writeFile(a[5]+'/production.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile,appendFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1]; await appendFile(${JSON.stringify(path.join(root,'tts-endpoints'))},(process.env.VIDEO_TTS_ENDPOINT||'none')+' '+(process.env.VIDEO_TTS_PROTOCOL||'none')+'\\n'); await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
+    Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/v1/',SCENE_MODEL:'test',SCENE_MODE:'api',SCENE_API_KEY:'test'})
+    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    await writeFile(path.join(workspace,'settings.json'),JSON.stringify({tts:{baseUrl:'http://localhost/tts/',model:'m',voice:'茉莉',protocol:'speech',apiKey:'k'}}))
+    await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
+    const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
+    await service.generate({},{produce:async()=>({markdown,engine:'test'})}); await service.confirm({all:true}); await service.finalize()
+    async function complete(){let s=await service.production.start();for(let i=0;i<100;i++){s=await service.production.status();if(s.status!=='running')break;await sleep(20)}assert.equal(s.status,'completed',s.error);return s}
+    await complete()
+    assert.equal((await readFile(path.join(root,'scene-endpoints'),'utf8')).trim(),'http://localhost/v1/chat/completions')
+    assert.equal((await readFile(path.join(root,'tts-endpoints'),'utf8')).trim(),'http://localhost/tts/audio/speech speech')
+    await writeFile(path.join(workspace,'settings.json'),JSON.stringify({tts:{baseUrl:'http://localhost/tts/chat/completions/',model:'m',voice:'茉莉',protocol:'mimo',apiKey:'k'}}))
+    process.env.SCENE_ENDPOINT='http://localhost/v1/chat/completions'
+    await service.selectVisualStyle({id:'editorial',version:1})
+    await complete()
+    assert.equal((await readFile(path.join(root,'scene-endpoints'),'utf8')).trim().split('\n')[1],'http://localhost/v1/chat/completions')
+    assert.equal((await readFile(path.join(root,'tts-endpoints'),'utf8')).trim().split('\n')[1],'http://localhost/tts/chat/completions mimo')
+  } finally {for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE','SCENE_API_KEY']){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]}await rm(root,{recursive:true,force:true})}
+})
+
+test('prepare-scenes subprocess gets default DSH_CLI and honors env override', async () => {
+  const root=await mkdtemp(path.join(tmpdir(),'production-dsh-cli-'))
+  const kit=path.join(root,'kit'), workspace=path.join(root,'ws'), old={...process.env}
+  try {
+    await mkdir(path.join(kit,'scripts'),{recursive:true}); await mkdir(path.join(kit,'WORK/modules/video'),{recursive:true})
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile,appendFile} from 'node:fs/promises'; const a=process.argv; if(!a.includes('--dsh')) throw Error('missing dsh mode'); await mkdir(a[5]); await appendFile(${JSON.stringify(path.join(root,'dsh-cli'))},(process.env.DSH_CLI||'none')+'\\n'); await writeFile(a[5]+'/production.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1]; await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
+    Object.assign(process.env,{SCENE_MODE:'dsh'})
+    delete process.env.DSH_CLI
+    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
+    const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
+    await service.generate({},{produce:async()=>({markdown,engine:'test'})}); await service.confirm({all:true}); await service.finalize()
+    async function complete(){let s=await service.production.start();for(let i=0;i<100;i++){s=await service.production.status();if(s.status!=='running')break;await sleep(20)}assert.equal(s.status,'completed',s.error);return s}
+    await complete()
+    const expected=path.join(path.resolve(kit,'..','dsh-workbench-fix','dsh-base'),process.platform==='win32'?'dsh.cmd':'dsh.sh')
+    assert.equal((await readFile(path.join(root,'dsh-cli'),'utf8')).trim(),expected)
+    process.env.DSH_CLI='custom-cli'
+    await service.selectVisualStyle({id:'editorial',version:1})
+    await complete()
+    assert.equal((await readFile(path.join(root,'dsh-cli'),'utf8')).trim().split('\n')[1],'custom-cli')
+  } finally {for(const key of ['SCENE_MODE','DSH_CLI']){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]}await rm(root,{recursive:true,force:true})}
+})
+
+test('run watchdog terminates a hung production and allows restarting', async () => {
+  const root=await mkdtemp(path.join(tmpdir(),'production-timeout-'))
+  const kit=path.join(root,'kit'), workspace=path.join(root,'ws'), old={...process.env}
+  try {
+    await mkdir(path.join(kit,'scripts'),{recursive:true}); await mkdir(path.join(kit,'WORK/modules/video'),{recursive:true})
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `setTimeout(()=>{},1000000);await new Promise(()=>{})`)
+    await writeFile(path.join(kit,'WORK/modules/video/pipeline.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv,out=a[a.indexOf('--out')+1]; await mkdir(out); await writeFile(out+'/final.mp4','video'); await writeFile(out+'/mapping.json','{}')`)
+    await writeFile(path.join(kit,'WORK/modules/video/verify.mjs'),'')
+    Object.assign(process.env,{SCENE_ENDPOINT:'http://localhost/test',SCENE_MODEL:'test',SCENE_MODE:'api',SCENE_API_KEY:'test',VIDEO_PRODUCTION_TIMEOUT_MS:'500'})
+    const service=createService({}, {workspace,videoKitDir:kit}); await service._internal.ensureDirs()
+    await writeFile(path.join(workspace,'inbox/需求.md'),'# 主题\n潮汐\n')
+    const sections=['B01','B02'].map(id=>({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const markdown=renderBlueprint({topic:'潮汐',userRequirements:[],sections,meta:{}})
+    await service.generate({},{produce:async()=>({markdown,engine:'test'})}); await service.confirm({all:true}); await service.finalize()
+    let state=await service.production.start()
+    for(let i=0;i<200;i++){state=await service.production.status();if(state.status!=='running')break;await sleep(20)}
+    assert.equal(state.status,'failed'); assert.match(state.error,/制作超时/)
+    await writeFile(path.join(kit,'scripts/prepare-scenes.mjs'), `import {mkdir,writeFile} from 'node:fs/promises'; const a=process.argv; await mkdir(a[5]); await writeFile(a[5]+'/production.json','{}')`)
+    delete process.env.VIDEO_PRODUCTION_TIMEOUT_MS
+    let again=await service.production.start(); assert.equal(again.status,'running')
+    for(let i=0;i<100;i++){again=await service.production.status();if(again.status!=='running')break;await sleep(20)}
+    assert.equal(again.status,'completed',again.error)
+  } finally {for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE','SCENE_API_KEY','VIDEO_PRODUCTION_TIMEOUT_MS']){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]}await rm(root,{recursive:true,force:true})}
+})
