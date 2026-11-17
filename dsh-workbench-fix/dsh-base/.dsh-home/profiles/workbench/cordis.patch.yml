@@ -37,7 +37,9 @@
       name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
 
 
-# DSH patch rows replace config wholesale; preserve the shipped standard preset and disable only web fetch.
+# DSH patch rows replace config wholesale; preserve the shipped standard preset.
+# The dialogue session ingests untrusted uploads/web summaries, so command/file/
+# job/delegation rows are disabled here (the engine deny mask is the second layer).
 - id: preset-standard
   name: '@deepseek-ai/dsh-agent-preset'
   config:
@@ -56,22 +58,26 @@
         name: '@deepseek-ai/dsh-time-context'
       - id: tool-bash
         name: '@deepseek-ai/dsh-tool-bash'
-        disabled: !!js process.platform === 'win32'
+        disabled: true
       - id: tool-pwsh
         name: '@deepseek-ai/dsh-tool-pwsh'
-        disabled: !!js process.platform !== 'win32'
+        disabled: true
       - id: tool-fs
         name: '@deepseek-ai/dsh-tool-fs'
+        disabled: true
         config:
           applyPatch: false
       - id: tool-fs-search
         name: '@deepseek-ai/dsh-tool-fs-search'
+        disabled: true
         config:
           sampleOverCapGlobResults: false
       - id: tool-jobs
         name: '@deepseek-ai/dsh-tool-jobs'
+        disabled: true
       - id: tool-schedule
         name: '@deepseek-ai/dsh-tool-schedule'
+        disabled: true
       - id: skill-filesystem
         name: '@deepseek-ai/dsh-skill-filesystem'
       - id: tool-skill
@@ -161,6 +167,7 @@
       - id: delegation
         name: cordis:group
         group: true
+        disabled: true
         isolate:
           workflowEngine: true
         config:

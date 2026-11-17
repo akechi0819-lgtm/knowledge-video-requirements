@@ -410,14 +410,14 @@ function applyToolControl(agentCtx, ctx, allowWebResearch) {
     // 任何模式都拦（文件唯一真相源：只有 write_blueprint 能落蓝图）。
     const deny = known.filter(n =>
       (!allowWebResearch && /^web_/i.test(n)) ||
-      /^(bash|pwsh|shell|jobs|schedule|subagent|workflow|goal|todo|apply_patch|edit|write|read_file)/i.test(n))
+      /^(bash|pwsh|shell|jobs|schedule|subagent|workflow|goal|todo|apply_patch|edit|write|read|grep|glob|search)/i.test(n))
     // An empty filter is rejected by restrict(). When no name matches the deny
     // pattern, remove every known *global* tool instead — scoped registrations
-    // (the preset's skill tool and our write_blueprint) stay visible by design.
+    // (skill, write_blueprint, contract and dialogue tools) stay visible by design.
     // `skill` is how the agent loads SKILL.md in full (the catalog only has
-    // summaries). Never let the deny mask remove it or our write tool.
+    // summaries). Never let the deny mask remove it or our scoped tools.
     const mask = (deny.length ? deny : [...known])
-      .filter(n => !/^(skill|write_blueprint|read_requirement|query_scene)$/i.test(n))
+      .filter(n => !/^(skill|write_blueprint|read_requirement|query_scene|save_requirement|add_text_asset|mark_requirement_changed|request_blueprint|request_confirm_and_produce)$/i.test(n))
     if (!mask.length) return null
     const disposer = tools.restrict({ deny: mask })
     log(ctx, 'tool control applied (web:', String(!!allowWebResearch) + '), deny:', mask.join(','))
@@ -464,18 +464,21 @@ function lastAssistantText(ctx, sessionId, handle) {
 
 export function createEngine(ctx, config = {}) {
   let handle = null
+  let creating = null
   let sessionId = null
   // Structured requirement for the current turn, exposed to the blueprint
   // agent through the read_requirement / query_scene contract tools.
   let currentRequirement = null
   // Requirement-dialogue session (separate from the blueprint session):
-  // mounted on the STANDARD preset (full tool face) so the dialogue agent can
-  // organise files, build retrieval indexes and search the web — exactly the
-  // teammate module's operating mode, now inside the same instance.
+  // mounted on the STANDARD preset, then masked down to web_search + the five
+  // scoped dialogue tools — the session ingests untrusted uploads/web summaries,
+  // so command/file tools must not stay reachable (prompt-injection → RCE).
   let chatHandle = null
+  let chatCreating = null
   let chatSessionId = null
   let chatPresetMounted = false
   let chatStarted = false
+  let chatWebDisposer = null
   const chatDiag = { cwd: null, turns: 0, lastReplyChars: 0 }
   // Assistant text captured straight from the stream events — the session
   // projection (ctx.sessions) does not reliably expose chat messages on rc.1.
@@ -608,6 +611,11 @@ export function createEngine(ctx, config = {}) {
 
   async function ensureSession() {
     if (handle) return handle
+    creating ||= doCreate().finally(() => { creating = null })
+    return creating
+  }
+
+  async function doCreate() {
     const agents = ctx.get?.('agents') || ctx.agents
     if (!agents || typeof agents.create !== 'function') throw new Error('ctx.agents 不可用（缺 session-projection / agent-loop）')
     sessionId = sessionId || `bohack-${Date.now()}-${randomUUID().slice(0, 6)}`
@@ -868,7 +876,7 @@ export function createEngine(ctx, config = {}) {
       '---',
       '',
       '## 本会话已保存的历史（仅作创作者意图的上下文；当前规则和最新用户消息优先于历史助手的说法，历史建议未被采纳不算要求）',
-      String(historyText || '(无)'),
+      String(historyText || '(无)').slice(-16000),
       '',
       '创作者当前消息：',
       '',
@@ -879,6 +887,11 @@ export function createEngine(ctx, config = {}) {
 
   async function ensureChatSession({ contextText } = {}) {
     if (chatHandle) return chatHandle
+    chatCreating ||= doCreateChat().finally(() => { chatCreating = null })
+    return chatCreating
+  }
+
+  async function doCreateChat() {
     const agents = ctx.get?.('agents') || ctx.agents
     if (!agents || typeof agents.create !== 'function') throw new Error('ctx.agents 不可用')
     chatSessionId = `bohack-chat-${Date.now()}-${randomUUID().slice(0, 6)}`
@@ -939,8 +952,8 @@ export function createEngine(ctx, config = {}) {
         output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
         async execute() { chatCapture.productionRequested = true; return { ok: true, message: '请求已提交，工作台将在本轮结束后校验并处理。' } },
       })
-      // 需求会话不装 write_blueprint、不设 deny 掩码、不装 web guard——
-      // 它使用标准工具面（含 bash / fs / web search）。
+      // 本会话吃进上传资料/网页摘要等不可信内容：standard 的 bash/fs 等必须拦掉；检索恒允许（用户驱动，tool-web 已 fetch:false），不装 web guard。
+      chatWebDisposer = applyToolControl(agentCtx, ctx, true)
       agentCtx.on?.('agent/request-error', (payload) => {
         try {
           process.stderr.write(`[bohack/chat] request-error: ${String(JSON.stringify(payload)).slice(0, 2000)}\n`)
@@ -1022,6 +1035,8 @@ export function createEngine(ctx, config = {}) {
         }),
       ])
     } catch (e) {
+      // 不 cancel 的话旧会话流处理器仍向共享 chatCapture 追加，污染下一轮。
+      try { h?.agent?.cancel?.('bohack chat turn failed') } catch { /* ignore */ }
       chatHandle = null
       chatStarted = false
       throw new Error(`需求回合失败：${e?.message || e}`)
@@ -1033,6 +1048,14 @@ export function createEngine(ctx, config = {}) {
         await new Promise(r => setTimeout(r, 250))
         reply = chatCapture.text || lastAssistantText(ctx, chatSessionId, h) || ''
       }
+    }
+    if (!reply.trim()) {
+      // 模型可能只调工具不说话；按本轮工具动作兜底，避免空回复。
+      if (chatCapture.requirementMarkdown) reply = '已整理需求单'
+      else if (chatCapture.textAssets?.length) reply = `已登记 ${chatCapture.textAssets.length} 条资料`
+      else if (chatCapture.blueprintRequested) reply = '已收到蓝图生成请求'
+      else if (chatCapture.productionRequested) reply = '已收到制作请求'
+      else reply = '（本轮无文字回复）'
     }
     chatDiag.turns++
     chatDiag.lastReplyChars = reply.length
@@ -1064,6 +1087,7 @@ export function createEngine(ctx, config = {}) {
         }),
       ])
     } catch (e) {
+      try { handle?.agent?.cancel?.('bohack note failed') } catch { /* ignore */ }
       handle = null
       return { delivered: false, reason: String(e?.message || e) }
     }
@@ -1088,6 +1112,17 @@ export function createEngine(ctx, config = {}) {
         timeoutMs,
       }
     },
-    reset() { handle = null; diag.lastReason = null },
+    reset() {
+      try { handle?.agent?.cancel?.('bohack reset') } catch { /* ignore */ }
+      try { chatHandle?.agent?.cancel?.('bohack reset') } catch { /* ignore */ }
+      try { webDisposer?.() } catch { /* ignore */ }
+      try { webGuardDisposer?.() } catch { /* ignore */ }
+      try { chatWebDisposer?.() } catch { /* ignore */ }
+      webDisposer = null; webGuardDisposer = null; chatWebDisposer = null
+      handle = null; chatHandle = null
+      chatStarted = false; chatPresetMounted = false
+      sessionId = null; chatSessionId = null
+      diag.lastReason = null
+    },
   }
 }
