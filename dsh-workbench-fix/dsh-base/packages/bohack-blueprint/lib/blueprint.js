@@ -161,7 +161,14 @@ export function parseBlueprint(md) {
 
     const bullet = /^[-*]\s+(.+?)\s*$/.exec(line)
     if (bullet && zone === 'assets') {
-      doc.assets.push(JSON.parse(bullet[1]))
+      // 单条坏资产行只降级为跳过 + 警告，绝不能让整份蓝图解析失败。
+      let asset
+      try { asset = JSON.parse(bullet[1]) } catch { asset = null }
+      if (asset && typeof asset === 'object' && typeof asset.id === 'string') doc.assets.push(asset)
+      else {
+        doc.warnings = doc.warnings || []
+        doc.warnings.push(`资产清单行不是含 id 的 JSON 对象，已跳过：${bullet[1].slice(0, 80)}`)
+      }
       continue
     }
     if (bullet && zone === 'requirements' && section === null) {
