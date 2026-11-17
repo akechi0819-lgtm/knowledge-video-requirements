@@ -44,17 +44,20 @@ async def _synth(text: str, voice: str, rate: str, mp3_path: Path) -> list[dict]
     return words
 
 
-def synth_segment(text: str, mp3_path: Path, voice: str, rate: str, ffprobe: str) -> dict:
+def synth_segment(text: str, mp3_path: Path, voice: str, rate: str, ffprobe: str,
+                  preferred: str | None = None) -> dict:
     """Synthesize one segment. Returns audio path, measured duration, word timings."""
     mp3_path.parent.mkdir(parents=True, exist_ok=True)
     last_err: Exception | None = None
-    for candidate in [voice] + FALLBACK_VOICES:
+    candidates = list(dict.fromkeys(([preferred] if preferred else []) + [voice] + FALLBACK_VOICES))
+    for candidate in candidates:
         try:
             words = asyncio.run(_synth(text, candidate, rate, mp3_path))
             duration = ffprobe_duration(ffprobe, mp3_path)
             return {
                 "audio": str(mp3_path),
                 "voice": candidate,
+                "requested_voice": voice,
                 "rate": rate,
                 "duration": round(duration, 4),
                 "words": words,
@@ -69,6 +72,7 @@ def synth_segment(text: str, mp3_path: Path, voice: str, rate: str, ffprobe: str
 def synth_all(segments: list[dict], audio_dir: Path, voice: str, rate: str,
               ffprobe: str, force: bool = False) -> list[dict]:
     results = []
+    preferred = None
     for seg in segments:
         sid = seg["id"]
         mp3 = audio_dir / f"{sid}.mp3"
@@ -76,13 +80,18 @@ def synth_all(segments: list[dict], audio_dir: Path, voice: str, rate: str,
         if cache.exists() and mp3.exists() and not force:
             cached = json.loads(cache.read_text(encoding="utf-8"))
             # Rework safety: stale audio must never be reused for changed narration.
+            # Compare the requested voice, not the fallback voice actually synthesized.
             if (cached.get("narration") == seg["narration"]
-                    and cached.get("voice") == voice and cached.get("rate") == rate):
+                    and cached.get("requested_voice", cached.get("voice")) == voice
+                    and cached.get("rate") == rate):
                 results.append(cached)
+                preferred = cached.get("voice") or preferred
                 continue
-        info = synth_segment(seg["narration"], mp3, voice, rate, ffprobe)
+        info = synth_segment(seg["narration"], mp3, voice, rate, ffprobe, preferred=preferred)
         info["id"] = sid
         info["narration"] = seg["narration"]
+        info["requested_voice"] = voice
         cache.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
         results.append(info)
+        preferred = info["voice"]
     return results

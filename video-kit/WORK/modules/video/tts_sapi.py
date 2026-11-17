@@ -8,6 +8,7 @@ boundary; quality is robotic next to edge-tts neural voices — fallback only.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -59,14 +60,18 @@ def synth_segment(text: str, mp3_path: Path, voice: str, ffprobe: str) -> dict:
     )
     info = json.loads(meta.read_text(encoding="utf-8-sig"))
     meta.unlink()
+    ffmpeg = os.environ.get("VIDEO_FFMPEG") or str(Path(ffprobe).with_name("ffmpeg.exe"))
     subprocess.run(
-        [str(Path(ffprobe).with_name("ffmpeg.exe")), "-y", "-v", "error", "-i", str(wav),
+        [ffmpeg, "-y", "-v", "error", "-i", str(wav),
          "-codec:a", "libmp3lame", "-q:a", "2", str(mp3_path)],
         check=True,
     )
     wav.unlink()
     duration = ffprobe_duration(ffprobe, mp3_path)
-    raw = info["words"]
+    # PS 5.1 ConvertTo-Json unwraps single-element lists to objects and empty ones to null.
+    raw = info.get("words") or []
+    if isinstance(raw, dict):
+        raw = [raw]
     words = []
     for i, w in enumerate(raw):
         start = w["audioMs"] / 1000.0
@@ -76,6 +81,7 @@ def synth_segment(text: str, mp3_path: Path, voice: str, ffprobe: str) -> dict:
     return {
         "audio": str(mp3_path),
         "voice": f"sapi:{info['voice']}",
+        "requested_voice": voice,
         "rate": "+0%",
         "duration": round(duration, 4),
         "words": words,
@@ -92,13 +98,16 @@ def synth_all(segments: list[dict], audio_dir: Path, voice: str, rate: str,
         cache = audio_dir / f"{sid}.json"
         if cache.exists() and mp3.exists() and not force:
             cached = json.loads(cache.read_text(encoding="utf-8"))
+            # The zh-CN fallback may pick a different voice than requested; compare requested.
             if (cached.get("narration") == seg["narration"]
-                    and cached.get("voice") == voice and cached.get("rate") == rate):
+                    and cached.get("requested_voice", cached.get("voice")) == voice
+                    and cached.get("rate") == rate):
                 results.append(cached)
                 continue
         info = synth_segment(seg["narration"], mp3, voice, ffprobe)
         info["id"] = sid
         info["narration"] = seg["narration"]
+        info["requested_voice"] = voice
         cache.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
         results.append(info)
     return results
