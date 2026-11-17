@@ -417,7 +417,7 @@ function applyToolControl(agentCtx, ctx, allowWebResearch) {
     // `skill` is how the agent loads SKILL.md in full (the catalog only has
     // summaries). Never let the deny mask remove it or our scoped tools.
     const mask = (deny.length ? deny : [...known])
-      .filter(n => !/^(skill|write_blueprint|read_requirement|query_scene|save_requirement|add_text_asset|mark_requirement_changed|request_blueprint|request_confirm_and_produce)$/i.test(n))
+      .filter(n => !(allowWebResearch && /^web_/i.test(n)) && !/^(skill|write_blueprint|read_requirement|query_scene|save_requirement|add_text_asset|mark_requirement_changed|request_blueprint|request_confirm_and_produce)$/i.test(n))
     if (!mask.length) return null
     const disposer = tools.restrict({ deny: mask })
     log(ctx, 'tool control applied (web:', String(!!allowWebResearch) + '), deny:', mask.join(','))
