@@ -1,6 +1,5 @@
 FROM jiangjie-preview-runtime:local
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 COPY scripts/cloud-worker.mjs /app/scripts/cloud-worker.mjs
 COPY dsh-workbench-fix/dsh-base/.dsh-home/profiles/workbench/cordis.patch.yml /app/dsh-workbench-fix/dsh-base/.dsh-home/profiles/workbench/cordis.patch.yml
 COPY video-kit/WORK /app/video-kit/WORK

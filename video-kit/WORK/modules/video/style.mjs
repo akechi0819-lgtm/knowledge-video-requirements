@@ -142,7 +142,7 @@ export const STYLE = {
   },
 
   // Screenshot format/quality chosen from T4 spike A measurements.
-  capture: { type: 'jpeg', quality: 92, pages: 3 },
+  capture: { type: 'jpeg', quality: 92, pages: Number(process.env.VIDEO_CAPTURE_PAGES || 3) },
 };
 
 export default STYLE;

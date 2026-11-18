@@ -800,7 +800,7 @@ export function createEngine(ctx, config = {}) {
     // reasoning / quality-critical" id returned by /models. Override with
     // config.model / config.provider if a teammate wants the cheap route.
     options.agentOptions = resolveAgent(await modelSettings.load(), 'blueprintAgent', { provider: config.provider || sel?.provider || 'deepseek-official', model: config.model || 'deepseek-v4-pro' })
-    if (sel?.reasoningEffort) options.agentOptions.reasoningEffort = sel.reasoningEffort
+    if (sel?.reasoningEffort && !options.agentOptions.reasoningEffort) options.agentOptions.reasoningEffort = sel.reasoningEffort
 
     handle = await agents.create(options)
     diag.route = options.agentOptions

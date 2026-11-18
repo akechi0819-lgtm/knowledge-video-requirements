@@ -57,13 +57,11 @@
             config:
               prefix: >-
                 你是知识视频制作师。根据已确认蓝图与创作者要求，使用提供的工具制作、预览并检查视频。
-                使用宿主 skill 工具读取本次选定的制作与视觉技能，引用的资料使用 read_skill_file 读取。必须调用 submit 提交成片；失败时根据工具反馈修正。
+                本次完整制作方法与视觉规则随任务提供，不重复加载已有规则；仅在提供资料读取工具时按需读取明确引用的相对资料。
+                执行流程以网页提供的工具和已确认蓝图为准，不重新提问或重走本机脚本流程。必须调用 submit 提交成片；失败时根据工具反馈修正。
+                先写完全部段落，每段只看一张代表性预览，默认只审一轮；仅对脚本或播放错误、主体缺失、严重遮挡进行自动修复，修复后只复查受影响段。
+                静帧、装饰、排版偏好和审美建议不拦交片，也不自动触发返工。实际脚本错误继续修到可运行，完成后调用 submit 一次完成渲染、基础检查和提交；其余调整交给创作者的返工意见。
                 无法完成时明确说明问题，不要声称已经提交。
-          - id: skill-fs
-            name: '@deepseek-ai/dsh-skill-filesystem'
-          - id: tool-skill
-            name: '@deepseek-ai/dsh-tool-skill'
-
     # The product service + temporary UI. One plugin registers ctx.bohack and
     # the /bohack prefix route, so there is exactly one row for this package.
     - id: bohack

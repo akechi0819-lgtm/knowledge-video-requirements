@@ -42,7 +42,7 @@ else if (args[0] === 'rm') { fs.rmSync(path.join(dir, args.at(-1)), {force:true}
 `, { mode: 0o755 })
   let child
   const start = async (port = worker.address().port, timeout = '2000') => {
-    child = spawn(process.execPath, [gateway], { env: { ...process.env, GATEWAY_STATE_DIR: path.join(dir, 'state'), GATEWAY_DOCKER: mock, GATEWAY_STARTUP_TIMEOUT_MS: timeout, MOCK_DIR: dir, MOCK_PORT: String(port) }, stdio: 'ignore' })
+    child = spawn(process.execPath, [gateway], { env: { ...process.env, BOHACK_CLOUD_MODEL: 'gpt-6.1-terra', BOHACK_CLOUD_BASE_URL: 'https://models.example/v1', BOHACK_CLOUD_API: 'openai-responses', BOHACK_CLOUD_REASONING: 'low', BOHACK_CLOUD_KEY: 'never-copy-this-key', GATEWAY_STATE_DIR: path.join(dir, 'state'), GATEWAY_DOCKER: mock, GATEWAY_STARTUP_TIMEOUT_MS: timeout, MOCK_DIR: dir, MOCK_PORT: String(port) }, stdio: 'ignore' })
     await ready()
   }
   try {
@@ -76,6 +76,8 @@ else if (args[0] === 'rm') { fs.rmSync(path.join(dir, args.at(-1)), {force:true}
     for (const flag of ['--cpus', '--memory', '--pids-limit', '--user', '--cap-drop', '--security-opt', '--read-only', '--mount', '-p']) assert.ok(args.includes(flag), flag)
     assert.ok(args.includes('127.0.0.1::3000'))
     assert.ok(args.includes('ORIGIN=https://jiangjie.gingers.cloud'))
+    for (const value of ['BOHACK_CLOUD_MODEL=gpt-6.1-terra', 'BOHACK_CLOUD_BASE_URL=https://models.example/v1', 'BOHACK_CLOUD_API=openai-responses', 'BOHACK_CLOUD_REASONING=low']) assert.ok(args.includes(value), value)
+    assert.ok(!args.some(arg => arg.includes('never-copy-this-key') || arg.startsWith('BOHACK_CLOUD_KEY=')))
     assert.ok(args.includes('scripts/cloud-worker.mjs'))
     await stop(child); child = null
     await start()

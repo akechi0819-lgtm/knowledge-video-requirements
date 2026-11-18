@@ -3,15 +3,17 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { createSettings } from '../lib/settings.js'
+import { createSettings, resolveAgent } from '../lib/settings.js'
 import { defaultProcessGuidance } from '../lib/process-guidance.js'
 
 test('云端自定义 TTS 独立于 MiMo，不带入茉莉音色', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'settings-custom-tts-'))
   const oldModel = process.env.BOHACK_CLOUD_MODEL
-  const oldKey = process.env.MIMO_API_KEY
-  process.env.BOHACK_CLOUD_MODEL = 'mimo-v2.6-pro'
-  process.env.MIMO_API_KEY = 'text-key'
+  const oldKey = process.env.BOHACK_CLOUD_KEY
+  const oldBase = process.env.BOHACK_CLOUD_BASE_URL
+  process.env.BOHACK_CLOUD_MODEL = 'terra-test'
+  process.env.BOHACK_CLOUD_BASE_URL = 'https://terra.example/v1'
+  process.env.BOHACK_CLOUD_KEY = 'text-key'
   try {
     const settings = createSettings(root, {temporaryKeys:new Map()})
     await settings.update({tts:{provider:'custom',baseUrl:'https://speech.example/v1',model:'custom-tts',voice:'voice-7',protocol:'speech',apiKey:'speech-key',useTextKey:false}})
@@ -27,9 +29,42 @@ test('云端自定义 TTS 独立于 MiMo，不带入茉莉音色', async () => {
   } finally {
     if (oldModel === undefined) delete process.env.BOHACK_CLOUD_MODEL
     else process.env.BOHACK_CLOUD_MODEL = oldModel
-    if (oldKey === undefined) delete process.env.MIMO_API_KEY
-    else process.env.MIMO_API_KEY = oldKey
+    if (oldKey === undefined) delete process.env.BOHACK_CLOUD_KEY
+    else process.env.BOHACK_CLOUD_KEY = oldKey
+    if (oldBase === undefined) delete process.env.BOHACK_CLOUD_BASE_URL
+    else process.env.BOHACK_CLOUD_BASE_URL = oldBase
     await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('云端更换服务商时解除旧配音共用并允许单独填写密钥', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-cloud-migrate-'))
+  const names = ['BOHACK_CLOUD_MODEL', 'BOHACK_CLOUD_BASE_URL', 'BOHACK_CLOUD_KEY']
+  const old = Object.fromEntries(names.map(name => [name, process.env[name]]))
+  Object.assign(process.env, { BOHACK_CLOUD_MODEL: 'terra-test', BOHACK_CLOUD_BASE_URL: 'https://terra.example/v1', BOHACK_CLOUD_KEY: 'new-text-key' })
+  try {
+    await writeFile(path.join(root, 'settings.json'), JSON.stringify({
+      model: { baseUrl: 'https://api.xiaomimimo.com/v1', model: 'old-model', apiKey: 'old-text-key' },
+      tts: { baseUrl: 'https://api.xiaomimimo.com/v1', model: 'old-tts', voice: '旧音色', useTextKey: true, apiKey: 'old-text-key' },
+    }))
+    const settings = createSettings(root, { temporaryKeys: new Map([['model', 'old-text-key'], ['tts', 'old-text-key']]) })
+    const visible = await settings.get()
+    assert.equal(visible.tts.useTextKey, false)
+    assert.equal(visible.tts.hasApiKey, false)
+    assert.equal(visible.tts.model, 'old-tts')
+    assert.equal(visible.tts.voice, '旧音色')
+    assert.equal((await settings.load()).tts.apiKey, undefined)
+    await assert.rejects(settings.update({ tts: { useTextKey: true } }), /同一服务商/)
+    await settings.update({ tts: { apiKey: 'new-tts-key' } })
+    const loaded = await settings.load()
+    assert.equal(loaded.tts.apiKey, 'new-tts-key')
+    assert.equal(loaded.tts.model, 'old-tts')
+    assert.equal(loaded.tts.voice, '旧音色')
+    assert.equal(loaded.model.apiKey, 'new-text-key')
+    assert.equal(JSON.parse(await readFile(path.join(root, 'settings.json'), 'utf8')).tts.useTextKey, false)
+  } finally {
+    for (const name of names) old[name] === undefined ? delete process.env[name] : process.env[name] = old[name]
+    await rm(root, { recursive: true, force: true })
   }
 })
 
@@ -213,4 +248,48 @@ test('agent routes and tool models are saved independently', async () => {
     await settings.update({ assetModel: { model: 'draw2' } })
     assert.equal((await settings.load()).assetModel.apiKey, 'asset-key')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+
+test('云端通用模型与小米配音密钥独立，路由和端点固定', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-cloud-general-'))
+  const names = ['BOHACK_CLOUD_MODEL', 'BOHACK_CLOUD_BASE_URL', 'BOHACK_CLOUD_KEY', 'BOHACK_CLOUD_REASONING']
+  const old = Object.fromEntries(names.map(name => [name, process.env[name]]))
+  Object.assign(process.env, { BOHACK_CLOUD_MODEL: 'terra-test', BOHACK_CLOUD_BASE_URL: 'https://terra.example/v1', BOHACK_CLOUD_KEY: 'terra-fake-key' })
+  delete process.env.BOHACK_CLOUD_REASONING
+  try {
+    const settings = createSettings(root, { temporaryKeys: new Map() })
+    const initial = await settings.load()
+    assert.deepEqual(initial.model, { baseUrl: 'https://terra.example/v1', model: 'terra-test', apiKey: 'terra-fake-key' })
+    assert.equal(initial.tts.baseUrl, 'https://api.xiaomimimo.com/v1')
+    assert.equal(initial.tts.model, 'mimo-v2.5-tts')
+    assert.equal(initial.tts.voice, '茉莉')
+    assert.equal(initial.tts.useTextKey, false)
+    for (const role of ['requirementAgent', 'blueprintAgent', 'videoAgent']) {
+      assert.deepEqual(resolveAgent(initial, role), { provider: 'cloud-general', model: 'terra-test', reasoningEffort: 'low' })
+      assert.deepEqual(initial[role], resolveAgent(initial, role))
+    }
+    process.env.BOHACK_CLOUD_REASONING = 'high'
+    assert.equal(resolveAgent(initial, 'videoAgent').reasoningEffort, 'high')
+    await settings.update({ tts: { apiKey: 'xiaomi-fake-key' } })
+    assert.equal((await settings.load()).tts.apiKey, 'xiaomi-fake-key')
+    const savedWithKeys = await readFile(path.join(root, 'settings.json'), 'utf8')
+    assert.equal(savedWithKeys.includes('terra-fake-key'), false)
+    assert.equal(savedWithKeys.includes('xiaomi-fake-key'), false)
+    await assert.rejects(settings.update({ model: { baseUrl: 'https://other.example/v1' } }), /固定/)
+    await assert.rejects(settings.update({ model: { model: 'other' } }), /当前模型/)
+    await settings.update({ model: { clearApiKey: true } })
+    assert.equal((await settings.load()).model.apiKey, '')
+    assert.equal((await settings.load()).tts.apiKey, 'xiaomi-fake-key')
+    await settings.update({ model: { apiKey: 'terra-new-fake-key' }, tts: { clearApiKey: true } })
+    assert.equal((await settings.load()).model.apiKey, 'terra-new-fake-key')
+    assert.equal((await settings.load()).tts.apiKey, '')
+    const persisted = await readFile(path.join(root, 'settings.json'), 'utf8')
+    for (const key of ['terra-fake-key', 'terra-new-fake-key', 'xiaomi-fake-key']) assert.equal(persisted.includes(key), false)
+    delete process.env.BOHACK_CLOUD_BASE_URL
+    await assert.rejects(settings.load(), /BOHACK_CLOUD_BASE_URL/)
+  } finally {
+    for (const name of names) old[name] === undefined ? delete process.env[name] : process.env[name] = old[name]
+    await rm(root, { recursive: true, force: true })
+  }
 })

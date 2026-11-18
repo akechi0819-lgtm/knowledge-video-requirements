@@ -6,8 +6,10 @@ export function checkCloudEndpoint(value, kind) {
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('配音接口必须是公网 HTTPS 地址，不能包含凭据或查询参数。')
     return
   }
-  if (process.env.BOHACK_CLOUD_MODEL && value && String(value).replace(/\/+$/, '') !== mimoBaseUrl) {
-    throw new Error('云工作台仅支持小米 MiMo 接口 ' + mimoBaseUrl)
+  if (process.env.BOHACK_CLOUD_MODEL && kind === 'model') {
+    const baseUrl = process.env.BOHACK_CLOUD_BASE_URL
+    if (!baseUrl) throw new Error('云工作台必须配置 BOHACK_CLOUD_BASE_URL。')
+    if (value && String(value).replace(/\/+$/, '') !== baseUrl.replace(/\/+$/, '')) throw new Error('云工作台模型接口固定为 ' + baseUrl)
   }
 }
 
@@ -32,7 +34,7 @@ export async function listModels(input, settings, request = fetch, env = process
   const saved = settings[kind] || {}
   const effective = kind === 'model' ? effectiveScene(settings, env) : null
   const baseUrl = String(input.baseUrl || effective?.baseUrl || saved.baseUrl || '').trim()
-  checkCloudEndpoint(baseUrl)
+  checkCloudEndpoint(baseUrl, kind)
   let url
   try { url = new URL(baseUrl) } catch { throw new Error('请填写有效的模型地址。') }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)

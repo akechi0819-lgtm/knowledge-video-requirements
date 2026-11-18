@@ -31,7 +31,7 @@ function applyTtsKey(settings) {
 }
 
 export function resolveAgent(settings, kind, defaults = {}) {
-  if (process.env.BOHACK_CLOUD_MODEL) return { provider: 'cloud-mimo', model: process.env.BOHACK_CLOUD_MODEL }
+  if (process.env.BOHACK_CLOUD_MODEL) return { provider: 'cloud-general', model: process.env.BOHACK_CLOUD_MODEL, reasoningEffort: process.env.BOHACK_CLOUD_REASONING || 'low' }
   const saved = settings[kind] || {}
   return { provider: saved.provider || defaults.provider, model: saved.model || defaults.model }
 }
@@ -66,11 +66,17 @@ export function createSettings(workspace, config = {}) {
     const settings = await readSettings()
     const model = process.env.BOHACK_CLOUD_MODEL
     if (model) {
-      settings.model = { baseUrl: mimoBaseUrl, model, apiKey: process.env.MIMO_API_KEY || '' }
+      const baseUrl = process.env.BOHACK_CLOUD_BASE_URL
+      if (!baseUrl) throw new Error('云工作台必须配置 BOHACK_CLOUD_BASE_URL。')
+      if (settings.tts?.useTextKey && settings.model?.baseUrl && new URL(settings.model.baseUrl).origin !== new URL(baseUrl).origin) {
+        settings.tts.useTextKey = false
+        delete settings.tts.apiKey
+      }
+      settings.model = { baseUrl, model, apiKey: process.env.BOHACK_CLOUD_KEY || '' }
       const tts = settings.tts || {}
       const provider = tts.provider || (tts.baseUrl && new URL(tts.baseUrl).origin !== new URL(mimoBaseUrl).origin ? 'custom' : 'mimo')
       settings.tts = provider === 'mimo'
-        ? { provider, baseUrl: mimoBaseUrl, model: 'mimo-v2.5-tts', protocol: 'mimo', voice: '茉莉', ...tts }
+        ? { provider, baseUrl: mimoBaseUrl, model: 'mimo-v2.5-tts', protocol: 'mimo', voice: '茉莉', useTextKey: false, ...tts }
         : { provider, protocol: 'speech', ...tts }
       for (const role of ['requirementAgent', 'blueprintAgent', 'videoAgent']) settings[role] = resolveAgent(settings, role)
     }
@@ -119,8 +125,8 @@ export function createSettings(workspace, config = {}) {
         }
       }
       if (process.env.BOHACK_CLOUD_MODEL && input.model) {
-        if (settings.model.apiKey) process.env.MIMO_API_KEY = settings.model.apiKey
-        else delete process.env.MIMO_API_KEY
+        if (settings.model.apiKey) process.env.BOHACK_CLOUD_KEY = settings.model.apiKey
+        else delete process.env.BOHACK_CLOUD_KEY
       }
       // mode only applies when the file is created, so an existing settings.json needs an explicit chmod.
       await chmod(file, 0o600).catch(() => {})

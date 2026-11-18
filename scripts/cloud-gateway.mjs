@@ -76,6 +76,7 @@ async function worker(key) {
         '--user', '1000:1000', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--read-only',
         '--mount', `type=volume,source=${data.volume},target=/tmp`, '-p', `127.0.0.1::${workerPort}`,
         '-e', `PORT=${workerPort}`, '-e', 'HOST=0.0.0.0', '-e', `ORIGIN=${origin}`,
+        ...['BOHACK_CLOUD_MODEL', 'BOHACK_CLOUD_BASE_URL', 'BOHACK_CLOUD_API', 'BOHACK_CLOUD_REASONING'].flatMap(name => process.env[name] ? ['-e', `${name}=${process.env[name]}`] : []),
         'jiangjie-preview-worker:local', 'node', 'scripts/cloud-worker.mjs')
     } catch (error) {
       // A failed create may still have created the volume.

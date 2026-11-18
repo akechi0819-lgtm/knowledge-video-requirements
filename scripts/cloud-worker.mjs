@@ -17,20 +17,26 @@ const profile = path.join(home, 'profiles/workbench')
 const plugins = path.join(profile, 'node_modules/@bohack')
 await mkdir(plugins, { recursive: true })
 await symlink(path.join(base, 'packages/bohack-blueprint'), path.join(plugins, 'blueprint'))
-const model = 'mimo-v2.6-pro'
-const baseURL = 'https://api.xiaomimimo.com/v1'
+const model = process.env.BOHACK_CLOUD_MODEL || 'gpt-6.1-terra'
+const baseURL = process.env.BOHACK_CLOUD_BASE_URL
+if (!baseURL) throw new Error('请配置 BOHACK_CLOUD_BASE_URL，使用提供 Terra 的实际 API 地址。')
+const api = process.env.BOHACK_CLOUD_API || 'openai-responses'
+const reasoning = process.env.BOHACK_CLOUD_REASONING || 'low'
 const bundles = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@bohack/blueprint']
-// The stock credential provider snapshots the launch environment. This worker's
-// MiMo reference must observe settings changes on every DSH model request.
+// The stock provider snapshots launch credentials; each isolated worker must
+// observe its own user's settings changes on subsequent model requests.
 const runtime = createRequire(await realpath(cli))
 const adapter = path.join(plugins, 'worker-credentials')
 await mkdir(adapter)
 await writeFile(path.join(adapter, 'package.json'), JSON.stringify({ name: '@bohack/worker-credentials', type: 'module', main: 'index.js' }))
 await writeFile(path.join(adapter, 'index.js'), `import LocalCredentials from ${JSON.stringify(pathToFileURL(runtime.resolve('@deepseek-ai/dsh-credentials-local')).href)}
+import { APP_IDENTITY } from ${JSON.stringify(pathToFileURL(runtime.resolve('@deepseek-ai/dsh-llm')).href)}
+// Attribute requests to the application hosting this SDK.
+Object.assign(APP_IDENTITY, { product: 'jiangjie-workbench', version: '0.1.0', url: 'https://github.com/akechi0819-lgtm/knowledge-video-requirements' })
 export default class WorkerCredentials extends LocalCredentials {
   async resolve(ref) {
-    if (ref !== 'MIMO_API_KEY') return super.resolve(ref)
-    const value = process.env.MIMO_API_KEY
+    if (ref !== 'BOHACK_CLOUD_KEY') return super.resolve(ref)
+    const value = process.env.BOHACK_CLOUD_KEY
     return value ? { value, source: 'env' } : undefined
   }
 }
@@ -38,15 +44,20 @@ export default class WorkerCredentials extends LocalCredentials {
 const patch = [
   { id: 'credentials', disabled: true },
   { insert: [{ id: 'worker-credentials', name: '@bohack/worker-credentials' }] },
-  { id: 'llm-pi-ai', config: { providers: { 'cloud-mimo': { api: 'openai-completions', baseURL, apiKeyEnv: 'MIMO_API_KEY', models: [{ id: model }] } } } },
-  { id: 'bohack', config: { provider: 'cloud-mimo', model, workspace: path.join(base, 'workspace'), multiuser: { origin, temporaryRoot: path.join(state, 'bohack-sessions'), ttlMs: 86400000 } } },
+  { id: 'llm-pi-ai', config: { providers: { 'cloud-general': {
+    api, baseURL, apiKeyEnv: 'BOHACK_CLOUD_KEY', reasoning,
+    models: [{ id: model, input: ['text', 'image'], reasoningEfforts: {
+      low: 'low', medium: 'medium', high: 'high',
+    } }],
+  } } } },
+  { id: 'bohack', config: { provider: 'cloud-general', model, workspace: path.join(base, 'workspace'), multiuser: { origin, temporaryRoot: path.join(state, 'bohack-sessions'), ttlMs: 86400000 } } },
 ]
 for (const [name, value] of Object.entries({ 'package.json': { private: true, name: 'cloud-workbench', dsh: { profile: { bundles } } }, 'cordis.yml': [], 'cloud.patch.yml': patch })) {
   await writeFile(path.join(profile, name), JSON.stringify(value))
 }
 await copyFile(path.join(base, '.dsh-home/profiles/workbench/cordis.patch.yml'), path.join(profile, 'cordis.patch.yml'))
-const env = { PATH: process.env.PATH, HOME: home, DSH_HOME: home, BOHACK_CLOUD_MODEL: model }
-for (const name of ['MIMO_API_KEY', 'VIDEO_PYTHON', 'VIDEO_KIT_DIR']) {
+const env = { PATH: process.env.PATH, HOME: home, DSH_HOME: home, BOHACK_CLOUD_MODEL: model, BOHACK_CLOUD_BASE_URL: baseURL, BOHACK_CLOUD_REASONING: reasoning, VIDEO_CAPTURE_PAGES: '1' }
+for (const name of ['BOHACK_CLOUD_KEY', 'VIDEO_PYTHON', 'VIDEO_KIT_DIR']) {
   if (process.env[name]) env[name] = process.env[name]
 }
 const innerPort = 3080

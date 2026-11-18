@@ -63,3 +63,24 @@ test('a trailing slash difference still hits the saved key, but another origin n
   assert.equal(calls[4][1].headers.Authorization, 'Bearer hidden')
   assert.equal(JSON.stringify(result).includes('hidden'), false)
 })
+
+
+test('云端模型列表锁定通用端点，配音可使用小米端点', async () => {
+  const oldModel = process.env.BOHACK_CLOUD_MODEL
+  const oldBase = process.env.BOHACK_CLOUD_BASE_URL
+  process.env.BOHACK_CLOUD_MODEL = 'terra-test'
+  process.env.BOHACK_CLOUD_BASE_URL = 'https://terra.example/v1'
+  try {
+    const calls = []
+    const request = async (url, options) => { calls.push([url.href, options]); return ok }
+    const settings = { model: { baseUrl: 'https://terra.example/v1', apiKey: 'terra-fake-key' }, tts: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'xiaomi-fake-key' } }
+    await listModels({ kind: 'model' }, settings, request)
+    await listModels({ kind: 'tts' }, settings, request)
+    assert.equal(calls[0][1].headers.Authorization, 'Bearer terra-fake-key')
+    assert.equal(calls[1][1].headers.Authorization, 'Bearer xiaomi-fake-key')
+    await assert.rejects(listModels({ kind: 'model', baseUrl: 'https://other.example/v1' }, settings, request), /固定/)
+  } finally {
+    oldModel === undefined ? delete process.env.BOHACK_CLOUD_MODEL : process.env.BOHACK_CLOUD_MODEL = oldModel
+    oldBase === undefined ? delete process.env.BOHACK_CLOUD_BASE_URL : process.env.BOHACK_CLOUD_BASE_URL = oldBase
+  }
+})

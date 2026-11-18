@@ -4,15 +4,15 @@ import { isDeepStrictEqual } from 'node:util'
 
 // Each production job gets its own host session and cwd. The caller owns the
 // actual production tools and validates their outputs.
-export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, prompt, tools, onProgress }) {
+export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt, tools, onProgress, onTiming }) {
   const agents = ctx.get?.('agents') || ctx.agents
   const presets = ctx.get?.('agentPresets') || ctx.agentPresets
   if (!agents?.create || !presets?.mount) throw new Error('DSH 制作会话服务不可用')
   if (!cwd || !prompt || !Array.isArray(tools) || !tools.some(tool => tool.name === 'submit')) {
     throw new Error('制作会话缺少工作目录、提示词或 submit 工具')
   }
-  const names = new Set(['skill', ...tools.map(tool => tool.name)])
-  if (names.size !== tools.length + 1) throw new Error('制作工具名称重复或与 skill 冲突')
+  const names = new Set(tools.map(tool => tool.name))
+  if (names.size !== tools.length) throw new Error('制作工具名称重复')
   let submitted = false
   const activeSessionId = sessionId || `video-${randomUUID()}`
   let modelError
@@ -21,7 +21,10 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, prom
   let resolveSubmitted
   const submission = new Promise(resolve => { resolveSubmitted = resolve })
   let timer
-  let settleTimer
+  let resolveTurnEnd
+  let turnReason
+  let stepTiming
+  let toolProgress = 0
   const setup = async agentCtx => {
     await presets.mount(agentCtx, 'bohack-video')
     if (!agentCtx.tools?.register || !agentCtx.tools?.guard || !agentCtx.tools?.view || !agentCtx.tools?.restrict) {
@@ -35,29 +38,29 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, prom
         async execute(args, exec) {
           timer?.refresh()
           if (submitted) return {ok:false, message:'本次成片已提交。'}
-          const value = await tool.execute(args)
-          timer?.refresh()
-          if (tool.name === 'submit' && value?.ok === true) { submitted = true; result = value; resolveSubmitted() }
-          if (!value?.image) return value
-          const { image, ...textValue } = value
-          let imageBlock
+          const timing = onTiming && stepTiming
+          const start = onTiming && Date.now()
           try {
-            const route = exec.agent?.session.requestHeader()?.config
-            const activeProvider = route?.provider ?? exec.agent?.options.provider
-            const activeModel = route?.model ?? exec.agent?.options.model
-            const llm = ctx.get?.('llm') || ctx.llm
+            const value = await tool.execute(args)
+            if (value?.ok !== false) toolProgress++
+            timer?.refresh()
+            if (tool.name === 'submit' && value?.ok === true) { submitted = true; result = value; resolveSubmitted() }
+            if (!value?.image) return value
+            const { image, ...textValue } = value
             const attachments = ctx.get?.('attachments') || ctx.attachments
-            if (!llm || !attachments || !activeProvider || !activeModel) throw new Error('无法确认当前模型的视觉能力')
-            const info = await llm.resolveModelInfo(activeProvider, activeModel, exec.signal)
-            if (!info.inputModalities?.includes('image')) throw new Error('当前模型不支持图片输入')
             const refs = await attachments.saveImages([{ data: Buffer.from(image.data, 'base64'), mediaType: image.mimeType }])
-            imageBlock = { type: 'image', attachment: refs[0] }
+            const imageBlock = { type: 'image', attachment: refs[0] }
             textValue.imageStatus = '预览图已提供给模型。'
-          } catch (error) {
-            textValue.imageStatus = `模型无法查看预览图：${error.message}。请查看已保存的预览文件。`
+            projections.set(exec, { value: textValue, imageBlock })
+            return textValue
+          } finally {
+            if (onTiming) {
+              const end = Date.now()
+              timing?.intervals.push([start, end])
+              timing?.toolNames.add(tool.name)
+              onTiming({ type: 'tool', sessionId: activeSessionId, turn: timing?.turn, step: timing?.step, toolName: tool.name, start, end, elapsed: end - start })
+            }
           }
-          if (imageBlock) projections.set(exec, { value: textValue, imageBlock })
-          return textValue
         },
         projectContent(exec, result) {
           const projection = projections.get(exec)
@@ -74,26 +77,66 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, prom
     if (inherited.length) agentCtx.tools.restrict({ deny: inherited })
     agentCtx.on?.('agent/assistant-stream', payload => {
       const chunk = payload?.frame?.type === 'chunk' ? payload.frame.chunk : null
+      const streamSessionId = payload?.sessionId ?? payload?.session?.id
+      if (stepTiming && (streamSessionId == null || streamSessionId === activeSessionId)) {
+        if (chunk?.type === 'reasoning-delta') stepTiming.reasoningChars += chunk.text?.length || 0
+        if (chunk?.type === 'text-delta') stepTiming.textChars += chunk.text?.length || 0
+        if (chunk?.type === 'tool-call-delta') stepTiming.toolArgumentChars += chunk.argumentsDelta?.length || 0
+      }
       if (chunk?.type === 'text-delta' && chunk.text) onProgress?.({ type: 'text', text: chunk.text })
     })
     agentCtx.on?.('session/event', (session, event) => {
-      if (session?.id === activeSessionId && event?.type === 'turn/end' && event.data?.reason?.kind === 'error') {
-        modelError = event.data.reason.error
+      if (onTiming && session?.id === activeSessionId) {
+        if (event?.type === 'step/start') {
+          stepTiming = { turn: event.data.turn, step: event.data.step, start: event.time, intervals: [], toolNames: new Set(), reasoningChars: 0, textChars: 0, toolArgumentChars: 0 }
+        } else if (event?.type === 'step/end' && stepTiming && event.data.turn === stepTiming.turn && event.data.step === stepTiming.step) {
+          const timing = stepTiming
+          stepTiming = undefined
+          const end = event.time
+          let toolMs = 0
+          let coveredUntil = timing.start
+          for (const [start, finish] of timing.intervals.sort((a, b) => a[0] - b[0])) {
+            const from = Math.max(start, coveredUntil, timing.start)
+            const to = Math.min(finish, end)
+            if (to > from) toolMs += to - from
+            coveredUntil = Math.max(coveredUntil, to)
+          }
+          const elapsed = end - timing.start
+          onTiming({ type: 'step', sessionId: activeSessionId, turn: timing.turn, step: timing.step, start: timing.start, end, elapsed, toolMs, modelWaitMs: elapsed - toolMs, toolNames: [...timing.toolNames], reasoningChars: timing.reasoningChars, textChars: timing.textChars, toolArgumentChars: timing.toolArgumentChars })
+        }
+      }
+      if (session?.id === activeSessionId && event?.type === 'turn/end') {
+        if (event.data?.reason?.kind === 'error') modelError = event.data.reason.error
+        if (resolveTurnEnd) {
+          turnReason = event.data?.reason
+          const resolve = resolveTurnEnd
+          resolveTurnEnd = undefined
+          resolve()
+        }
       }
     })
   }
   try {
-    handle = await agents.create({ sessionId: activeSessionId, meta: { cwd: path.resolve(cwd) }, agentOptions: { provider, model }, setup })
+    handle = await agents.create({ sessionId: activeSessionId, meta: { cwd: path.resolve(cwd) }, agentOptions: { provider, model, ...(reasoningEffort != null ? { reasoningEffort } : {}) }, setup })
     onProgress?.({ type: 'status', text: '正在制作视频' })
     await Promise.race([
       submission,
       (async () => {
-        await handle.agent.followup({ role: 'user', content: [{ type: 'text', text: prompt }], source: { kind: 'user' }, id: randomUUID() })
-        await handle.agent.whenIdle()
-        if (modelError) throw new Error(modelError.message)
-        if (submitted) return
-        // The host can report idle before the queued message is admitted.
-        await new Promise(resolve => { settleTimer = setTimeout(resolve, 12000) })
+        let previousProgress = 0
+        let instruction = prompt
+        while (!submitted) {
+          // Idle may precede admission of a queued followup. Continue only after
+          // this session's real turn/end event, never by polling or re-enqueueing.
+          const ended = new Promise(resolve => { resolveTurnEnd = resolve })
+          await handle.agent.followup({ role: 'user', content: [{ type: 'text', text: instruction }], source: { kind: 'user' }, id: randomUUID() })
+          await ended
+          if (modelError) throw new Error(modelError.message)
+          if (submitted) return
+          if (turnReason?.kind !== 'completed') throw new Error('视频制作会话已中止，未提交成片')
+          if (toolProgress === previousProgress) throw new Error('视频制作尚未提交，且会话没有新的工具进展')
+          previousProgress = toolProgress
+          instruction = '本次制作尚未完成。请接着刚才的实际工具进展继续，不要只汇报计划：尚未预览的段落各看一张代表性画面；只修复脚本或播放错误、主体缺失、严重遮挡，然后调用 submit 完成制作。已正常的段落直接沿用，静帧与审美建议不拦交片，不新增用户确认。'
+        }
       })(),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('视频制作会话连续十分钟没有工具进展')), 600000) }),
     ])
@@ -104,6 +147,5 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, prom
     throw error
   } finally {
     clearTimeout(timer)
-    clearTimeout(settleTimer)
   }
 }
