@@ -277,6 +277,7 @@ export function createProduction(workspace, config = {}) {
     generation++
     try {
       const saved = await config.settings?.load() || {}
+      if ((process.env.BOHACK_CLOUD_MODEL && (!saved.tts?.baseUrl || !saved.tts.model)) || (saved.tts?.baseUrl && !saved.tts.voice?.trim())) throw new Error('请配置当前配音服务的地址、模型和音色 ID。')
       await config.ensureVisual?.()
       const production = await exportProduction(workspace)
       if (regenerateAssetId !== undefined && !production.assets?.some(asset => asset.id === regenerateAssetId)) throw new Error('要重做的素材不存在。')

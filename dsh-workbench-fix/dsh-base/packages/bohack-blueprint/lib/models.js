@@ -1,6 +1,11 @@
 export const mimoBaseUrl = 'https://api.xiaomimimo.com/v1'
 
-export function checkCloudEndpoint(value) {
+export function checkCloudEndpoint(value, kind) {
+  if (process.env.BOHACK_CLOUD_MODEL && value && kind === 'tts') {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('配音接口必须是公网 HTTPS 地址，不能包含凭据或查询参数。')
+    return
+  }
   if (process.env.BOHACK_CLOUD_MODEL && value && String(value).replace(/\/+$/, '') !== mimoBaseUrl) {
     throw new Error('云工作台仅支持小米 MiMo 接口 ' + mimoBaseUrl)
   }

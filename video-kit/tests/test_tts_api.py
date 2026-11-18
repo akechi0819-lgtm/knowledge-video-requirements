@@ -13,6 +13,19 @@ import tts_api
 
 
 class SpeechEndpointTest(unittest.TestCase):
+    def test_cloud_endpoint_rejects_private_addresses(self):
+        with patch.dict("os.environ", {"BOHACK_CLOUD_MODEL": "test"}), patch.object(tts_api.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 443))]), patch.object(tts_api, "urlopen") as send:
+            with self.assertRaisesRegex(ValueError, "内网"):
+                with tts_api.speech_response("https://private.test/v1/audio/speech", "custom", "voice-7", "旁白", "key", "speech"):
+                    pass
+            send.assert_not_called()
+
+    def test_custom_speech_preserves_provider_voice(self):
+        with patch.object(tts_api, "urlopen", return_value=io.BytesIO(b"audio")) as send:
+            with tts_api.speech_response("https://speech.example/v1/audio/speech", "custom", "voice-7", "旁白", "key", "speech"):
+                pass
+            self.assertEqual(json.loads(send.call_args.args[0].data)["voice"], "voice-7")
+
     def test_changed_tts_configuration_invalidates_cache(self):
         with TemporaryDirectory() as tmp, patch.dict('os.environ', {
             'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a',

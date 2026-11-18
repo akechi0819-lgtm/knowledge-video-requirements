@@ -65,16 +65,16 @@ test('Chrome 多用户隔离、并发密钥、本机快照与重开持久化', {
 
   async function saveKey(page, key) {
     await page.locator('#settingsBtn').click()
+    await page.locator('.ws-dialog details summary').first().click()
     await page.locator('.ws-dialog input[name="baseUrl"]').fill(modelUrl)
     await page.locator('.ws-dialog input[name="model"]').fill('mock-model')
     await page.locator('.ws-dialog input[name="apiKey"]').fill(key)
     await page.locator('.ws-save').click()
-    await page.locator('.ws-dialog').waitFor({ state: 'hidden' })
-    await page.locator('#settingsBtn').click()
+    await page.locator('.ws-status').getByText('设置已保存。').waitFor()
     await page.locator('.ws-key-state').getByText('已保存密钥。').waitFor()
   }
   await Promise.all([saveKey(pa, 'mock-key-a'), saveKey(pb, 'mock-key-b')])
-  await Promise.all([pa, pb].map(page => page.getByRole('button', { name: '获取成片场景模型' }).click()))
+  await Promise.all([pa, pb].map(page => page.getByRole('button', { name: '获取通用模型' }).click()))
   await Promise.all([pa, pb].map(page => page.getByText('已获取 1 个模型').waitFor()))
   assert.deepEqual(new Set(seen), new Set(['Bearer mock-key-a', 'Bearer mock-key-b']))
   for (const c of [ca, cb]) {

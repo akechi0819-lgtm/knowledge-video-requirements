@@ -3,18 +3,40 @@ from contextlib import contextmanager
 import base64
 import binascii
 import json
+import ipaddress
 import os
+import socket
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import Request, HTTPRedirectHandler, build_opener
 import time
 import warnings
 
 
+class RejectRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+urlopen = build_opener(RejectRedirect()).open
+
+
+def check_public_endpoint(endpoint):
+    url = urlsplit(endpoint)
+    if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment:
+        raise ValueError("云端配音接口必须为公网 HTTPS 地址")
+    addresses = socket.getaddrinfo(url.hostname, url.port or 443, type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(address[4][0]).is_global for address in addresses):
+        raise ValueError("云端配音不能访问本机或内网地址")
+
+
 @contextmanager
 def speech_response(endpoint, model, voice, narration, key, protocol):
+    if os.environ.get("BOHACK_CLOUD_MODEL"):
+        check_public_endpoint(endpoint)
     if protocol == "mimo":
         body = {"model": model, "messages": [{"role": "assistant", "content": narration}],
                 "audio": {"voice": voice, "format": "mp3"}, "stream": False}

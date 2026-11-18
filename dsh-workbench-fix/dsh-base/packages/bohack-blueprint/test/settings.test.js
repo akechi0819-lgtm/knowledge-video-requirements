@@ -6,6 +6,66 @@ import path from 'node:path'
 import { createSettings } from '../lib/settings.js'
 import { defaultProcessGuidance } from '../lib/process-guidance.js'
 
+test('云端自定义 TTS 独立于 MiMo，不带入茉莉音色', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-custom-tts-'))
+  const oldModel = process.env.BOHACK_CLOUD_MODEL
+  const oldKey = process.env.MIMO_API_KEY
+  process.env.BOHACK_CLOUD_MODEL = 'mimo-v2.6-pro'
+  process.env.MIMO_API_KEY = 'text-key'
+  try {
+    const settings = createSettings(root, {temporaryKeys:new Map()})
+    await settings.update({tts:{provider:'custom',baseUrl:'https://speech.example/v1',model:'custom-tts',voice:'voice-7',protocol:'speech',apiKey:'speech-key',useTextKey:false}})
+    const loaded = await settings.load()
+    assert.equal(loaded.tts.voice,'voice-7')
+    assert.equal(loaded.tts.model,'custom-tts')
+    assert.equal(loaded.tts.protocol,'speech')
+    assert.equal(loaded.tts.apiKey,'speech-key')
+    assert.equal(loaded.model.apiKey,'text-key')
+    await settings.update({tts:{voice:''}})
+    assert.equal((await settings.load()).tts.voice,'')
+    await assert.rejects(settings.update({tts:{baseUrl:'http://127.0.0.1:3000'}}),/HTTPS/)
+  } finally {
+    if (oldModel === undefined) delete process.env.BOHACK_CLOUD_MODEL
+    else process.env.BOHACK_CLOUD_MODEL = oldModel
+    if (oldKey === undefined) delete process.env.MIMO_API_KEY
+    else process.env.MIMO_API_KEY = oldKey
+    await rm(root,{recursive:true,force:true})
+  }
+})
+
+test('配音共用通用 Key，随通用 Key 更新和清除且不重复保存', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-shared-'))
+  try {
+    const keys = new Map()
+    const settings = createSettings(root, {temporaryKeys:keys})
+    await settings.update({model:{baseUrl:'https://provider.test/v1',model:'text',apiKey:'first-key'},tts:{baseUrl:'https://provider.test/v1/chat/completions',model:'voice',useTextKey:true}})
+    assert.equal((await settings.load()).tts.apiKey,'first-key')
+    assert.equal(keys.has('tts'),false)
+    await settings.update({model:{apiKey:'second-key'}})
+    assert.equal((await settings.load()).tts.apiKey,'second-key')
+    const saved = JSON.parse(await readFile(path.join(root,'settings.json'),'utf8'))
+    assert.equal(saved.tts.useTextKey,true)
+    assert.equal(saved.tts.apiKey,undefined)
+    await settings.update({model:{clearApiKey:true}})
+    assert.equal((await settings.get()).tts.hasApiKey,false)
+  } finally { await rm(root,{recursive:true,force:true}) }
+})
+
+test('不同服务商不能共用 Key，取消共用时不复制通用 Key', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-shared-origin-'))
+  try {
+    const settings = createSettings(root)
+    await settings.update({model:{baseUrl:'https://provider.test/v1',model:'text',apiKey:'text-key'},tts:{baseUrl:'https://provider.test/v1',model:'voice',useTextKey:true}})
+    await assert.rejects(settings.update({tts:{baseUrl:'https://other.test/v1',useTextKey:true}}),/同一服务商/)
+    assert.equal((await settings.load()).tts.apiKey,'text-key')
+    await settings.update({tts:{useTextKey:false}})
+    assert.equal((await settings.get()).tts.hasApiKey,false)
+    await settings.update({tts:{baseUrl:'https://other.test/v1',apiKey:'independent-key',useTextKey:false}})
+    await settings.update({model:{apiKey:'updated-text-key'}})
+    assert.equal((await settings.load()).tts.apiKey,'independent-key')
+  } finally { await rm(root,{recursive:true,force:true}) }
+})
+
 test('temporary keys are shared only with the same session and never written to settings', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'settings-temporary-'))
   try {
