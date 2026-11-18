@@ -1,5 +1,15 @@
 # 讲界视频工坊
 
+## 多人网页预览
+
+官网入口为 https://jiangjie.gingers.cloud/，点击“开始创作”进入 /bohack/ 在线工作台。官网使用 PR #9 的 `frontend/public/site/` 静态页面，由讲界专用 Nginx 配置提供首页、图片和演示视频，制作请求继续交给现有网关。
+
+体验者打开网页即可使用，无需安装依赖、注册或订阅。制作在服务器运行，每个浏览器分配独立容器。当前预览接入小米 MiMo，个人 API Key 仅保存在该实例内存中。模型费用由各自的服务商账户结算。
+
+项目通过浏览器 IndexedDB 保存在用户电脑上，页面空闲时自动保存，也可点击“保存到本机”。恢复时选择“本机项目”并点击“恢复”。清除浏览器站点数据会删除本机副本。制作所需资料会临时上传服务器，并传给所选模型或配音服务商。临时制作实例保留 24 小时，预览服务器同时容纳四个实例。下文安装步骤用于开发与自托管。
+
+服务端入口为 `scripts/cloud-gateway.mjs`，每个实例运行 `scripts/cloud-worker.mjs`。运行镜像由 `preview.Dockerfile` 和 `preview-worker.Dockerfile` 构建。网关只暴露工作台路由，容器内 DSH 管理入口通过内部端口访问。
+
 首次安装风格 Skill 时，在仓库根目录运行 `git submodule update --init`。若单独运行 vibe-knowledge 的建片脚本，可用 `git -C .project-skills/andy-vibe-knowledge apply ../../patches/vibe-knowledge-sibling-skill.patch` 让它读取同目录的 ai-teardown。
 
 ## 三模块工作台与正式演示

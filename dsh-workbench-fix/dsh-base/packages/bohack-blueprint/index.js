@@ -11,6 +11,7 @@ import { createService } from './lib/service.js'
 import { createEngine } from './lib/engine.js'
 import { createWebHandler } from './lib/web.js'
 import { createThreads } from './lib/threads.js'
+import { createMultiuserHandler } from './lib/multiuser.js'
 
 export const name = '@bohack/blueprint'
 export const inject = ['webServer']
@@ -46,6 +47,11 @@ function installNetworkDiagnostics(ctx) {
 }
 
 export function apply(ctx, config = {}) {
+  if (config.multiuser) {
+    const handler = createMultiuserHandler(ctx, { ...config, ...config.multiuser })
+    ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/bohack', handler }), 'bohack: multiuser route')
+    return
+  }
   if (config.debugNetwork) {
     ctx.effect(() => installNetworkDiagnostics(ctx), 'bohack: network diagnostics')
   }

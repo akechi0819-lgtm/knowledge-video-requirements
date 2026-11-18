@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew Jiangjie TLS certificate
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm -v /opt/jiangjie-preview/acme:/webroot -v /opt/jiangjie-preview/letsencrypt:/etc/letsencrypt certbot/certbot:latest renew --quiet
+ExecStartPost=/www/server/nginx/sbin/nginx -s reload

@@ -12,6 +12,7 @@
     "index.js",
     "cordis.patch.yml",
     "lib/",
+    "vendor/",
     "scripts/export-production.js",
     "web/"
   ],

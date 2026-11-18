@@ -1110,6 +1110,9 @@ export function createEngine(ctx, config = {}) {
         agentCtx.on?.('agent/assistant-stream', (payload) => {
           const frame = payload?.frame
           if (frame?.type !== 'chunk') return
+          if (frame.chunk?.type === 'finish' && frame.chunk.reason?.kind === 'error') {
+            chatCapture.failure = frame.chunk.reason.failure?.code || 'MODEL_REQUEST_FAILED'
+          }
           if (frame.chunk?.type === 'reasoning-delta' && chatCapture.onProgress) {
             const now = Date.now()
             if (now - chatCapture.lastThinkingStatus >= 4000) {
@@ -1155,6 +1158,7 @@ export function createEngine(ctx, config = {}) {
     // Turn capture: stream events are authoritative; settle-poll gives the
     // tail of the stream a moment to flush after whenIdle().
     chatCapture.text = ''
+    chatCapture.failure = null
     chatCapture.blueprintRequested = false
     chatCapture.revisionRequested = false
     chatCapture.revisionNote = null
@@ -1188,6 +1192,7 @@ export function createEngine(ctx, config = {}) {
       chatStarted = false
       throw new Error(`需求回合失败：${e?.message || e}`)
     }
+    if (chatCapture.failure) throw new Error('需求模型请求失败（' + chatCapture.failure + '）')
     let reply = chatCapture.text
     {
       const deadline = Date.now() + 8000
@@ -1202,7 +1207,7 @@ export function createEngine(ctx, config = {}) {
       else if (chatCapture.textAssets?.length) reply = `已登记 ${chatCapture.textAssets.length} 条资料`
       else if (chatCapture.blueprintRequested) reply = '已收到蓝图生成请求'
       else if (chatCapture.productionRequested) reply = '已收到制作请求'
-      else reply = '（本轮无文字回复）'
+      else throw new Error('需求模型未返回文字或工具结果')
     }
     chatDiag.turns++
     chatDiag.lastReplyChars = reply.length

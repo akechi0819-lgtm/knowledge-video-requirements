@@ -120,3 +120,63 @@ test('cached instances are capped at 32 and the evicted engine is reset', async 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('active production survives eviction and is reclaimed after it stops', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'bohack-active-lru-'))
+  let release
+  try {
+    await mkdir(path.join(root, '.agents'), { recursive: true })
+    await mkdir(path.join(root, 'rules'), { recursive: true })
+    const store = createThreads({}, { workspace: root }, {}, {})
+    const ids = []
+    for (let i = 0; i < 34; i++) {
+      const id = randomUUID()
+      ids.push(id)
+      const dir = path.join(root, 'threads', id)
+      await mkdir(dir, { recursive: true })
+      await writeFile(path.join(dir, 'thread.json'), JSON.stringify({ id }))
+    }
+    const first = await store.get(ids[0])
+    first.service.settings.load = () => new Promise(resolve => { release = resolve })
+    const starting = first.service.production.start()
+    await assert.rejects(first.service.production.start(), /正在运行/)
+    for (const id of ids.slice(1, 33)) await store.get(id)
+    assert.equal(await store.get(ids[0]), first)
+    await assert.rejects((await store.get(ids[0])).service.production.start(), /正在运行/)
+    release({})
+    await assert.rejects(starting)
+    for (const id of ids.slice(1, 33)) await store.get(id)
+    await store.get(ids[33])
+    assert.notEqual(await store.get(ids[0]), first)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('cache temporarily exceeds the limit when every older production is active', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'bohack-active-full-'))
+  try {
+    await mkdir(path.join(root, '.agents'), { recursive: true })
+    await mkdir(path.join(root, 'rules'), { recursive: true })
+    const store = createThreads({}, { workspace: root }, {}, {})
+    const instances = []
+    const ids = []
+    for (let i = 0; i < 33; i++) {
+      const id = randomUUID()
+      ids.push(id)
+      const dir = path.join(root, 'threads', id)
+      await mkdir(dir, { recursive: true })
+      await writeFile(path.join(dir, 'thread.json'), JSON.stringify({ id }))
+      const instance = await store.get(id)
+      instance.service.production.isActive = () => true
+      instances.push(instance)
+    }
+    assert.equal(await store.get(ids[0]), instances[0])
+    assert.equal(await store.get(ids[32]), instances[32])
+    instances[1].service.production.isActive = () => false
+    await store.get(ids[0])
+    assert.notEqual(await store.get(ids[1]), instances[1])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

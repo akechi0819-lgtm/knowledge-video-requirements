@@ -8,7 +8,7 @@
  *
  * Manual file drops, the terminal, and the Web UI are therefore equivalent.
  */
-import { readFile, writeFile, readdir, mkdir, stat, appendFile, realpath, copyFile } from 'node:fs/promises'
+import { readFile, writeFile, readdir, mkdir, stat, appendFile, realpath, copyFile, rename } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { createProduction } from './production.js'
 import { assetPlan, inheritAssetPlan, assignAssetPlan, withAssetLock, writeAssetLedger } from './asset-plan.js'
@@ -183,6 +183,13 @@ export function createService(ctx, config = {}) {
     const file = versionPath(n)
     if (!await exists(file)) throw new ServiceError(`蓝图版本 v${n} 不存在`, 'NOT_FOUND')
     return readFile(file, 'utf8')
+  }
+
+  async function publishVersion(n, content) {
+    const file = versionPath(n)
+    const temporary = file + '.pending'
+    await writeFile(temporary, content, 'utf8')
+    await rename(temporary, file)
   }
 
   async function getState() {
@@ -398,7 +405,6 @@ export function createService(ctx, config = {}) {
       '来源': 'inbox/需求.md',
     }
     const canonical = renderBlueprint(doc)
-    await writeFile(versionPath(next), canonical, 'utf8')
     const selectedVisual = await visualFromSkill(selectedSkill)
     await writeFile(visualPath(next), JSON.stringify(selectedVisual ? { status: 'selected', style: selectedVisual } : { status: 'pending', style: null }, null, 2) + '\n', 'utf8')
     await writeFile(path.join(dirs.outbox, `蓝图_v${next}.技能.json`), JSON.stringify(skill, null, 2) + '\n')
@@ -431,6 +437,7 @@ export function createService(ctx, config = {}) {
       attempts, errors: finalCheck.errors, warnings: finalCheck.warnings,
       ms: Date.now() - t0,
     })
+    await publishVersion(next, canonical)
     await setState({
       stage: 'generated', currentVersion: next, requirementNeedsRevision: false,
       lastRun: {
@@ -1173,7 +1180,6 @@ export function createService(ctx, config = {}) {
     const next = n + 1
     doc.meta = { ...doc.meta, '版本': `v${next}`, '状态': '待确认', '来源': '手动编辑' }
     const canonical = renderBlueprint(doc)
-    await writeFile(versionPath(next), canonical, 'utf8')
     await inheritAssetPlan(root, n, next, doc)
     const previousVisual = await visualStyle(n)
     await writeFile(visualPath(next), JSON.stringify(previousVisual?.style ? { status: 'selected', style: previousVisual.style } : { status: 'pending', style: null }, null, 2) + '\n', 'utf8')
@@ -1188,6 +1194,8 @@ export function createService(ctx, config = {}) {
     ]
     await appendFile(adjustmentsPath(), lines.join('\n'), 'utf8')
 
+    const { locked = {} } = await getState()
+    await publishVersion(next, canonical)
     // Re-inject into the live blueprint session so context matches disk.
     let sessionNotified = false, notifyReason = null
     try {
@@ -1205,6 +1213,7 @@ export function createService(ctx, config = {}) {
     await setState({
       stage: 'generated',
       currentVersion: next,
+      locked: { ...locked, [`v${next}`]: (locked[`v${n}`] || []).filter(id => id !== section) },
       confirmed: {}, pendingFeedback: null,
     })
     await writeRun({ action: 'manual-edit', from: n, version: next, section, fields: changes.map(c => c.field), sessionNotified, validation: { ok: check.ok, errors: check.errors } })

@@ -421,7 +421,7 @@ export function createProduction(workspace, config = {}) {
     if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) throw new Error('成片尚不可用')
     return resolved
   }
-  return { start, status, file }
+  return { start, status, file, isActive: () => active }
 }
 
 // Archive only editable scenes, their declared images and timing data.

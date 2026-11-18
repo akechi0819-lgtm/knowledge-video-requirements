@@ -6,6 +6,24 @@ import path from 'node:path'
 import { createSettings } from '../lib/settings.js'
 import { defaultProcessGuidance } from '../lib/process-guidance.js'
 
+test('temporary keys are shared only with the same session and never written to settings', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'settings-temporary-'))
+  try {
+    const keys = new Map()
+    const settings = createSettings(root, { temporaryKeys: keys })
+    const engineSettings = createSettings(root, { temporaryKeys: keys })
+    await settings.update({ model: { baseUrl: 'https://example.test', model: 'one', apiKey: 'session-secret' } })
+    assert.equal((await engineSettings.load()).model.apiKey, 'session-secret')
+    assert.equal((await readFile(path.join(root, 'settings.json'), 'utf8')).includes('session-secret'), false)
+    assert.equal((await createSettings(root, { temporaryKeys: new Map() }).get()).model.hasApiKey, false)
+    await settings.update({ model: { baseUrl: 'https://other.test' } })
+    assert.equal((await engineSettings.load()).model.apiKey, '')
+    await settings.update({ model: { apiKey: 'second-secret' } })
+    await settings.update({ model: { clearApiKey: true } })
+    assert.equal((await engineSettings.get()).model.hasApiKey, false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('model secrets remain independent and skill toggles are retired', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'settings-'))
   const settings = createSettings(root)

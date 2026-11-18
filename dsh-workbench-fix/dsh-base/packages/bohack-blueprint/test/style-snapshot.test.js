@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createService } from '../lib/service.js'
@@ -33,7 +33,15 @@ test('visual selection follows finalized blueprint versions', async () => {
     assert.equal((await exportProduction(workspace)).style.description, '暖色')
     await service.selectVisualStyle({id:custom.id,version:1})
     assert.equal((await exportProduction(workspace)).style.description, '冷色')
+    await service.lock({section:'B02'})
+    const blockedVisual = path.join(workspace,'outbox/蓝图_v2.视觉选择.json')
+    await mkdir(blockedVisual)
+    await assert.rejects(service.revise({}, engine), {code:'EISDIR'})
+    await assert.rejects(service.manualEdit({section:'B01',fields:{title:'修改'}}, engine), {code:'EISDIR'})
+    assert.equal((await service.status()).currentVersion, 1)
+    await rm(blockedVisual, {recursive:true})
     await service.manualEdit({section:'B01',fields:{title:'修改'}}, engine)
+    assert.deepEqual((await service.status()).locked, ['B02'])
     assert.equal((await service.status()).visualStyle.style.description, '冷色')
     await assert.rejects(service.selectVisualStyle({id:'general',version:1}), /先确认当前蓝图/)
     await service.confirm({all:true}); await service.finalize()

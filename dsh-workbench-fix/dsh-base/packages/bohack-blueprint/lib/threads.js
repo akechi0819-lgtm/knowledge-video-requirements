@@ -72,13 +72,15 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
     const legacy = await legacyMetadata()
     return legacy ? [...threads, legacy] : threads
   }
-  // Values are pending promises, so an evicted instance must settle before its engine is released.
-  async function evictOldest() {
-    while (instances.size > INSTANCE_LIMIT) {
-      const oldest = instances.keys().next().value
-      const instance = instances.get(oldest)
-      instances.delete(oldest)
-      await instance.then(({ engine }) => engine.reset()).catch(() => {})
+  // Active productions own in-memory state and must keep their original service.
+  async function evictOldest(protectedId) {
+    for (const [id, pending] of instances) {
+      if (instances.size <= INSTANCE_LIMIT) break
+      if (id === protectedId) continue
+      const instance = await pending.catch(() => null)
+      if (!instance || instances.get(id) !== pending || instance.service.production.isActive()) continue
+      instances.delete(id)
+      instance.engine.reset()
     }
   }
   async function get(id) {
@@ -88,6 +90,7 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
     if (instances.has(id)) {
       const instance = instances.get(id)
       instances.delete(id); instances.set(id, instance)
+      await evictOldest(id)
       return instance
     }
     const threadConfig = { ...config, workspace: threadDir(id), styleLibraryRoot: root, settingsRoot: root }
@@ -95,7 +98,7 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
       service: createService(ctx, threadConfig), engine: createEngine(ctx, threadConfig)
     })).catch(error => { if (instances.get(id) === instance) instances.delete(id); throw error })
     instances.set(id, instance)
-    await evictOldest()
+    await evictOldest(id)
     return instance
   }
   async function touch(id, title) {

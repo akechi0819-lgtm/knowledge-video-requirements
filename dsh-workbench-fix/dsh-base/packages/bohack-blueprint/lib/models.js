@@ -1,3 +1,11 @@
+export const mimoBaseUrl = 'https://api.xiaomimimo.com/v1'
+
+export function checkCloudEndpoint(value) {
+  if (process.env.BOHACK_CLOUD_MODEL && value && String(value).replace(/\/+$/, '') !== mimoBaseUrl) {
+    throw new Error('云工作台仅支持小米 MiMo 接口 ' + mimoBaseUrl)
+  }
+}
+
 // Use the same endpoint and credentials as scene generation when no model is saved.
 export function effectiveScene(settings, env = process.env) {
   const saved = settings.model || {}
@@ -19,6 +27,7 @@ export async function listModels(input, settings, request = fetch, env = process
   const saved = settings[kind] || {}
   const effective = kind === 'model' ? effectiveScene(settings, env) : null
   const baseUrl = String(input.baseUrl || effective?.baseUrl || saved.baseUrl || '').trim()
+  checkCloudEndpoint(baseUrl)
   let url
   try { url = new URL(baseUrl) } catch { throw new Error('请填写有效的模型地址。') }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)

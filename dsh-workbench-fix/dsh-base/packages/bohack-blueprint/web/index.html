@@ -1368,5 +1368,9 @@ function drawLandscape(){
 
 })()
 </script>
+<script type="module">
+const response = await fetch('/bohack/project-storage', {cache:'no-store'})
+if (response.ok && response.headers.get('content-type')?.includes('javascript')) await import('/bohack/project-storage')
+</script>
 </body>
 </html>

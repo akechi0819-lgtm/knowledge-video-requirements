@@ -52,7 +52,7 @@ function errorBody(e) {
   return { ok: false, error: String(e?.message || e), code: e?.code || 'BOHACK_ERROR' }
 }
 
-export function createWebHandler(legacyService, legacyEngine, ctx, threads, videoAnalyzer = analyzeVideo) {
+export function createWebHandler(legacyService, legacyEngine, ctx, threads, videoAnalyzer = analyzeVideo, allowedOrigin = origin => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin)) {
   const queues = new WeakMap()
   async function runTurn(engine, task) {
     const previous = queues.get(engine) || Promise.resolve()
@@ -68,7 +68,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
     // CSRF gate: this API has no authentication, so only loopback pages may call
     // it, and POSTs must carry a custom header cross-origin simple requests cannot set.
     const origin = req.headers.origin
-    if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin)) { text(res, 403, 'Forbidden'); return }
+    if (origin && !allowedOrigin(origin)) { text(res, 403, 'Forbidden'); return }
     if (method === 'POST' && !req.headers['x-bohack-client']) { text(res, 403, 'Forbidden'); return }
 
     try {

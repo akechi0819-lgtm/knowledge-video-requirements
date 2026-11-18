@@ -1,0 +1,12 @@
+[Unit]
+Description=Jiangjie preview gateway
+After=docker.service
+Requires=docker.service
+[Service]
+WorkingDirectory=/opt/jiangjie-preview
+Environment=GATEWAY_STATE_DIR=/opt/jiangjie-preview/gateway-state
+Environment=GATEWAY_STARTUP_TIMEOUT_MS=90000
+ExecStart=/opt/jiangjie-preview/node scripts/cloud-gateway.mjs
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
