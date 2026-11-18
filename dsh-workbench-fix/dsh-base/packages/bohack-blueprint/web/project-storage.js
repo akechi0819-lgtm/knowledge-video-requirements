@@ -1,11 +1,22 @@
 import { openLocalProjects } from '/bohack/local-projects.js'
 
 const store = openLocalProjects()
-const controls = document.createElement('div')
-controls.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:99;display:flex;gap:6px;background:white;padding:8px;border:1px solid #aaa;border-radius:8px'
-controls.innerHTML = '<button type="button">保存到本机</button><select aria-label="本机项目"></select><button type="button">恢复</button><output aria-live="polite"></output>'
-document.body.append(controls)
-const [save, list, restore, status] = controls.children
+const controls = document.createElement('details')
+controls.className = 'local-projects'
+controls.innerHTML = `
+  <summary><svg class="icon" aria-hidden="true"><use href="#icon-folder"/></svg><span class="utility-label">项目存档</span></summary>
+  <div class="local-projects-panel">
+    <button class="ghost" type="button">保存到本机</button>
+    <div class="local-projects-row"><select aria-label="本机项目"></select><button class="primary" type="button">恢复</button></div>
+    <output aria-live="polite"></output>
+  </div>`
+document.querySelector('.utility').prepend(controls)
+const [save, restore] = controls.querySelectorAll('button')
+const list = controls.querySelector('select')
+const status = controls.querySelector('output')
+document.addEventListener('click', event => {
+  if (!controls.contains(event.target)) controls.open = false
+})
 async function refreshLocal() {
   list.replaceChildren(new Option('选择本机项目', ''), ...(await store.list()).map(project => new Option(project.title, project.id)))
 }
