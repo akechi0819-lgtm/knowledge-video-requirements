@@ -2,20 +2,21 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runVideoAgent } from '../lib/video-agent.js'
 
-function host(run) {
+function host(run, whenIdle = () => new Promise(() => {})) {
   const registered = new Map()
+  const listeners = new Map()
   const state = {}
   const agentCtx = { tools: {
     register: tool => registered.set(tool.name, tool),
     guard: fn => { state.guard = fn },
     view: () => ({ restrictableNames: ['bash', 'skill'] }),
     restrict: value => { state.restriction = value },
-  }, on() {} }
+  }, on: (name, fn) => listeners.set(name, fn) }
   const ctx = { agentPresets: { mount: async (_ctx, id) => { state.preset = id } }, agents: {
     create: async options => {
       state.options = options
       await options.setup(agentCtx)
-      return { agent: { followup: async message => { state.message = message; await run(registered) }, whenIdle: () => new Promise(() => {}), cancel() {} } }
+      return { agent: { followup: async message => { state.message = message; await run(registered, listeners) }, whenIdle, cancel() {} } }
     },
   } }
   return { ctx, state }
@@ -39,6 +40,15 @@ test('mounts video preset, isolates tools and returns a successful submit', asyn
 test('rejects a session missing submit', async () => {
   const { ctx } = host(() => {})
   await assert.rejects(runVideoAgent({ ctx, cwd: '/tmp', prompt: 'make', tools: [] }), /submit/)
+})
+
+test('reports this session’s model error after idle and ignores other sessions', async () => {
+  const { ctx } = host(async (_registered, listeners) => {
+    const emit = listeners.get('session/event')
+    emit({ id: 'test' }, { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'Provider finish_reason: content_filter', code: 'PI_AI_ERROR' } } } })
+    emit({ id: 'other' }, { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'other session failure' } } } })
+  }, async () => {})
+  await assert.rejects(runVideoAgent({ ctx, sessionId: 'test', cwd: '/tmp', prompt: 'make', tools }), /Provider finish_reason: content_filter/)
 })
 
 test('keeps a session alive beyond ten minutes while tools make progress', async t => {

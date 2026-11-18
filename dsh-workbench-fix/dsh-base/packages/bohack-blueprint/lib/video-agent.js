@@ -14,6 +14,8 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, prom
   const names = new Set(['skill', ...tools.map(tool => tool.name)])
   if (names.size !== tools.length + 1) throw new Error('制作工具名称重复或与 skill 冲突')
   let submitted = false
+  const activeSessionId = sessionId || `video-${randomUUID()}`
+  let modelError
   let result
   let handle
   let resolveSubmitted
@@ -74,15 +76,21 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, prom
       const chunk = payload?.frame?.type === 'chunk' ? payload.frame.chunk : null
       if (chunk?.type === 'text-delta' && chunk.text) onProgress?.({ type: 'text', text: chunk.text })
     })
+    agentCtx.on?.('session/event', (session, event) => {
+      if (session?.id === activeSessionId && event?.type === 'turn/end' && event.data?.reason?.kind === 'error') {
+        modelError = event.data.reason.error
+      }
+    })
   }
   try {
-    handle = await agents.create({ sessionId: sessionId || `video-${randomUUID()}`, meta: { cwd: path.resolve(cwd) }, agentOptions: { provider, model }, setup })
+    handle = await agents.create({ sessionId: activeSessionId, meta: { cwd: path.resolve(cwd) }, agentOptions: { provider, model }, setup })
     onProgress?.({ type: 'status', text: '正在制作视频' })
     await Promise.race([
       submission,
       (async () => {
         await handle.agent.followup({ role: 'user', content: [{ type: 'text', text: prompt }], source: { kind: 'user' }, id: randomUUID() })
         await handle.agent.whenIdle()
+        if (modelError) throw new Error(modelError.message)
         if (submitted) return
         // The host can report idle before the queued message is admitted.
         await new Promise(resolve => { settleTimer = setTimeout(resolve, 12000) })
