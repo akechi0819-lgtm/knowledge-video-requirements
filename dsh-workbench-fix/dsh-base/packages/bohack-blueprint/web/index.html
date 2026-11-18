@@ -4,231 +4,297 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>讲界视频工坊 · 讲界1.0 beta</title>
-<style>
-/* 讲界 1.0 · 放映厅基础 token 与控件。布局与成片台表面在 studio.css。 */
-:root {
-  color-scheme: dark;
-  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif;
-  --serif:"Noto Serif SC","Source Serif 4","Songti SC","STSong","Times New Roman",serif;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-  --mast:56px;
-  --ease:cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-fast:.22s;
-  --dur:.4s;
-  --bg:#08090e;
-  --bg-2:#08090e;
-  --bg-3:#12141c;
-  --bg-4:#1a1d28;
-  --well:rgba(236,231,220,.05);
-  --ink:#eceef3;
-  --ink-soft:#b7bcc8;
-  --faded:#7d8290;
-  --line:rgba(236,238,243,.07);
-  --line-2:rgba(236,238,243,.13);
-  --fill:rgba(236,238,243,.06);
-  --fill-2:rgba(236,238,243,.11);
-  --ivory:#ece7dc;
-  --ivory-soft:#f4f0e8;
-  --cobalt:#8fa4d4;
-  --cobalt-deep:#1a3278;
-  --gold:#c9a46a;
-  --water:#7ea8b8;
-  --danger:#e08a82;
-  --danger-soft:#f0a8a2;
-  --night:#05060a;
-  --radius:28px;
-  --radius-m:22px;
-  --radius-s:16px;
-  --shadow-well:0 0 0 1px rgba(236,231,220,.08), 0 20px 60px rgba(0,0,0,.32);
-  --shadow-glow:0 0 0 1px rgba(143,164,212,.4), 0 28px 80px rgba(0,0,0,.4), 0 0 80px rgba(143,164,212,.16);
-  --shadow-lift:0 24px 60px rgba(0,0,0,.45), 0 0 0 1px rgba(236,231,220,.08);
-  --paper:var(--bg);
-  --paper-2:var(--bg-2);
-  --rule:var(--line);
-  --rule-2:var(--line-2);
-  --cinnabar:var(--danger);
-  --cinnabar-soft:var(--danger-soft);
-  --accent:var(--gold);
-  --accent-soft:#d4b57e;
-}
-*{box-sizing:border-box}
-html,body{height:100%}
-html{color-scheme:dark;background:var(--bg)}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.7;overflow:hidden}
-button,textarea,select,input{font-family:inherit;color:inherit;font-size:inherit}
-button{cursor:pointer}
-h1,h2,h3{font-weight:500;margin:0;letter-spacing:0}
-a{color:var(--cobalt);text-decoration:none}
-a:hover{text-decoration:underline}
-::selection{background:rgba(143,164,212,.35);color:var(--ivory)}
-.paper-bg{position:fixed;inset:0;pointer-events:none;z-index:0;background:var(--bg)}
-.app{position:relative;z-index:1;display:grid;grid-template-columns:minmax(300px,.8fr) minmax(0,1.85fr);height:calc(100dvh - var(--mast));min-height:0;background:transparent}
-.chat{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;background:transparent}
-.chat-top{padding:0 0 14px;border-bottom:0}
-.chat-top h1{font-size:22px}
-.chat-log{flex:1;overflow-y:auto;padding:16px 0;display:flex;flex-direction:column;gap:12px}
-.note{padding:0;background:transparent;max-width:100%;border:0}
-.note header{display:flex;justify-content:space-between;font-family:var(--sans);font-size:11px;letter-spacing:0;color:var(--faded);margin-bottom:6px}
-.note p{margin:0;white-space:pre-wrap;font-size:15px}
-.note .sys{color:var(--faded);font-size:12.5px}
-.activity-list{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font-family:var(--sans);font-size:11px;line-height:1.5;color:var(--faded)}
-.activity-item{padding:2px 0;white-space:pre-wrap}
-.activity-item::before{content:'· ';color:var(--gold)}
-.composer{padding:0}
-.composer textarea{width:100%;min-height:66px;border:0;background:transparent;padding:0;outline:none;resize:none;line-height:1.6}
-.hint{font-family:var(--sans);font-size:12px;color:var(--faded)}
-button.primary{border:0;background:var(--ivory);color:var(--bg);border-radius:999px;padding:9px 18px;font-size:14px;font-weight:600}
-button.primary:hover:not(:disabled){background:var(--ivory-soft)}
-button.ghost{border:0;background:transparent;border-radius:999px;padding:8px 14px;font-size:13px;color:var(--ink-soft)}
-button.ghost:hover:not(:disabled){background:var(--fill);color:var(--ink)}
-button.sm{padding:4px 11px;font-size:12px;border-radius:999px}
-button:disabled{opacity:.4;cursor:not-allowed}
-.side{display:flex;flex-direction:column;min-width:0;background:transparent}
-.side-top{padding:0}
-.side-tabs{display:flex;gap:0;border-bottom:1px solid var(--line);padding:0;align-items:center}
-.side-tabs button.tab{border:0;background:transparent;padding:10px 13px;font-family:var(--sans);font-size:13px;letter-spacing:0;color:var(--faded);border-bottom:1px solid transparent}
-.side-tabs button.tab.on{color:var(--ivory);border-bottom-color:var(--ivory)}
-.side-tabs .push{margin-left:auto}
-.mode-btn{border:0;border-radius:99px;padding:4px 12px;font-family:var(--sans);font-size:12px;background:var(--fill);margin-bottom:0;color:var(--ink-soft)}
-.mode-btn.on{background:var(--fill-2);color:var(--ivory)}
-.side-body{flex:1;overflow-y:auto;padding:14px 0 24px}
-.pane{display:none}.pane.on{display:block}
-.badge{display:inline-block;font-family:var(--sans);font-size:11px;padding:2px 9px;border:1px solid var(--line-2);border-radius:99px;color:var(--ink-soft)}
-.badge.on{border-color:var(--water);color:var(--water)}
-.badge.gold{border-color:var(--gold);color:var(--gold)}
-.badge.water{border-color:var(--water);color:var(--water)}
-.tag{display:inline-block;font-family:var(--sans);font-size:10px;padding:1px 7px;border-radius:99px;margin-left:6px;vertical-align:1px}
-.tag.vetted{border:1px solid var(--water);color:var(--water)}
-.tag.unvetted{border:1px solid var(--gold);color:var(--gold)}
-.tag.candidate{border:1px solid var(--line-2);color:var(--faded)}
-.tag.declared{border:1px solid #e05252;color:#e05252}
-.doc h1{font-size:22px;border-bottom:0;padding-bottom:0;margin:10px 0 8px;font-family:var(--serif);color:var(--ivory)}
-.doc h2{font-family:var(--sans);font-size:12px;letter-spacing:0;color:var(--gold);margin:16px 0 6px;font-weight:600}
-.doc h3{font-size:15px;margin:12px 0 4px}
-.doc p{margin:3px 0;font-size:15px}
-.doc ul{margin:4px 0;padding-left:18px}
-.doc li{font-size:15px;margin:2px 0}
-.doc blockquote{margin:6px 0;padding:2px 12px;border-left:1.5px solid var(--line-2);color:var(--faded);font-size:13px}
-.asset{display:flex;gap:10px;align-items:flex-start;border:0;border-radius:0;padding:12px 2px;margin-bottom:4px;background:transparent;box-shadow:none;border-bottom:1px solid var(--line)}
-.asset .ic{font-size:17px}
-.asset .name{font-size:14px;font-weight:600;word-break:break-all}
-.asset .desc{font-family:var(--sans);font-size:12px;color:var(--faded)}
-.asset .ops{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
-.bp-meta{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-.leaf{border:0;border-radius:0;padding:14px 2px 16px;margin-bottom:4px;background:transparent;box-shadow:none;border-bottom:1px solid var(--line)}
-.leaf-head{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
-.sid{font-family:var(--sans);font-size:11px;font-weight:600;color:var(--faded);letter-spacing:0}
-.leaf.done .sid{color:var(--water)}
-.stitle{font-size:15px;font-weight:600}
-.leaf .intent{font-size:14px;color:var(--ink-soft);margin-top:4px;white-space:pre-wrap}
-.leaf .facts{font-family:var(--sans);font-size:12px;color:var(--faded);margin-top:3px;white-space:pre-wrap}
-.leaf .ops{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
-.leaf textarea{width:100%;min-height:52px;border:0;background:var(--well);padding:8px 11px;outline:none;resize:vertical;font-size:13px;margin-top:6px;border-radius:14px;color:var(--ink);box-shadow:none}
-.hand{border:0;border-radius:0;background:transparent;padding:14px 2px 16px;margin-top:12px;box-shadow:none;border-bottom:1px solid var(--line)}
-.hand h3{font-family:var(--sans);font-size:12px;letter-spacing:0;color:var(--gold);margin-bottom:6px;font-weight:600}
-.hand textarea{width:100%;min-height:52px;border:0;background:var(--well);padding:8px 11px;outline:none;resize:vertical;font-size:13px;border-radius:14px;color:var(--ink);box-shadow:none}
-.manual-banner{font-family:var(--sans);font-size:12px;color:var(--gold);border:0;border-radius:var(--radius-s);padding:10px 14px;margin-bottom:12px;background:rgba(201,164,106,.1)}
-.okbox{font-family:var(--sans);font-size:12px;color:var(--water);border:0;border-radius:12px;padding:8px 12px;margin-top:8px;background:rgba(126,168,184,.12)}
-.errbox{font-family:var(--sans);font-size:12px;color:var(--danger);border:0;border-radius:12px;padding:8px 12px;margin-top:8px;white-space:pre-wrap;background:rgba(224,138,130,.12)}
-.warnbox{font-family:var(--sans);font-size:12px;color:var(--gold);border:0;border-radius:12px;padding:8px 12px;margin-top:8px;white-space:pre-wrap;background:rgba(201,164,106,.1)}
-.kv{font-family:var(--sans);font-size:12px;color:var(--faded);display:flex;gap:8px;margin:2px 0}
-.kv b{color:var(--ink);font-weight:600;word-break:break-all}
-.pill{display:inline-block;font-family:var(--sans);font-size:11px;padding:2px 8px;border:1px solid var(--line-2);border-radius:99px;color:var(--ink-soft);margin:2px 4px 2px 0}
-#log{font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--ink-soft);background:var(--bg-3);border-radius:12px;padding:10px;max-height:170px;overflow:auto;white-space:pre-wrap}
-#log .t{color:var(--faded)} #log .e{color:var(--danger)} #log .s{color:var(--water)}
-.empty{padding:28px 8px;text-align:center;color:var(--faded);border:0;border-radius:0;font-size:13px;background:transparent}
-.spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(236,231,220,.2);border-top-color:var(--ivory);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px;margin-right:6px}
-@keyframes sp{to{transform:rotate(360deg)}}
-details{margin-top:8px}
-summary{cursor:pointer;font-family:var(--sans);font-size:12px;color:var(--faded)}
-input,select,textarea{background:var(--well);border:0;border-radius:14px;color:var(--ink);padding:8px 11px;outline:none;box-shadow:0 0 0 1px var(--line-2);transition:box-shadow var(--dur, .4s) var(--ease), background var(--dur, .4s) var(--ease)}
-input:focus,select:focus,textarea:focus{box-shadow:0 0 0 1px rgba(143,164,212,.45), 0 0 24px rgba(143,164,212,.12);background:rgba(236,231,220,.07)}
-input[type=file],input[type=checkbox]{box-shadow:none;background:transparent;padding:0;border-radius:0}
-#pane-styles input,#pane-styles textarea{display:block;width:100%;margin:8px 0;background:var(--well);border:0;border-radius:14px;color:var(--ink);padding:8px 11px;box-shadow:0 0 0 1px var(--line-2)}
-#pane-styles input[type=file]{box-shadow:none;padding:8px 0;background:transparent}
-</style>
-<link rel="stylesheet" href="/bohack/studio.css">
+<!--
+  设计简报 · 讲界创作工作台
+  概念：用清晰的编辑器布局串起创作对话、资料整理、蓝图审阅和成片。
+  类型：webapp-dashboard。风格：Derived-01 深灰网格工作台，参考登录后的 9vc Studio。
+  色板：--bg #161719 / --surface #24262a / --fg #f5f6f7 / --muted #a8adb6 /
+        --accent #b3c7ff；--line 由前景色透明混合。字体用 Noto Sans SC 与系统中文回退。
+  布局：紧凑顶栏 → 居中创作框 → 可横向浏览的选题影片 → 风格预览；项目内是对话与制作双栏。
+  节奏：20px 面板圆角、8px 间距单位、胶囊动作与分段导航；家族 I，I1 聚焦与选择反馈，
+        I5 播放和设置弹窗原生焦点，U0 静态界面和减少动态，U4 主题滚动条。
+  媒体：D 仓库九种风格和项目样片；B 公开科普视频剪辑与抽帧封面；A 火锅选题原创封面；
+        C 内联线性图标与由蓝图接口返回的数据绘制的分镜。B 全工作台背景交替剪辑海岸浪涌和星云飞越，
+        通过透明顶栏和共用遮罩铺满视口，静音自动循环，减少动态或脚本不可用时展示静帧。
+  里程碑：创作入口与风格画廊 → 对话、资料、蓝图与成片 → 设置和本机项目控件。
+-->
+<link rel="stylesheet" href="../bohack/studio.css">
 </head>
 <body>
-<div class="paper-bg" aria-hidden="true"></div>
+<svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="icon-brand" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m10 9 5 3-5 3z"/></symbol>
+  <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+  <symbol id="icon-back" viewBox="0 0 24 24"><path d="M19 12H5m6-6-6 6 6 6"/></symbol>
+  <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="icon-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+  <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5l3 2"/></symbol>
+  <symbol id="icon-settings" viewBox="0 0 24 24"><path d="m10 3-.5 2-2 .9-1.9-.7-2 3.5 1.6 1.4-.2 2 .2 1.9L3.6 15.5l2 3.4 2-.6 1.9 1 .5 1.7h4l.5-1.8 2-1 1.9.7 2-3.4-1.6-1.5.2-2-.2-2 1.6-1.4-2-3.5-2 .7-1.9-.9L14 3Z"/><circle cx="12" cy="12" r="3.2"/></symbol>
+  <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4m-9 4h6m-6 4h6"/></symbol>
+  <symbol id="icon-image" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m4 16 4-4 4 4 3-3 5 5"/></symbol>
+  <symbol id="icon-link" viewBox="0 0 24 24"><path d="M10 13.5 14 10m-5 6-1 1a3 3 0 0 1-4-4l3-3a3 3 0 0 1 4 0m2-2 1-1a3 3 0 0 1 4 4l-3 3a3 3 0 0 1-4 0"/></symbol>
+  <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="icon-play" viewBox="0 0 24 24"><path d="m9 5 11 7-11 7z"/></symbol>
+  <symbol id="icon-attach" viewBox="0 0 24 24"><path d="m21 11-8.9 9a5.1 5.1 0 0 1-7.2-7.2l9-9a3.4 3.4 0 1 1 4.8 4.8l-8.7 8.7a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></symbol>
+  <symbol id="icon-blueprint" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16m-10 0v9"/></symbol>
+  <symbol id="icon-sliders" viewBox="0 0 24 24"><path d="M4 7h4m4 0h8M8 4v6M4 17h9m4 0h3m-7-3v6"/></symbol>
+  <symbol id="icon-film" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 4v16m8-16v16M4 9h4m8 0h4m-16 6h4m8 0h4"/></symbol>
+</svg>
+<!--
+  Background sources
+  Acadia B-Roll: Coastal Scenery — NPS Video (public domain).
+  https://npgallery.nps.gov/AssetDetail/6fc09aec-7fc2-47ed-b8cc-e1b10861dd3e
+  Flight Through the Orion Nebula in Visible Light — NASA, ESA, F. Summers, G. Bacon,
+  Z. Levay, J. DePasquale, L. Hustak, L. Frattare, M. Robberto, M. Gennaro (STScI),
+  R. Hurt (Caltech/IPAC), M. Kornmesser (ESA). Acknowledgement: A. Fujii, R. Gendler.
+  https://svs.gsfc.nasa.gov/30957/
+-->
+<div class="ambient" aria-hidden="true">
+  <img class="ambient-poster" src="../bohack/style-previews/studio-background.webp" alt="" width="1280" height="720">
+  <video id="ambientVideo" class="ambient-video" data-src="../bohack/style-previews/studio-background.mp4" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+</div>
 <header class="mast">
-  <button class="home-back" id="homeBtn" title="返回创作入口">返回入口</button>
-  <div class="utility"><details id="recent"><summary>最近创作</summary><div id="recentList"></div></details>
-  <button class="gear" id="settingsBtn" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m10 3-.5 2-2 .9-1.9-.7-2 3.5 1.6 1.4-.2 2 .2 1.9L3.6 15.5l2 3.4 2-.6 1.9 1 .5 1.7h4l.5-1.8 2-1 1.9.7 2-3.4-1.6-1.5.2-2-.2-2 1.6-1.4-2-3.5-2 .7-1.9-.9L14 3Z"/><circle cx="12" cy="12" r="3.2"/></svg></button></div>
-</header>
-<main id="entry" class="is-ready">
-  <div class="entry-body">
-    <div class="landscape" aria-hidden="true"><canvas id="inkLandscape" width="1120" height="210"></canvas></div>
-    <h1 class="entry-rise">今天，想讲点什么？</h1>
-    <p class="entry-sub entry-rise">从一个问题开始，把你的想法做成知识短片。</p>
-    <form id="entryForm" class="entry-form entry-rise">
-      <textarea id="entryText" aria-label="视频创作主题" placeholder="我想做一期关于……的知识视频" required></textarea>
-      <ul id="entryFiles" aria-label="本次资料" hidden></ul>
-      <input type="file" id="entryPicker" multiple hidden>
-      <div class="skill-choice"><label for="entrySkill">制作风格 / Skill</label><select id="entrySkill"><option value="">默认制作方式</option></select><span id="entrySkillSummary"></span></div>
-      <div class="entry-actions"><div class="entry-tools"><button type="button" class="attach" id="entryAttach" aria-describedby="fileHint">＋ 添加资料</button><span class="entry-key" id="fileHint">可拖入参考图、文字稿或 PDF · 每个最多 10 MB</span></div><button class="primary" id="entrySend">开始创作 <span aria-hidden="true">↗</span></button></div>
-    </form><div id="entryError" role="alert"></div>
+  <div class="mast-identity">
+    <div class="brand"><span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#icon-brand"/></svg></span><span>讲界视频工坊</span></div>
+    <span class="mast-current" aria-current="page">创作台</span>
+    <button type="button" class="home-back" id="homeBtn" title="返回创作入口"><svg class="icon" aria-hidden="true"><use href="#icon-back"/></svg><span>返回入口</span></button>
   </div>
-  <section class="entry-field" id="entryField" aria-label="点选本次制作风格">
-    <button type="button" data-entry-style="andy-pixel-quest" aria-pressed="false" class="entry-tile entry-tile-hero" style="--i:0">
-      <video class="entry-media" muted loop playsinline preload="metadata" src="/bohack/style-previews/andy.mp4"></video>
-      <span class="tile-name">像素闯关</span>
-    </button>
-    <button type="button" data-entry-style="heychengc-concrete" aria-pressed="false" class="entry-tile" style="--i:1">
-      <video class="entry-media" muted loop playsinline preload="metadata" src="/bohack/style-previews/hey.mp4"></video>
-      <span class="tile-name">具象动态图解</span>
-    </button>
-    <button type="button" data-entry-style="general" aria-pressed="false" class="entry-tile" style="--i:2">
-      <img class="entry-media" src="/bohack/style-previews/general.svg" alt="">
-      <span class="tile-name">简洁知识图解</span>
-    </button>
-    <button type="button" data-entry-style="editorial" aria-pressed="false" class="entry-tile" style="--i:3">
-      <img class="entry-media" src="/bohack/style-previews/editorial.svg" alt="">
-      <span class="tile-name">杂志式图文</span>
-    </button>
-    <button type="button" data-entry-style="swiss-kinetic" aria-pressed="false" class="entry-tile" style="--i:4">
-      <img class="entry-media" src="/bohack/style-previews/swiss-kinetic.svg" alt="">
-      <span class="tile-name">瑞士动态排版</span>
-    </button>
-    <button type="button" data-entry-style="huashu-vox" aria-pressed="false" class="entry-tile" style="--i:5">
-      <img class="entry-media" src="/bohack/style-previews/huashu-vox.svg" alt="">
-      <span class="tile-name">剪报调查</span>
-    </button>
-    <button type="button" data-entry-style="huashu-whiteboard" aria-pressed="false" class="entry-tile" style="--i:6">
-      <img class="entry-media" src="/bohack/style-previews/huashu-whiteboard.svg" alt="">
-      <span class="tile-name">白板手绘</span>
-    </button>
-    <button type="button" data-entry-style="vibe-night" aria-pressed="false" class="entry-tile" style="--i:7">
-      <img class="entry-media" src="/bohack/style-previews/vibe-night.svg" alt="">
-      <span class="tile-name">夜曲知识实验</span>
-    </button>
-    <button type="button" data-entry-style="vibe-fable" aria-pressed="false" class="entry-tile" style="--i:8">
-      <img class="entry-media" src="/bohack/style-previews/vibe-fable.svg" alt="">
-      <span class="tile-name">寓言场景</span>
-    </button>
+  <div class="utility">
+    <details id="recent">
+      <summary><svg class="icon history-icon" aria-hidden="true"><use href="#icon-clock"/></svg><span class="utility-label">最近创作</span><svg class="icon disclosure-icon" aria-hidden="true"><use href="#icon-chevron"/></svg></summary>
+      <div id="recentList"><p>正在读取创作记录…</p></div>
+    </details>
+    <button type="button" class="gear" id="settingsBtn" aria-label="设置" title="设置"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></button>
+  </div>
+</header>
+<main id="entry">
+  <section class="entry-create" aria-labelledby="entry-title">
+    <div class="entry-body">
+      <div class="entry-intro">
+        <h1 id="entry-title">今天，想讲点什么？</h1>
+        <p class="entry-sub">写下一个主题，和 Agent 一起把它做成知识视频。</p>
+      </div>
+      <form id="entryForm" class="entry-form">
+        <div class="entry-input">
+          <button type="button" class="attach entry-attach" id="entryAttach" aria-describedby="fileHint">
+            <span class="upload-icon"><svg class="icon" aria-hidden="true"><use href="#icon-attach"/></svg></span>
+            <span>添加资料</span>
+          </button>
+          <textarea id="entryText" aria-label="视频创作主题" placeholder="我想做一期关于……的知识视频" required></textarea>
+        </div>
+        <ul id="entryFiles" aria-label="本次资料" hidden></ul>
+        <input type="file" id="entryPicker" multiple hidden>
+        <div class="entry-actions">
+          <div class="skill-choice entry-skill">
+            <label class="sr-only" for="entrySkill">制作风格</label>
+            <div class="select-with-icon">
+              <svg class="icon select-leading" aria-hidden="true"><use href="#icon-sliders"/></svg>
+              <select id="entrySkill" aria-describedby="entrySkillSummary"><option value="">默认制作方式</option></select>
+              <svg class="icon select-trailing" aria-hidden="true"><use href="#icon-chevron"/></svg>
+            </div>
+          </div>
+          <button class="primary" id="entrySend"><span class="button-label">开始创作</span><svg class="icon" aria-hidden="true"><use href="#icon-arrow"/></svg></button>
+        </div>
+        <p id="entrySkillSummary" aria-live="polite"></p>
+      </form>
+      <p class="entry-key" id="fileHint">支持拖入参考图、文字稿或 PDF，单个文件最大 10 MB</p>
+      <noscript><p class="entry-key">启用 JavaScript 后可以创建项目、上传资料和浏览创作记录。</p></noscript>
+      <div id="entryError" role="alert"></div>
+    </div>
+  </section>
+  <section class="entry-reels" aria-labelledby="reels-title">
+    <div class="gallery-head reels-head">
+      <div><h2 id="reels-title">选题参考</h2><p>11 组短片与画面参考</p></div>
+      <div class="reels-nav" hidden>
+        <button type="button" data-reel-step="-1" aria-label="向前浏览" aria-controls="reelList"><svg class="icon" aria-hidden="true"><use href="#icon-back"/></svg></button>
+        <button type="button" data-reel-step="1" aria-label="向后浏览" aria-controls="reelList"><svg class="icon" aria-hidden="true"><use href="#icon-arrow"/></svg></button>
+      </div>
+    </div>
+    <ul class="reel-list" id="reelList">
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-hotpot.mp4" aria-label="播放：火锅食材从哪来">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-hotpot.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>火锅食材从哪来</strong>
+        </a>
+        <span class="reel-source">讲界项目样片</span>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-earth.mp4" aria-label="播放：卫星眼中的地球">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-earth.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>卫星眼中的地球</strong>
+        </a>
+        <a class="reel-source" href="https://svs.gsfc.nasa.gov/30763/" target="_blank" rel="noopener">NASA Goddard</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-volcano.mp4" aria-label="播放：从卫星看汤加火山喷发">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-volcano.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>从卫星看汤加火山喷发</strong>
+        </a>
+        <a class="reel-source" href="https://cimss.ssec.wisc.edu/satellite-blog/archives/44252" target="_blank" rel="noopener">NOAA / NESDIS · Tim Schmit</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-coral.mp4" aria-label="播放：深海珊瑚也会收缩">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-coral.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>深海珊瑚也会收缩</strong>
+        </a>
+        <a class="reel-source" href="https://oceanexplorer.noaa.gov/multimedia/octocoral-polyps/" target="_blank" rel="noopener">NOAA Ocean Exploration</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-aurora.mp4" aria-label="播放：从空间站看南极光">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-aurora.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>从空间站看南极光</strong>
+        </a>
+        <a class="reel-source" href="https://svs.gsfc.nasa.gov/31281/" target="_blank" rel="noopener">NASA Johnson</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-vent.mp4" aria-label="播放：海底的黑烟囱">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-vent.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>海底的黑烟囱</strong>
+        </a>
+        <a class="reel-source" href="https://oceanexplorer.noaa.gov/multimedia/okeanos-explorations-22voyage-to-the-ridge-gallery-media-ex2205-dive02-smoker/" target="_blank" rel="noopener">NOAA Ocean Exploration · 慢放</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-ice.mp4" aria-label="播放：飞越格陵兰冰川">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-ice.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>飞越格陵兰冰川</strong>
+        </a>
+        <a class="reel-source" href="https://svs.gsfc.nasa.gov/13469/" target="_blank" rel="noopener">NASA Operation IceBridge</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-octopus.mp4" aria-label="播放：小飞象章鱼怎样游泳">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-octopus.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>小飞象章鱼怎样游泳</strong>
+        </a>
+        <a class="reel-source" href="https://oceanexplorer.noaa.gov/multimedia/okeanos-explorations-ex2104-gallery-media-dumbo-atlantis/" target="_blank" rel="noopener">NOAA Ocean Exploration</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-moon.mp4" aria-label="播放：月相是怎样变化的">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-moon.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>月相是怎样变化的</strong>
+        </a>
+        <a class="reel-source" href="https://svs.gsfc.nasa.gov/5415/" target="_blank" rel="noopener">NASA Goddard</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-hurricane.mp4" aria-label="播放：飓风里的降雨结构">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-hurricane.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>飓风里的降雨结构</strong>
+        </a>
+        <a class="reel-source" href="https://svs.gsfc.nasa.gov/5050/" target="_blank" rel="noopener">NASA SVS · NASA / JAXA GPM</a>
+      </li>
+      <li class="reel-card">
+        <a class="reel-open" href="../bohack/style-previews/ref-sun.mp4" aria-label="播放：看见太阳耀斑">
+          <span class="reel-poster">
+            <img src="../bohack/style-previews/ref-sun.webp" alt="" width="768" height="432" loading="lazy">
+            <span class="reel-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+          </span>
+          <strong>看见太阳耀斑</strong>
+        </a>
+        <a class="reel-source" href="https://svs.gsfc.nasa.gov/14703/" target="_blank" rel="noopener">NASA / SDO</a>
+      </li>
+    </ul>
+  </section>
+  <section class="entry-gallery" aria-labelledby="gallery-title">
+    <div class="gallery-head"><h2 id="gallery-title">制作风格</h2><p>选一种风格，应用到本次创作。</p></div>
+    <div class="entry-field" id="entryField">
+      <button type="button" data-entry-style="andy-pixel-quest" aria-pressed="false" class="entry-tile">
+        <span class="tile-art">
+          <video class="entry-media" muted loop playsinline preload="auto" src="../bohack/style-previews/andy.mp4"></video>
+          <span class="tile-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+        </span>
+        <span class="tile-name">像素闯关</span>
+      </button>
+      <button type="button" data-entry-style="heychengc-concrete" aria-pressed="false" class="entry-tile">
+        <span class="tile-art">
+          <video class="entry-media" muted loop playsinline preload="auto" src="../bohack/style-previews/hey.mp4"></video>
+          <span class="tile-play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg></span>
+        </span>
+        <span class="tile-name">具象动态图解</span>
+      </button>
+      <button type="button" data-entry-style="general" aria-pressed="false" class="entry-tile">
+        <span class="tile-art"><img class="entry-media" src="../bohack/style-previews/general.svg" alt=""></span>
+        <span class="tile-name">简洁知识图解</span>
+      </button>
+      <button type="button" data-entry-style="editorial" aria-pressed="false" class="entry-tile">
+        <span class="tile-art"><img class="entry-media" src="../bohack/style-previews/editorial.svg" alt=""></span>
+        <span class="tile-name">杂志式图文</span>
+      </button>
+      <button type="button" data-entry-style="swiss-kinetic" aria-pressed="false" class="entry-tile">
+        <span class="tile-art"><img class="entry-media" src="../bohack/style-previews/swiss-kinetic.svg" alt=""></span>
+        <span class="tile-name">瑞士动态排版</span>
+      </button>
+      <button type="button" data-entry-style="huashu-vox" aria-pressed="false" class="entry-tile">
+        <span class="tile-art"><img class="entry-media" src="../bohack/style-previews/huashu-vox.svg" alt=""></span>
+        <span class="tile-name">剪报调查</span>
+      </button>
+      <button type="button" data-entry-style="huashu-whiteboard" aria-pressed="false" class="entry-tile">
+        <span class="tile-art"><img class="entry-media" src="../bohack/style-previews/huashu-whiteboard.svg" alt=""></span>
+        <span class="tile-name">白板手绘</span>
+      </button>
+      <button type="button" data-entry-style="vibe-night" aria-pressed="false" class="entry-tile">
+        <span class="tile-art"><img class="entry-media" src="../bohack/style-previews/vibe-night.svg" alt=""></span>
+        <span class="tile-name">夜曲知识实验</span>
+      </button>
+      <button type="button" data-entry-style="vibe-fable" aria-pressed="false" class="entry-tile">
+        <span class="tile-art"><img class="entry-media" src="../bohack/style-previews/vibe-fable.svg" alt=""></span>
+        <span class="tile-name">寓言场景</span>
+      </button>
+    </div>
   </section>
 </main>
 <main class="app" id="studio" hidden>
   <section class="chat">
-    <div class="chat-top"><div class="col-head"><p class="chapter">创作对话</p><span class="stage-badge" id="stageBadge">整理需求中</span></div>
-    <h1 id="wsName">当前创作</h1></div>
+    <div class="chat-top"><div class="col-head"><p class="chapter">创作对话</p><span class="stage-badge" id="stageBadge" role="status">整理需求中</span></div>
+    <h1 id="wsName" tabindex="-1">当前创作</h1></div>
     <div class="chat-log" id="chatLog"><div class="empty">还没有对话。先在下面写第一句话。</div></div>
     <div class="composer" id="dropzone">
       <textarea id="chatInput" aria-label="创作对话" placeholder="补充想法，或告诉我哪里要改…"></textarea>
-      <div class="row"><button class="attach" id="attachBtn" title="上传资料，可拖入文件（最多 10 MB）" aria-label="上传资料">＋ 资料</button>
-        <label for="studioUploadSide">用途</label><select id="studioUploadSide" aria-label="上传资料用途"><option value="blueprint">供蓝图参考</option><option value="videomake">用于成片</option></select><input type="file" id="filePicker" multiple hidden><button class="primary" id="btnChat">发送 ↑</button></div>
-      <div class="msg" id="chatMsg" style="font-family:var(--sans);font-size:12px;margin-top:8px"></div>
+      <div class="row"><button class="attach" id="attachBtn" title="上传资料，可拖入文件（最多 10 MB）" aria-label="上传资料"><svg class="icon" aria-hidden="true"><use href="#icon-attach"/></svg>资料</button>
+        <label for="studioUploadSide">用途</label><select id="studioUploadSide" aria-label="上传资料用途"><option value="blueprint">供蓝图参考</option><option value="videomake">用于成片</option></select><input type="file" id="filePicker" multiple hidden><button class="primary" id="btnChat">发送<svg class="icon" aria-hidden="true"><use href="#icon-send"/></svg></button></div>
+      <div class="msg" id="chatMsg" aria-live="polite"></div>
     </div>
   </section>
 
   <!-- 侧栏：需求单 / 资产 / 蓝图 / 成片 -->
   <aside class="side">
-    <div class="side-top"><p class="chapter">制作手稿</p><h2 id="panelTitle">视频需求单</h2></div>
     <nav class="side-tabs" aria-label="制作内容">
-      <button class="tab on" data-tab="req">需求单</button><button class="tab" data-tab="assets">资料</button>
-      <button class="tab" data-tab="bp">分段蓝图</button><button class="tab" data-tab="film">成片</button>
-      <button class="mode-btn" id="modeBtn" hidden>编辑蓝图</button>
+      <button type="button" class="tab on" data-tab="req" aria-controls="pane-req" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#icon-file"/></svg>需求单</button>
+      <button type="button" class="tab" data-tab="assets" aria-controls="pane-assets" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-folder"/></svg>资料</button>
+      <button type="button" class="tab" data-tab="bp" aria-controls="pane-bp" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-blueprint"/></svg>蓝图</button>
+      <button type="button" class="tab" data-tab="film" aria-controls="pane-film" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-film"/></svg>成片</button>
     </nav>
+    <div class="side-top"><h2 id="panelTitle">视频需求单</h2><button class="mode-btn" id="modeBtn" hidden>编辑蓝图</button></div>
     <div class="side-body">
       <!-- 需求单 -->
       <div class="pane on" id="pane-req">
@@ -304,9 +370,16 @@ input[type=file],input[type=checkbox]{box-shadow:none;background:transparent;pad
     </div>
   </aside>
 </main>
-<script src="/bohack/settings.js"></script>
-<script src="/bohack/preview.js"></script>
-<script src="/bohack/film.js"></script>
+<dialog class="reel-dialog" id="reelDialog" aria-labelledby="reelTitle">
+  <div class="reel-dialog-head">
+    <h2 id="reelTitle">选题参考</h2>
+    <form method="dialog"><button class="gear" aria-label="关闭选题视频"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></form>
+  </div>
+  <video class="reel-video" controls playsinline preload="none" aria-labelledby="reelTitle"></video>
+</dialog>
+<script src="../bohack/settings.js"></script>
+<script src="../bohack/preview.js"></script>
+<script src="../bohack/film.js"></script>
 <script>
 const $ = s => document.querySelector(s)
 const $$ = s => [...document.querySelectorAll(s)]
@@ -426,40 +499,72 @@ async function loadThreads(){
   const r=await api('/bohack/api/threads')
   state.threads=r.threads
   $('#recentList').innerHTML=r.threads.length?r.threads.map(t=>`<button data-thread="${esc(t.id)}">${esc(t.title||'新创作')}</button>`).join(''):'<p>暂无创作</p>'
-  if(state.threadId) $('#recentList').insertAdjacentHTML('afterbegin','<button id="newWork">＋ 新建创作</button>')
+  if(state.threadId) $('#recentList').insertAdjacentHTML('afterbegin','<button id="newWork"><svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>新建创作</button>')
 }
 function reduceMotion(){return window.matchMedia('(prefers-reduced-motion: reduce)').matches}
-function playEntryEntrance(){
-  const entry=$('#entry'); if(!entry) return
-  entry.classList.remove('is-ready')
-  void entry.offsetWidth
-  entry.classList.add('is-ready')
+function bindAmbientBackground(){
+  const video=$('#ambientVideo')
+  const motion=window.matchMedia('(prefers-reduced-motion: reduce)')
+  function sync(){
+    if(motion.matches || document.hidden){
+      video.pause()
+      return
+    }
+    if(!video.hasAttribute('src')) video.src=video.dataset.src
+    else if(video.error) video.load()
+    video.play().catch(()=>{})
+  }
+  video.addEventListener('playing',()=>video.classList.add('is-playing'))
+  video.addEventListener('error',()=>video.classList.remove('is-playing'))
+  motion.addEventListener('change',sync)
+  document.addEventListener('visibilitychange',sync)
+  sync()
+}
+function bindReferenceReels(){
+  const list=$('#reelList'), nav=$('.reels-nav'), buttons=[...nav.querySelectorAll('button')]
+  const dialog=$('#reelDialog'), video=dialog.querySelector('video')
+  const update=()=>{
+    buttons[0].disabled=list.scrollLeft<2
+    buttons[1].disabled=list.scrollLeft+list.clientWidth>=list.scrollWidth-2
+  }
+  nav.hidden=false
+  update()
+  list.addEventListener('scroll',update,{passive:true})
+  new ResizeObserver(update).observe(list)
+  for(const button of buttons) button.onclick=()=>{
+    list.scrollBy({left:Number(button.dataset.reelStep)*list.clientWidth,behavior:reduceMotion()?'instant':'smooth'})
+  }
+  list.addEventListener('click',event=>{
+    const link=event.target.closest('.reel-open')
+    if(!link || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || typeof dialog.showModal!=='function') return
+    event.preventDefault()
+    $('#reelTitle').textContent=link.querySelector('strong').textContent
+    video.poster=link.querySelector('img').src
+    video.src=link.href
+    dialog.showModal()
+    video.play().catch(()=>{})
+  })
+  dialog.addEventListener('close',()=>{
+    video.pause()
+    video.removeAttribute('src')
+    video.removeAttribute('poster')
+    video.load()
+  })
 }
 function swapViews(show,hide){
-  const finish=()=>{
-    if(hide){ hide.hidden=true; hide.classList.remove('view-leave','view-enter') }
-    show.classList.remove('view-enter','view-leave')
-  }
-  if(!hide || hide.hidden || reduceMotion()){
-    if(hide){ hide.hidden=true; hide.classList.remove('view-leave','view-enter') }
-    show.hidden=false
-    show.classList.remove('view-leave','view-enter')
-    return
-  }
+  if(!show.hidden) return
+  hide.hidden=true
+  hide.classList.remove('view-enter')
   show.hidden=false
   show.classList.add('view-enter')
-  hide.classList.add('view-leave')
-  let done=false
-  const once=()=>{ if(done) return; done=true; finish() }
-  hide.addEventListener('animationend',once,{once:true})
-  setTimeout(once,700)
+  window.scrollTo(0,0)
 }
 function bindEntryAtmosphere(){
   const field=$('#entryField'); if(!field || field.dataset.bound) return
   field.dataset.bound='1'
   field.querySelectorAll('video').forEach(video=>{
     const tile=video.closest('.entry-tile'); if(!tile) return
-    const play=()=>{video.currentTime=0;video.play().catch(()=>{})}
+    const play=()=>{if(!reduceMotion()){video.currentTime=0;video.play().catch(()=>{})}}
     const stop=()=>video.pause()
     tile.addEventListener('mouseenter',play)
     tile.addEventListener('focusin',play)
@@ -471,7 +576,6 @@ function showEntry(){
   state.threadId=null; window.BohackSettings.setThread(null); history.replaceState(null,'',location.pathname)
   swapViews($('#entry'),$('#studio')); $('#recent').open=false; $('#entryText').focus()
   $('#newWork')?.remove()
-  playEntryEntrance()
 }
 $('#homeBtn').onclick=()=>{if(!state.busy) showEntry()}
 document.querySelector('.ws-dialog').addEventListener('close',()=>{loadEntrySkills().catch(e=>$('#entryError').textContent=e.message);if(state.threadId)loadBlueprintSkill(state.threadId).catch(e=>chatMsg(esc(e.message),'errbox'))})
@@ -496,7 +600,7 @@ function drawEntryFiles(){
     if(item.saved){row.append(' · 已上传')}
     else{
       const remove=document.createElement('button')
-      remove.type='button'; remove.textContent='×'; remove.disabled=$('#entrySend').disabled
+      remove.type='button'; remove.innerHTML='<svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg>'; remove.disabled=$('#entrySend').disabled
       remove.setAttribute('aria-label','移除 '+item.file.name)
       remove.onclick=()=>{entryFiles.splice(entryFiles.indexOf(item),1);drawEntryFiles()}
       row.append(remove)
@@ -532,7 +636,7 @@ $('#entryForm').onsubmit=async e=>{
     if(!draftThread) draftThread=(await api('/bohack/api/threads',{})).thread.id
     for(const item of entryFiles){
       if(item.saved) continue
-      $('#entrySend').textContent='上传资料中…'
+      $('#entrySend .button-label').textContent='上传资料中…'
       await sendFile(item.file,draftThread,item.side); item.saved=true;drawEntryFiles()
     }
     await api('/bohack/api/blueprint-skill',{id:$('#entrySkill').value || null},draftThread)
@@ -545,7 +649,7 @@ $('#entryForm').onsubmit=async e=>{
     target.textContent=err.message
   }finally{
     controls.forEach(el=>el.disabled=false);$('#recent').inert=false;$('#entryField').inert=false
-    $('#entrySend').textContent='开始创作 ↗';drawEntryFiles()
+    $('#entrySend .button-label').textContent='开始创作';drawEntryFiles()
   }
 }
 $('#entryText').onkeydown=e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.isComposing&&e.keyCode!==229){e.preventDefault();$('#entryForm').requestSubmit()}}
@@ -563,7 +667,9 @@ function clearThreadView(){
 }
 async function selectThread(id){
   $('#productionFeedback').value=''; $('#productionMode').value='agent'
+  const wasAtEntry=$('#studio').hidden
   state.threadId=id; swapViews($('#studio'),$('#entry')); chooseTab('req')
+  if(wasAtEntry) $('#wsName').focus({preventScroll:true})
   const locationUrl=new URL(location.href); locationUrl.searchParams.set('thread',id); history.replaceState(null,'',locationUrl)
   clearThreadView()
   setSkillGalleryDisabled(true)
@@ -706,10 +812,9 @@ function t2tag(t){ return t==='vetted'?'<span class="tag vetted">已把关</span
 function renderAssets(list){
   const box=$('#assetList')
   if(!list?.length){ box.innerHTML='<div class="empty">还没有资料。可以将文件拖到对话区上传。</div>'; return }
-  const icon=t=>t==='image'?'🖼️':t==='link'?'🔗':t==='index'?'🗂️':'📄'
   box.innerHTML=list.map(a=>`
     <div class="asset" data-asset-id="${esc(a.id)}">
-      <span class="ic">${icon(a.type)}</span>
+      <span class="ic"><svg class="icon" aria-hidden="true"><use href="#icon-${({image:'image',link:'link',index:'folder'})[a.type] || 'file'}"/></svg></span>
       <div style="min-width:0">
         <div class="name">${esc(a.name)} ${trustTag(a)}${a.side==='blueprint'?' <span class="tag candidate">供蓝图参考</span>':a.side==='videomake'?' <span class="tag candidate">用于成片</span>':''}</div>
         ${(a.side==='videomake' || (!a.side && a.type!=='text')) && state.status?.currentVersion && (a.declared || /\.(png|jpe?g|svg)$/i.test(a.path||'') || (state.status.blueprintAssets||[]).some(item=>item.ledgerId===a.id)) ? `<details><summary>关联蓝图段落</summary><div class="hint">${state.status.sections.map(sec=>`<label style="margin-right:10px"><input type="checkbox" data-section="${esc(sec.id)}" ${(state.status.blueprintAssets||[]).find(item=>item.ledgerId===a.id)?.sections.includes(sec.id)?'checked':''}> ${esc(sec.id)}</label>`).join('')}</div><button class="sm" data-assign="${esc(a.id)}">保存关联</button></details>` : ''}
@@ -792,21 +897,22 @@ function renderRequirement(raw){
 function leafHTML(sec, s, manual){
   const locked=(s.locked||[]).includes(sec.id)
   const cls=`leaf ${sec.confirmed?'done':''} ${locked?'locked':''}`
+  const lockIcon='<svg class="icon" aria-hidden="true"><use href="#icon-lock"/></svg>'
   const badge=(sec.confirmed?'<span class="badge on">已确认</span>':'<span class="badge">待确认</span>')
-    +(locked?'<span class="badge gold">🔒 已锁定</span>':'')
+    +(locked?`<span class="badge gold">${lockIcon}已锁定</span>`:'')
   const head=`<div class="leaf-head"><span class="sid">${esc(sec.id)}</span><span class="stitle">${esc(sec.title)}</span><span style="flex:1"></span>${badge}</div>
     <div class="intent">${esc(sec.intent||'（缺）')}</div>
     <div class="facts">关键事实：${sec.facts?.length?sec.facts.map(esc).join('；'):'（缺）'}</div>
-    <div class="intent" style="color:var(--faded)">画面意图：${esc(sec.visual||'（缺）')}</div>`
+    <div class="intent" style="color:var(--muted)">画面意图：${esc(sec.visual||'（缺）')}</div>`
   const ops=manual
     ? `<div class="ops">
         <button class="sm ghost" data-act="edit" data-id="${esc(sec.id)}">改这段</button>
         ${sec.confirmed?'':`<button class="sm ghost" data-act="confirm" data-id="${esc(sec.id)}">确认这段</button>`}
-        <button class="sm ghost" data-act="lock" data-id="${esc(sec.id)}" data-on="${locked?'0':'1'}">${locked?'解锁':'🔒 锁定'}</button>
+        <button class="sm ghost" data-act="lock" data-id="${esc(sec.id)}" data-on="${locked?'0':'1'}">${lockIcon}${locked?'解锁':'锁定'}</button>
       </div>`
     : `<div class="ops">
         ${sec.confirmed?'':`<button class="sm ghost" data-act="confirm" data-id="${esc(sec.id)}">确认这段</button>`}
-        <button class="sm ghost" data-act="lock" data-id="${esc(sec.id)}" data-on="${locked?'0':'1'}">${locked?'解锁':'🔒 锁定'}</button>
+        <button class="sm ghost" data-act="lock" data-id="${esc(sec.id)}" data-on="${locked?'0':'1'}">${lockIcon}${locked?'解锁':'锁定'}</button>
       </div>`
   return `<div class="${cls}" data-leaf="${esc(sec.id)}">${head}<div class="editarea">${ops}</div></div>`
 }
@@ -981,8 +1087,8 @@ async function refresh(){
       const prod=s.production
       const fin=s.hasDelivery
       badge.textContent=prod?.status==='running'?(prod.phase||'正在制作'):fin?'已定稿':(s.currentVersion?`蓝图 v${s.currentVersion}`:'整理需求中')
-      badge.style.borderColor=prod?.status==='running'?'var(--cinnabar)':fin?'var(--water)':''
-      badge.style.color=prod?.status==='running'?'var(--cinnabar)':fin?'var(--water)':''
+      badge.style.borderColor=prod?.status==='running'?'var(--warn)':fin?'var(--success)':''
+      badge.style.color=prod?.status==='running'?'var(--warn)':fin?'var(--success)':''
     }
     const blueprintKey=JSON.stringify([id,s.currentVersion,s.sections,s.locked,s.blueprintSkill,s.hasFeedback,s.lastRun,s.stage,s.blueprintAssets])
     if(state.blueprintKey!==blueprintKey && !$('#edTitle') && !$('#noteText')?.value){ state.blueprintKey=blueprintKey; renderBlueprint(); if(state.assets) renderAssets(state.assets) }
@@ -999,23 +1105,17 @@ let productionRequest=null, productionFailure=null
 function styleItems(list){
   return (list||[]).filter(item => item.kind === 'style' || (!item.kind && !String(item.id||'').startsWith('repo-skill:')))
 }
-function styleTone(id){
-  let h=0
-  for(const ch of String(id||'')) h=(h*33+ch.charCodeAt(0))>>>0
-  return h%6
-}
 function stylePreviewHtml(item){
   const file=item.preview?.file, kind=item.preview?.kind
-  if(kind==='video' || (file && /\.mp4$/i.test(file))) return `<video muted loop playsinline preload="metadata" src="/bohack/style-previews/${esc(file)}"></video>`
-  if(file) return `<img src="/bohack/style-previews/${esc(file)}" alt="">`
-  const sum=item.summary || (item.description||'').split(/[。！？\n]/).find(Boolean) || '自定义视觉风格'
-  return `<div class="style-poster tone-${styleTone(item.id||item.name)}"><strong>${esc(item.name)}</strong><span>${esc(sum)}</span></div>`
+  if(kind==='video' || (file && /\.mp4$/i.test(file))) return `<video muted loop playsinline preload="metadata" src="../bohack/style-previews/${esc(file)}"></video>`
+  if(file) return `<img src="../bohack/style-previews/${esc(file)}" alt="">`
+  return '<div class="style-poster" aria-hidden="true"><svg class="icon"><use href="#icon-brand"/></svg></div>'
 }
 function bindStylePreviewMedia(root){
   root.querySelectorAll('video').forEach(video=>{
     const card=video.closest('.style-card, .style-current')
     if(!card) return
-    const play=()=>{video.currentTime=0;video.play().catch(()=>{})}
+    const play=()=>{if(!reduceMotion()){video.currentTime=0;video.play().catch(()=>{})}}
     const stop=()=>video.pause()
     card.addEventListener('mouseenter',play)
     card.addEventListener('focusin',play)
@@ -1099,7 +1199,7 @@ async function renderFilmAssets(s, ready, generation){
     const banner=pending ? '<p class="asset-banner">待补素材可以上传，也可以用素材图小工具生成；生成后请人工确认，也可先制作。</p>' : ''
     const statusLabel={'pending':'待生成','generated':'待确认','generated-approved':'已确认','ledger-approved':'已确认 · 来自资料库','ledger-review':'待确认 · 请到资料页审核','conflict':'资料库有多份已确认文件，请保留一份'}
     box.innerHTML=banner+'<h3>本片已关联的素材</h3>'+items.map(a=>`<div class="leaf">
-      ${a.previewUrl && ['generated','generated-approved'].includes(a.displayStatus)?`<img src="${esc(a.previewUrl)}" alt="${esc(a.name)}" style="width:120px;height:90px;object-fit:contain;background:var(--bg-4);border-radius:10px">`:''}
+      ${a.previewUrl && ['generated','generated-approved'].includes(a.displayStatus)?`<img src="${esc(a.previewUrl)}" alt="${esc(a.name)}" style="width:120px;height:90px;object-fit:contain;background:var(--surface);border-radius:10px">`:''}
       <b>${esc(a.name)}</b> · ${esc(a.sections.join('、'))} · ${esc(statusLabel[a.displayStatus])}
       <p>${esc(a.description)}</p>${['pending','generated','generated-approved'].includes(a.displayStatus)?`<button class="sm ghost" data-generate="${esc(a.id)}">${a.previewUrl?'用小工具重做':'用小工具生成素材图'}</button>`:''}
       ${a.displayStatus==='generated'?`<button class="sm primary" data-approve="${esc(a.id)}">确认此项</button>`:''}</div>`).join('')
@@ -1350,13 +1450,9 @@ $('#frames').onclick=e=>{
   const leaf=$(state.manual?'#bpManual':'#bpPreview').querySelector('[data-leaf="'+CSS.escape(id)+'"]')
   if(leaf){leaf.tabIndex=-1; leaf.focus({preventScroll:true}); leaf.scrollIntoView({block:'nearest'})}
 }
-drawLandscape()
 bindEntryAtmosphere()
-function drawLandscape(){
-  const c=$('#inkLandscape'); if(!c) return
-  const ctx=c.getContext('2d')
-  ctx.clearRect(0,0,c.width,c.height)
-}
+bindReferenceReels()
+bindAmbientBackground()
  /* ── 启动 ── */
 ;(async function init(){
   try{

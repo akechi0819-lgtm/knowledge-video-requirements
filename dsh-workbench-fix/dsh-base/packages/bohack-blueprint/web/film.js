@@ -122,7 +122,7 @@ window.BohackFilm = (() => {
 
   function waitingMarkup(p) {
     return `<div class="film-waiting">
-      <span class="film-orb" aria-hidden="true"></span>
+      <svg class="icon" aria-hidden="true"><use href="#icon-brand"/></svg>
       <p>${esc(headline(p))}</p>
     </div>`
   }
@@ -132,7 +132,8 @@ window.BohackFilm = (() => {
     const fill = qs(shell, '.timeline-fill')
     const time = qs(shell, '.player-time')
     const toggle = qs(shell, '.player-toggle')
-    const track = qs(shell, '.timeline')
+    const track = qs(shell, '.timeline-track')
+    const playbackError = qs(shell, '.player-error')
     if (!video || !track) return
     const segments = p.mapping?.segments || []
     const duration = () => video.duration || p.mapping?.duration || 0
@@ -148,6 +149,8 @@ window.BohackFilm = (() => {
       const t = video.currentTime || 0
       if (fill) fill.style.width = total ? `${Math.min(100, (t / total) * 100)}%` : '0%'
       if (time) time.textContent = `${formatClock(t)} / ${formatClock(total)}`
+      track.setAttribute('aria-valuenow', String(total ? Math.min(100, Math.round(t / total * 100)) : 0))
+      track.setAttribute('aria-valuetext', `${formatClock(t)} / ${formatClock(total)}`)
       const id = currentId()
       shell.querySelectorAll('.sec-card').forEach(card => card.classList.toggle('is-on', card.dataset.sec === id))
       if (toggle) toggle.setAttribute('aria-label', video.paused ? '播放' : '暂停')
@@ -160,30 +163,47 @@ window.BohackFilm = (() => {
       video.currentTime = Math.min(total - 0.05, Math.max(0, ratio * total))
     }
 
+    function play() {
+      playbackError.textContent = ''
+      video.play().catch(error => {
+        if (error.name !== 'AbortError') playbackError.textContent = '无法播放这段视频，请稍后重试。'
+      })
+    }
+
     video.ontimeupdate = paint
     video.onloadedmetadata = paint
     video.onplay = paint
     video.onpause = paint
-    toggle && (toggle.onclick = () => { video.paused ? video.play() : video.pause() })
+    toggle && (toggle.onclick = () => { video.paused ? play() : video.pause() })
     track.onclick = event => {
       const rect = track.getBoundingClientRect()
       seek((event.clientX - rect.left) / rect.width)
+    }
+    track.onkeydown = event => {
+      if (event.target !== track) return
+      const total = duration()
+      if (!total) return
+      const current = video.currentTime || 0
+      const positions = { ArrowLeft: current - 5, ArrowRight: current + 5, ArrowDown: current - 5, ArrowUp: current + 5, Home: 0, End: total }
+      if (!Object.hasOwn(positions, event.key)) return
+      event.preventDefault()
+      seek(positions[event.key] / total)
     }
     shell.querySelectorAll('.timeline-tick').forEach(tick => {
       tick.addEventListener('click', event => {
         event.stopPropagation()
         video.currentTime = Number(tick.dataset.start) || 0
-        video.play()
+        play()
       })
     })
     paint()
     return {
       seekSection(id) {
         const seg = segments.find(item => item.id === id)
-        if (seg) { video.currentTime = (seg.start || 0) + 0.05; video.play() }
+        if (seg) { video.currentTime = (seg.start || 0) + 0.05; play() }
         else if (p.sections?.find(s => s.id === id && s.clip) && !p.artifacts?.video) {
           video.src = fileUrl(threadId, 'clip', id)
-          video.play()
+          play()
         }
         shell.querySelectorAll('.sec-card').forEach(card => card.classList.toggle('is-on', card.dataset.sec === id))
       },
@@ -220,9 +240,13 @@ window.BohackFilm = (() => {
     </p>` : ''
     player.innerHTML = `<div class="player">
       <video id="filmVideo" playsinline preload="metadata" src="${esc(media.src)}"></video>
+      <p class="player-error" role="status"></p>
       <div class="player-bar">
         <button type="button" class="player-toggle" aria-label="播放" data-playing="0"></button>
-        <div class="timeline" role="slider" aria-label="播放进度">${ticks}<span class="timeline-fill"></span></div>
+        <div class="timeline" role="group" aria-label="播放进度">
+          <div class="timeline-track" role="slider" tabindex="0" aria-label="播放进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="timeline-fill"></span></div>
+          ${ticks}
+        </div>
         <span class="player-time">0:00 / ${formatClock(total)}</span>
       </div>
     </div>${downloads}`
