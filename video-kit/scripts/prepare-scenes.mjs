@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Generate data-only SVG scenes. Model output is never executed as code.
-import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, copyFile, unlink } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { callDsh } from './dsh-model.mjs';
 
@@ -34,7 +34,8 @@ for (const s of production.sections) {
   }
   ids.add(s.id);
 }
-await mkdir(output); // Do not overwrite an existing task.
+const resume = process.env.VIDEO_RESUME === '1';
+await mkdir(output, { recursive: resume }); // Existing tasks are allowed only on resume.
 const layerExamples = '图层示例：素材 {"type":"asset","assetId":"素材ID","x":100,"y":100,"width":200,"height":200,"start":0,"end":1}；图形 {"type":"rect","x":100,"y":100,"width":200,"height":200,"fill":"#112233","start":0,"end":1}；文字 {"type":"text","x":100,"y":100,"width":200,"height":40,"fill":"#112233","text":"文字","start":0,"end":1}。';
 const system = `你是知识视频画面设计师。根据单段制作信息，设计可读的矢量动态图解，按所选风格安排空间、动作和节奏。只返回 JSON 对象，不要 Markdown。画布 1920×1080，底部 180 像素留给字幕。格式：{"background":"#rrggbb","layers":[图层]}。每层必须有 type、x、y、width、height、start、end；type 为 rect、ellipse、line、text 或 asset。asset 必须有 assetId，不需要 fill 和 text；其他类型必须有 fill；仅 text 类型必须有 text。${layerExamples}建议保持图层精简；x/y 为左上角，line 从 (x,y) 到 (x+width,y+height)，width 和 height 可为负数表示向左或向上；其他类型的宽高为非负数。text 的 x/y 为基线，height 为字号。图层可从画外进入，画面会裁切到字幕区上方。start/end 是出现和消失时间比例，start < end。需要移动的主体可加可选字段 motion: {"toX":数字,"toY":数字}，表示本图层出现后从 x/y 移动到的目标坐标。对照叙述让动作解释变化，标签保持可读。背景色直接写 background，不要铺全屏背景矩形。画面用分阶段的可见变化解释动作；只画本段需要的信息，提问段遵守揭晓时机。不得添加未经材料支持的事实，不要编写旁白、代码、外链或 SVG。缺失信息不要猜测。`;
 const color = /^#[0-9a-fA-F]{6}$/;
@@ -217,6 +218,19 @@ async function embeddedImage(file, sectionId) {
 }
 
 for (const section of production.sections) {
+  if (resume) {
+    const sceneFile = join(output, `${section.id}.scene.json`);
+    const htmlFile = join(output, `${section.id}.html`);
+    let complete = false;
+    try {
+      const scene = JSON.parse(await readFile(sceneFile, 'utf8'));
+      const page = await readFile(htmlFile, 'utf8');
+      complete = Boolean(scene && color.test(scene.background) && Array.isArray(scene.layers) && scene.layers.length && page.trimEnd().endsWith('</html>'));
+    } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+    if (complete) { section.scene = `${section.id}.html`; continue; }
+    // Remove partial pairs before regenerating so a failure cannot pair new JSON with old HTML.
+    for (const file of [sceneFile, htmlFile]) await unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
   if (process.env.VIDEO_SCENE_REUSE_DIR) {
     try {
       const source = process.env.VIDEO_SCENE_REUSE_DIR;

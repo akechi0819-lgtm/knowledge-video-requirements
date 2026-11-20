@@ -2,6 +2,31 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
+const reserved = new Set(['.agents', '.dsh', '.dsh-home', 'rules', 'scene_retrieval.py', 'settings.json', 'project-model.private.json'])
+
+function checkPath(name) {
+  if (typeof name !== 'string' || !name || name.includes('\\') || name.split('/').some(p => !p || p === '.' || p === '..')) throw new Error('无效的项目文件路径')
+  if (reserved.has(name.split('/')[0].toLowerCase())) throw new Error('项目包包含服务端配置或指令')
+  return name
+}
+
+// The caller owns the staging directory and publishes it only after setup succeeds.
+export async function unpackProject(snapshot, staging) {
+  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.files)) throw new Error('无效的项目包')
+  const names = new Set()
+  for (const file of snapshot.files) {
+    const name = checkPath(file?.path)
+    if (names.has(name) || typeof file.data !== 'string' || Buffer.from(file.data, 'base64').toString('base64') !== file.data) throw new Error('项目文件重复或内容无效')
+    names.add(name)
+  }
+  await mkdir(staging, { recursive: true })
+  for (const file of snapshot.files) {
+    const target = path.join(staging, file.path)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, Buffer.from(file.data, 'base64'), { flag: 'wx' })
+  }
+}
+
 // Only workspaces created by this module are eligible for expiry.
 export function createProjectExchange(root, { ttlMs, now = Date.now, isActive } = {}) {
   if (!Number.isFinite(ttlMs) || ttlMs <= 0 || typeof isActive !== 'function') throw new Error('必须提供有效的过期时间和活动检查')
@@ -11,29 +36,11 @@ export function createProjectExchange(root, { ttlMs, now = Date.now, isActive } 
   const metadataPath = id => path.join(dir(id), 'expiry.json')
   const workspace = id => path.join(dir(id), 'workspace')
   const expires = () => now() + ttlMs
-  const checkPath = name => {
-    if (typeof name !== 'string' || !name || name.includes('\\') || name.split('/').some(p => !p || p === '.' || p === '..') || name.startsWith('/')) throw new Error('无效的项目文件路径')
-    const first = name.split('/')[0]
-    if (['.agents', '.dsh', '.dsh-home', 'rules', 'scene_retrieval.py', 'settings.json', 'project-model.private.json'].includes(first)) throw new Error('项目包包含服务端配置或指令')
-    return name
-  }
   async function create(snapshot) {
-    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.files)) throw new Error('无效的项目包')
-    const names = new Set()
-    for (const file of snapshot.files) {
-      const name = checkPath(file?.path)
-      if (names.has(name) || typeof file.data !== 'string' || Buffer.from(file.data, 'base64').toString('base64') !== file.data) throw new Error('项目文件重复或内容无效')
-      names.add(name)
-    }
     await mkdir(root, { recursive: true })
     const id = randomUUID(), staging = path.join(root, `${id}.creating`)
     try {
-      await mkdir(path.join(staging, 'workspace'), { recursive: true })
-      for (const file of snapshot.files) {
-        const target = path.join(staging, 'workspace', ...file.path.split('/'))
-        await mkdir(path.dirname(target), { recursive: true })
-        await writeFile(target, Buffer.from(file.data, 'base64'), { flag: 'wx' })
-      }
+      await unpackProject(snapshot, path.join(staging, 'workspace'))
       await writeFile(path.join(staging, 'expiry.json'), JSON.stringify({ expiresAt: expires() }))
       await rename(staging, dir(id))
       return { id, workspace: workspace(id) }
@@ -50,7 +57,7 @@ export function createProjectExchange(root, { ttlMs, now = Date.now, isActive } 
       for (const entry of await readdir(base, { withFileTypes: true })) {
         const name = prefix ? `${prefix}/${entry.name}` : entry.name
         if (/^production\/[^/]+\/film\/(frames|clips|checks|qa)$/.test(name)) continue
-        if (!prefix && ['.agents', '.dsh', '.dsh-home', 'rules', 'scene_retrieval.py', 'settings.json', 'project-model.private.json'].includes(name)) continue
+        if (!prefix && reserved.has(name.toLowerCase())) continue
         checkPath(name)
         const full = path.join(base, entry.name)
         if (entry.isDirectory()) await visit(full, name)

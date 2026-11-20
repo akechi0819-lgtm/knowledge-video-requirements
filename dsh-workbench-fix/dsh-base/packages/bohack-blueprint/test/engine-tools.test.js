@@ -8,7 +8,7 @@ import { createEngine } from '../lib/engine.js'
 const dialogueTools = ['save_requirement', 'add_text_asset', 'mark_requirement_changed', 'request_blueprint', 'request_blueprint_revision', 'realize_asset', 'request_video_revision', 'request_confirm_and_produce']
 const dangerousTools = ['bash', 'read', 'write', 'apply_patch', 'subagent']
 
-function mockContext(globalNames) {
+function mockContext(globalNames, blueprintFailure) {
   const globals = new Set()
   const scoped = new Map()
   const masks = new Set()
@@ -43,6 +43,11 @@ function mockContext(globalNames) {
           return { agent: {
             async followup() {
               if (scoped.has('write_blueprint')) {
+                const failure = blueprintFailure?.()
+                if (failure) {
+                  listeners.get('agent/assistant-stream')({ frame: { type: 'chunk', chunk: { type: 'finish', reason: { kind: 'error', failure } } } })
+                  return
+                }
                 const result = await scoped.get('write_blueprint').execute({
                   topic: '火山', assets: [], sections: [
                     { id: 'B01', title: '喷发', intent: '岩浆从地表喷出。', visual: '火山喷发的过程。' },
@@ -77,6 +82,18 @@ for (const globals of [['web_search', 'skill'], ['web_search', 'skill', ...dange
     engine.reset()
   })
 }
+
+test('blueprint reports the model failure code without leaking its message or poisoning the next turn', async () => {
+  let failure = { code: 'TRANSPORT', message: 'private provider details' }
+  const mock = mockContext(['skill'], () => failure)
+  const engine = createEngine(mock.ctx)
+  await assert.rejects(engine.produce({ requirementText: '讲火山' }), {
+    message: '蓝图模型请求失败（TRANSPORT）',
+  })
+  failure = null
+  assert.equal((await engine.produce({ requirementText: '讲火山' })).toolSubmitted, true)
+  engine.reset()
+})
 
 for (const allowWebResearch of [true, false]) {
   test(`blueprint setup respects allowWebResearch=${allowWebResearch}`, async () => {

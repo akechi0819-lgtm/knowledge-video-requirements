@@ -1,5 +1,7 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { checkCloudEndpoint, mimoBaseUrl } from './models.js'
 
 const queues = new Map()
@@ -42,10 +44,38 @@ export function createSettings(workspace, config = {}) {
   // A server session can share this map between its service and engines while
   // keeping credentials out of the persistent settings file.
   const temporaryKeys = config.temporaryKeys
+  const keychainHelper = !temporaryKeys && process.env.BOHACK_DESKTOP_KEYCHAIN_HELPER
+  const keychainScope = createHash('sha256').update(settingsRoot).digest('hex')
+  function keychain(action, keys) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(keychainHelper, ['--desktop-settings-keychain'], { stdio: ['pipe', 'pipe', 'pipe'] })
+      let output = '', error = ''
+      child.stdout.setEncoding('utf8').on('data', chunk => { output += chunk })
+      child.stderr.setEncoding('utf8').on('data', chunk => { error += chunk })
+      child.on('error', reject)
+      child.on('close', code => {
+        if (code !== 0) return reject(new Error(error.trim() || '钥匙串操作失败'))
+        try { resolve(action === 'read' ? JSON.parse(output) : undefined) } catch (e) { reject(e) }
+      })
+      child.stdin.on('error', () => {})
+      child.stdin.end(JSON.stringify({ action, scope: keychainScope, keys }))
+    })
+  }
+
   const warn = (...args) => { try { config.logger?.warn?.('[bohack/settings]', ...args) } catch { /* ignore */ } }
   async function readSettings() {
     try {
-      const settings = JSON.parse(await readFile(file, 'utf8'))
+      const raw = await readFile(file, 'utf8')
+      let settings
+      try { settings = JSON.parse(raw) } catch (e) { warn('settings.json 不是有效 JSON，按空设置处理：', String(e.message)); return {} }
+      if (keychainHelper && settings.keychainCredentials) {
+        const keys = await keychain('read')
+        for (const [kind, apiKey] of Object.entries(keys)) {
+          settings[kind] ||= {}
+          settings[kind].apiKey = apiKey
+        }
+      }
+      delete settings.keychainCredentials
       if (temporaryKeys) {
         for (const [kind, value] of Object.entries(settings)) {
           if (value && typeof value === 'object') {
@@ -58,7 +88,6 @@ export function createSettings(workspace, config = {}) {
     }
     catch (e) {
       if (e.code === 'ENOENT') return {}
-      if (e instanceof SyntaxError) { warn('settings.json 不是有效 JSON，按空设置处理：', String(e.message)); return {} }
       throw e
     }
   }
@@ -82,6 +111,15 @@ export function createSettings(workspace, config = {}) {
     }
     return applyTtsKey(settings)
   }
+  async function forCall(auth = undefined) {
+    if (auth === undefined) auth = await config.memberProject?.lease()
+    if (!auth) return load()
+    const model = { baseUrl: auth.baseUrl, model: 'jiangjie', apiKey: auth.token }
+    return {
+      model, assetModel: model, previewModel: model, styleAnalysisModel: model,
+      tts: { ...model, protocol: 'speech', voice: 'default' },
+    }
+  }
   async function get() {
     const settings = await load()
     return { ...Object.fromEntries(['model', 'tts', 'image', 'requirementAgent', 'blueprintAgent', 'videoAgent', 'assetModel', 'previewModel', 'styleAnalysisModel'].map(k => [k, { ...settings[k], apiKey: undefined, hasApiKey: !!settings[k]?.apiKey }])), capabilities: { cloudManagedModel: !!process.env.BOHACK_CLOUD_MODEL, imageGeneration: false } }
@@ -90,6 +128,7 @@ export function createSettings(workspace, config = {}) {
     if ('skills' in input) throw new Error('通用制作方法已默认启用，无需设置技能开关。')
     return exclusive(file, async () => {
       const settings = await load()
+      const hadKeychainKeys = keychainHelper && Object.values(settings).some(value => value && typeof value === 'object' && value.apiKey)
       for (const k of ['model', 'tts', 'image', 'requirementAgent', 'blueprintAgent', 'videoAgent', 'assetModel', 'previewModel', 'styleAnalysisModel']) {
         if (!input[k]) continue
         checkCloudEndpoint(input[k].baseUrl, k)
@@ -111,6 +150,22 @@ export function createSettings(workspace, config = {}) {
       await mkdir(settingsRoot, { recursive: true })
       const persisted = structuredClone(settings)
       if (persisted.tts?.useTextKey) delete persisted.tts.apiKey
+      if (keychainHelper) {
+        const keys = {}
+        for (const [kind, value] of Object.entries(persisted)) {
+          if (value && typeof value === 'object' && Object.hasOwn(value, 'apiKey')) {
+            if (value.apiKey) keys[kind] = value.apiKey
+            delete value.apiKey
+          }
+        }
+        // Empty member-mode settings must not touch Keychain or prompt for access.
+        if (Object.keys(keys).length) {
+          await keychain('write', keys)
+          persisted.keychainCredentials = true
+        } else if (hadKeychainKeys) {
+          await keychain('write', keys)
+        }
+      }
       if (temporaryKeys) {
         for (const value of Object.values(persisted)) {
           if (!value || typeof value !== 'object' || !Object.hasOwn(value, 'apiKey')) continue
@@ -133,5 +188,5 @@ export function createSettings(workspace, config = {}) {
       return get()
     })
   }
-  return { get, update, load }
+  return { get, update, load, forCall }
 }

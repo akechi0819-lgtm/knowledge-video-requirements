@@ -23,6 +23,10 @@ async function runCase(production, modelScene = scene, imageBytes = null, assetF
   const input = join(dir, 'input.json');
   const output = join(dir, 'out');
   if (reuse) { await mkdir(join(dir, 'reuse')); await writeFile(join(dir, 'reuse/S01.html'), 'reused html'); await writeFile(join(dir, 'reuse/S01.scene.json'), '{}'); }
+  if (options.savedScenes) {
+    await mkdir(output);
+    for (const [name, contents] of Object.entries(options.savedScenes)) await writeFile(join(output, name), contents);
+  }
   await writeFile(input, JSON.stringify(production));
   if (imageBytes) { await mkdir(join(dir, 'images')); await writeFile(join(dir, 'images/S01.png'), imageBytes); }
   if (Object.keys(assetFiles).length) { await mkdir(join(dir, 'assets')); for (const [name, contents] of Object.entries(assetFiles)) await writeFile(join(dir, 'assets', name), contents); }
@@ -39,7 +43,7 @@ async function runCase(production, modelScene = scene, imageBytes = null, assetF
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const child = spawn(process.execPath, [script, '--input', input, '--output', output,
     '--endpoint', `http://127.0.0.1:${server.address().port}${options.endpointPath ?? '/v1/chat/completions'}`,
-    '--model', model], { env: { ...process.env, SCENE_API_KEY: 'test', VIDEO_SCENE_REUSE_DIR: reuse ? join(dir, 'reuse') : '' } });
+    '--model', model], { env: { ...process.env, SCENE_API_KEY: 'test', VIDEO_SCENE_REUSE_DIR: reuse ? join(dir, 'reuse') : '', VIDEO_RESUME: options.savedScenes ? '1' : '' } });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk; });
   const code = await new Promise(resolve => child.on('close', resolve));
@@ -59,6 +63,24 @@ test('reuses complete supplied sections and generates only the remaining section
     assert.equal(await readFile(join(result.output, 'S01.html'), 'utf8'), 'reused html');
     const prepared = JSON.parse(await readFile(join(result.output, 'production.json')));
     assert.deepEqual(prepared.sections.map(s => s.scene), ['S01.html','S02.html']);
+  } finally { await rm(result.dir, {recursive:true,force:true}); }
+});
+
+test('恢复时保留完整场景，只重建写入中断的场景', async () => {
+  const input = base();
+  input.sections.push({...input.sections[0], id:'S02', blueprintId:'B04'});
+  const saved = '<html><body>第一段已保存</body></html>';
+  const result = await runCase(input, scene, null, {}, 'test', false, { savedScenes:{
+    'S01.html':saved,
+    'S01.scene.json':JSON.stringify(scene),
+    'S02.html':'<html><body>写入中断',
+    'S02.scene.json':JSON.stringify(scene),
+  } });
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.requests.length, 1);
+    assert.equal(await readFile(join(result.output,'S01.html'), 'utf8'), saved);
+    assert.match(await readFile(join(result.output,'S02.html'), 'utf8'), /<\/html>$/);
   } finally { await rm(result.dir, {recursive:true,force:true}); }
 });
 

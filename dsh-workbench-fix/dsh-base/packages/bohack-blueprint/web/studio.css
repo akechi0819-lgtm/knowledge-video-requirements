@@ -541,3 +541,5 @@ a.reel-source:hover { color: var(--accent); text-decoration: underline }
   .entry-tile:hover .entry-media, .entry-tile:focus-visible .entry-media { transform: none }
   .reel-open:hover img, .reel-open:focus-visible img { transform: none }
 }
+
+.account-button[hidden], .account-logout[hidden], .account-form[hidden] { display: none }

@@ -1,0 +1,23 @@
+[Unit]
+Description=Jiangjie desktop beta membership
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=jiangjie-membership-beta
+StateDirectoryMode=0700
+WorkingDirectory=/opt/jiangjie-membership-beta
+Environment=NODE_ENV=production
+Environment=PORT=18787
+Environment=MEMBER_HOST=127.0.0.1
+Environment=MEMBER_PATH_PREFIX=/desktop-membership
+Environment=BETTER_AUTH_URL=https://jiangjie.gingers.cloud
+Environment=MEMBER_DATABASE=/var/lib/jiangjie-membership-beta/membership.sqlite
+EnvironmentFile=/etc/jiangjie-membership-beta/service.env
+ExecStart=/opt/jiangjie-preview/node /opt/jiangjie-membership-beta/server.mjs
+UMask=0077
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

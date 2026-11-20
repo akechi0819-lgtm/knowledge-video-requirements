@@ -198,9 +198,12 @@
   })
   window.BohackSettings = {
     async open(panel = 'model') {
-      showPanel(panel)
+      const member = document.getElementById('accountBtn').dataset.mode === 'member'
+      tabs.querySelector('[data-panel="model"]').hidden = member
+      showPanel(member ? 'styles' : panel)
       status.textContent = '正在读取设置…'; form.querySelectorAll('input,button[type=submit]').forEach(el => el.disabled = true)
       dialog.showModal()
+      if (member) { status.textContent = ''; return }
       try { await load(); form.querySelectorAll('input,button[type=submit]').forEach(el => el.disabled = false); drawForm(); status.textContent = '' }
       catch (error) { status.textContent = `读取设置失败：${error.message}` }
     },
@@ -280,3 +283,73 @@ document.querySelector('#styleImport').addEventListener('click',async()=>{
     document.querySelector('#styleMessage').textContent='已存入个人风格库，可在成片页选择。'; await loadStyles()
   }catch(e){if(thread===state.threadId) document.querySelector('#styleMessage').textContent=e.message}
 })
+
+
+// 会员账号与模式由服务端保存，刷新后以服务端状态为准。
+;(() => {
+  const button = document.getElementById('accountBtn')
+  const dialog = document.createElement('dialog')
+  dialog.className = 'ws-dialog'
+  dialog.setAttribute('aria-labelledby', 'account-title')
+  dialog.innerHTML = `<div class="ws-inner"><div class="ws-head"><h2 id="account-title">账号与使用模式</h2><button class="ws-close" type="button" aria-label="关闭账号"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></div><section class="ws-section"><p class="account-info"></p><form class="account-form"><label class="ws-field">邮箱<input name="email" type="email" autocomplete="email" required></label><label class="ws-field">密码<input name="password" type="password" autocomplete="current-password" required></label><label class="ws-field">邀请码（注册时填写）<input name="inviteCode" autocomplete="off"></label><div class="ws-actions"><button type="submit" name="action" value="register" class="ghost">注册</button><button type="submit" name="action" value="login" class="primary">登录</button></div></form><button class="account-logout ghost" type="button">退出登录</button></section><section class="ws-section"><h3>使用模式</h3><label class="ws-field">当前模式<select class="account-mode"><option value="member">会员模式（无需配置模型密钥）</option><option value="byok">高级模式（使用自己的密钥）</option></select></label><p class="ws-help">高级模式的密钥在工作台设置中配置。</p></section><p class="ws-status" role="status" aria-live="polite"></p></div>`
+  const card = document.createElement('section')
+  card.className = 'ws-section'
+  card.innerHTML = '<h3>月卡</h3><p class="ws-help">单月购买，手动购买，不自动续费。</p><button class="ghost account-purchase" type="button" disabled>购买月卡（暂无购买渠道）</button><p class="ws-help">目前暂无购买渠道，暂不能购买。</p>'
+  dialog.querySelector('.account-mode').closest('section').before(card)
+  const form = dialog.querySelector('.account-form')
+  const info = dialog.querySelector('.account-info')
+  const mode = dialog.querySelector('.account-mode')
+  const logout = dialog.querySelector('.account-logout')
+  const status = dialog.querySelector('.ws-status')
+  let state = null
+  async function request(body) {
+    const response = await fetch('/bohack/api/membership', body ? {method:'POST', headers:{'content-type':'application/json','x-bohack-client':'1'}, body:JSON.stringify(body)} : {headers:{'x-bohack-client':'1'}})
+    const result = await response.json()
+    if (!response.ok || result.ok === false) throw new Error(result.error || `请求失败（${response.status}）`)
+    return result
+  }
+  function render(result) {
+    state = result
+    button.hidden = !result.enabled
+    if (!result.enabled) return
+    button.dataset.mode = result.mode
+    button.title = ''
+    button.textContent = result.mode === 'member' ? '账号 · 会员模式' : '账号 · 自有密钥'
+    form.hidden = !!result.account
+    logout.hidden = !result.account
+    mode.value = result.mode
+    if (!result.account) info.textContent = '尚未登录。注册或登录后可使用会员额度。'
+    else {
+      const monthly = result.account.monthly
+      const monthlyStatus = {active:'有效', expired:'已过期', stopped:'已停用', none:'未开通'}[result.account.monthlyStatus] || '状态未知'
+      const balance = ['expired', 'stopped'].includes(result.account.monthlyStatus) ? 0 : result.account.monthlyBalance
+      info.textContent = `${result.account.email} · 赠送剩余 ${result.account.gifts} 次 · 月卡${monthlyStatus}` + (balance == null ? '' : ` · 有效余额 ${balance} tokens`) + (monthly ? ` · 到期时间 ${new Date(monthly.expiresAt).toLocaleString('zh-CN', {year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}` : '')
+    }
+  }
+  async function update(body) {
+    status.textContent = '正在处理…'
+    dialog.querySelectorAll('button, input, select').forEach(el => el.disabled = true)
+    try {
+      render(await request(body))
+      status.textContent = ''
+      if (body) await refresh()
+    }
+    catch (error) { status.textContent = `操作失败：${error.message}`; if (state) mode.value = state.mode }
+    finally { dialog.querySelectorAll('button, input, select').forEach(el => el.disabled = el.classList.contains('account-purchase')) }
+  }
+  button.onclick = () => {
+    if (!dialog.isConnected) document.body.append(dialog)
+    dialog.showModal()
+    update()
+  }
+  dialog.querySelector('.ws-close').onclick = () => dialog.close()
+  form.onsubmit = async event => {
+    event.preventDefault()
+    await update({action:event.submitter.value, email:form.elements.email.value.trim(), password:form.elements.password.value, inviteCode:form.elements.inviteCode.value.trim()})
+    form.elements.password.value = ''
+    form.elements.inviteCode.value = ''
+  }
+  logout.onclick = () => update({action:'logout'})
+  mode.onchange = () => update({action:'mode', mode:mode.value})
+  request().then(render).catch(error => { button.textContent = '账号'; button.title = `账号状态读取失败：${error.message}` })
+})()

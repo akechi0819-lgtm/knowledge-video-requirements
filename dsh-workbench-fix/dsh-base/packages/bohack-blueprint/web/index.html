@@ -66,6 +66,7 @@
       <summary><svg class="icon history-icon" aria-hidden="true"><use href="#icon-clock"/></svg><span class="utility-label">最近创作</span><svg class="icon disclosure-icon" aria-hidden="true"><use href="#icon-chevron"/></svg></summary>
       <div id="recentList"><p>正在读取创作记录…</p></div>
     </details>
+    <button type="button" class="ghost account-button" id="accountBtn">账号</button>
     <button type="button" class="gear" id="settingsBtn" aria-label="设置" title="设置"><svg class="icon" aria-hidden="true"><use href="#icon-settings"/></svg></button>
   </div>
 </header>
@@ -360,6 +361,7 @@
               <label>制作模式 <select id="productionMode"><option value="agent">视频 Agent</option><option value="structured">原结构化模式</option></select></label>
               <label>返工意见（可填写段落编号）<textarea id="productionFeedback" placeholder="例如 B02：调整人物位置"></textarea></label>
               <button class="primary" id="btnProduction">开始制作</button>
+              <button class="sm ghost" id="btnAbandonProduction" hidden>放弃本片授权</button>
               <p id="productionStatus" class="film-action-status" role="status" aria-live="polite"></p>
             </div>
             <div id="filmStyles"></div>
@@ -1134,7 +1136,16 @@ function setProductionStatus(message, kind){
   el.classList.toggle('is-error', kind==='error')
   el.classList.toggle('is-warn', kind==='warn')
 }
+function pendingReceipt(s){
+  return s.production?.status==='completed' && Boolean(s.production.membershipPending || s.production.membershipError)
+}
+function resumableProduction(s){
+  return Boolean(s.production?.membershipAuthorizationId) && ['failed','interrupted'].includes(s.production.status)
+}
 function productionLabel(s){
+  if(pendingReceipt(s)) return '补交完成回执'
+  if(resumableProduction(s)) return '继续制作'
+
   const p=s.production, name=s.visualStyle?.style?.name || ''
   const done=p && ['completed','failed','interrupted'].includes(p.status)
   if(!done) return '开始制作'
@@ -1147,6 +1158,8 @@ function productionReason(s){
   if(productionRequest===state.threadId) return '正在启动制作…'
   if(assetRequests.has(JSON.stringify([state.threadId,s.currentVersion]))) return '正在处理动画素材，请稍候。'
   if(state.busy) return '正在处理其他操作，请稍候。'
+  if(s.memberProduction?.closing==='abandon') return '请先重试放弃本片授权。'
+  if(pendingReceipt(s) || resumableProduction(s)) return ''
   if(!s.currentVersion) return '请先生成蓝图。'
   if(s.finalized?.version!==s.currentVersion || s.stage!=='finalized') return '请先在分段蓝图中确认定稿。'
   return ''
@@ -1155,18 +1168,25 @@ function productionNote(s){
   const p=s.production
   if(!p) return '将使用「'+(s.visualStyle?.style?.name || '简洁知识图解')+'」制作已定稿的段落。'
   if(p.status==='running') return ''
-  if(p.status==='completed') return ''
+  if(pendingReceipt(s)) return '成片已保存在本机，可以直接播放和下载。'
+  if(p.status==='completed' || p.status==='abandoned') return ''
   return '可在左侧问「制作停在哪一步了？」或说「继续制作」。'
 }
 $('#productionMode').onchange=()=>{ if(state.status) updateProductionAction(state.status) }
 function updateProductionAction(s){
   const feedback=$('#productionFeedback')
-  feedback.disabled=$('#productionMode').value!=='agent' || !(s.production?.status==='completed' || s.production?.previousJobId)
+  const resuming=pendingReceipt(s) || resumableProduction(s)
+  $('#productionMode').closest('label').hidden=resuming
+  feedback.disabled=resuming || $('#productionMode').value!=='agent' || !(s.production?.status==='completed' || s.production?.previousJobId)
   feedback.parentElement.hidden=feedback.disabled
   const btn=$('#btnProduction')
   const reason=productionReason(s)
   btn.textContent=productionLabel(s)
   btn.disabled=Boolean(reason)
+  const abandon=$('#btnAbandonProduction')
+  abandon.hidden=!s.memberProduction || pendingReceipt(s) || s.production?.status==='running'
+  abandon.disabled=state.busy || productionRequest===state.threadId || assetRequests.has(JSON.stringify([state.threadId,s.currentVersion]))
+  abandon.textContent=s.memberProduction?.closing==='abandon' ? '重试放弃本片授权' : '放弃本片授权'
   const failed=s.production && (s.production.status==='failed' || s.production.status==='interrupted')
   const error=productionFailure?.thread===state.threadId && productionFailure.version===s.currentVersion && !reason ? productionFailure.message : ''
   setProductionStatus(error || reason || productionNote(s), error || failed ? 'error' : '')
@@ -1347,8 +1367,27 @@ $('#btnProduction').addEventListener('click',async()=>{
   productionRequest=thread
   productionFailure=null
   updateProductionAction(s)
-  try { await api('/bohack/api/production',{mode:$('#productionMode').value,feedback:$('#productionFeedback').disabled ? '' : $('#productionFeedback').value.trim()},thread); if(state.threadId===thread) $('#productionFeedback').value='' }
-  catch(e) { productionFailure={thread,version:s.currentVersion,message:'无法开始制作：'+e.message} }
+  const resume=pendingReceipt(s) || resumableProduction(s)
+  const body=resume ? {jobId:s.production.id} : {mode:$('#productionMode').value,feedback:$('#productionFeedback').disabled ? '' : $('#productionFeedback').value.trim()}
+  try {
+    const result=await api('/bohack/api/production',body,thread)
+    if(result.membershipError) throw new Error(result.membershipError)
+    if(state.threadId===thread) $('#productionFeedback').value=''
+  } catch(e) { productionFailure={thread,version:s.currentVersion,message:e.message} }
+  finally {
+    if(productionRequest===thread) productionRequest=null
+    if(state.threadId===thread){ await refresh(); updateProductionAction(state.status) }
+  }
+})
+$('#btnAbandonProduction').addEventListener('click',async()=>{
+  const s=state.status, thread=state.threadId, authorizationId=s?.memberProduction?.id
+  if(!authorizationId || $('#btnAbandonProduction').disabled) return
+  if(s.memberProduction.closing!=='abandon' && !confirm('放弃后会释放制作名额，已使用的赠片或额度不退回。确定放弃这条片？')) return
+  productionRequest=thread
+  productionFailure=null
+  updateProductionAction(s)
+  try { await api('/bohack/api/production',{action:'abandon',authorizationId},thread) }
+  catch(e) { productionFailure={thread,version:s.currentVersion,message:e.message} }
   finally {
     if(productionRequest===thread) productionRequest=null
     if(state.threadId===thread){ await refresh(); updateProductionAction(state.status) }

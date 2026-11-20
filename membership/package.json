@@ -1,0 +1,21 @@
+{
+  "name": "membership",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-auth": "^1.7.26",
+    "better-call": "1.4.6"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}

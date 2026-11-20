@@ -1,5 +1,6 @@
-import { mkdir, writeFile, readFile, readdir, realpath, stat, rm, copyFile } from 'node:fs/promises'
+import { mkdir, writeFile, readFile, readdir, realpath, stat, rm, copyFile, rename } from 'node:fs/promises'
 import { appendFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
@@ -20,7 +21,7 @@ function normalizeEndpoint(baseUrl, suffix) {
   return trimmed.endsWith(suffix) ? trimmed : trimmed + suffix
 }
 
-export async function runVideoJob({ ctx, sessionId, dir, production, kit, settings = {}, model, provider, reasoningEffort, feedback, previousDir, onProgress, generateAsset }) {
+export async function runVideoJob({ ctx, sessionId, dir, production, kit, settings = {}, model, provider, reasoningEffort, feedback, previousDir, resume = false, onProgress, generateAsset }) {
   const jobStart = Date.now()
   const timingFile = path.join(dir, 'timings.jsonl')
   // Timing records contain names, timestamps and counts, never model text or keys.
@@ -37,7 +38,7 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   for (const section of production.sections) {
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(section.id) || ids.has(section.id)) throw new Error('段号无效或重复')
     ids.add(section.id)
-    if (previousDir) {
+    if (previousDir && !resume) {
       try { await copyFile(path.join(previousDir, 'scenes', `${section.id}.html`), path.join(scenes, `${section.id}.html`)) }
       catch (e) { if (e.code !== 'ENOENT') throw e }
     }
@@ -87,7 +88,7 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   const input = path.join(dir, 'tts-input.json'), result = path.join(audio, 'tts-result.json')
   await writeFile(input, JSON.stringify({ blueprint_id: production.version, segments: production.sections }))
   const { preparedFrames, seedTtsCache } = await import(pathToFileURL(path.join(kit, 'WORK/modules/video/pipeline.mjs')).href)
-  if (previousDir) seedTtsCache(production.sections, path.join(previousDir, 'film', 'audio'), audio, { skipMissing: true })
+  if (previousDir && !resume) seedTtsCache(production.sections, path.join(previousDir, 'film', 'audio'), audio, { skipMissing: true })
   timing({ type: 'phase', phase: 'prepare', start: jobStart, end: Date.now(), elapsed: Date.now() - jobStart })
   await onProgress?.('生成配音')
   await measure('tts', () => exec(style.paths.python, [path.join(kit, 'WORK/modules/video/tts_driver.py'), input, audio, voice, style.tts.rate, style.paths.ffprobe, result], { env, maxBuffer: 32 * 1024 * 1024 }))
@@ -124,9 +125,25 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
       return { ok: true, image: { mimeType: 'image/png', data: image.toString('base64') }, imagePath, id, seconds }
     } finally { await browser.close() }
   }
+  let submission
   let composed = false
   const revised = new Set()
+  const savedScenes = []
+  if (resume) for (const id of ids) {
+    let html
+    try { html = await readFile(path.join(scenes, `${id}.html`), 'utf8') }
+    catch (e) { if (e.code === 'ENOENT') continue; throw e }
+    if (!html.trim()) continue
+    savedScenes.push(id)
+    if (previousDir && feedback) {
+      let baseline
+      try { baseline = await readFile(path.join(previousDir, 'scenes', `${id}.html`), 'utf8') }
+      catch (e) { if (e.code !== 'ENOENT') throw e }
+      if (html !== baseline) revised.add(id)
+    }
+  }
   async function writeScene({ id, html }) {
+    if (submission || composed) throw new Error('正在合成或已完成成片，不能继续修改画面')
     if (!ids.has(id)) throw new Error('段号不存在')
     if (typeof html !== 'string' || !html.trim()) throw new Error('HTML 为空')
     if (previousDir && feedback) {
@@ -137,32 +154,43 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
       else revised.add(id)
     }
     await onProgress?.('编写画面')
-    await writeFile(path.join(scenes, id + '.html'), html)
-    composed = false
+    const target = path.join(scenes, id + '.html')
+    const pending = path.join(dir, '.scene-' + randomUUID() + '.tmp')
+    await writeFile(pending, html)
+    await rename(pending, target)
     return { ok: true }
+  }
+  async function submitFilm() {
+    if (previousDir && feedback && revised.size === 0) throw new Error('本次要求返工。请先按意见修改对应段落，再合成。')
+    for (const id of ids) await stat(path.join(scenes, `${id}.html`))
+    await onProgress?.('配音与渲染')
+    await rm(film, { recursive: true, force: true })
+    await measure('render-compose', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/pipeline.mjs'), '--prepared', path.join(scenes, 'production.json'), '--out', film, '--voice', voice], { env: { ...env, VIDEO_TTS_CACHE_DIR: audio }, maxBuffer: 32 * 1024 * 1024 }))
+    await onProgress?.('自动质检')
+    await measure('verify', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/verify.mjs'), path.join(film, 'mapping.json')], { env, maxBuffer: 32 * 1024 * 1024 }))
+    const report = JSON.parse(await readFile(path.join(film, 'verify-report.json'), 'utf8'))
+    composed = true
+    return { ok: true, report }
+  }
+  function submit() {
+    if (submission) return submission
+    submission = submitFilm().catch(error => { submission = undefined; throw error })
+    return submission
   }
   const tools = [
     { name: 'tts_durations', description: '读取各段真实配音时长（秒）', parameters: schema({}), execute: async () => ({ durations, plans }) },
     { name: 'write_scene', description: '写入一个段落的完整 HTML，包含 #stage 和 window.seek(t)', parameters: schema({ id: str, html: str }), execute: writeScene },
     { name: 'preview', description: '先用 write_scene 写入该段完整 HTML，再调用本工具渲染并查看该段某秒截图', parameters: schema({ id: str, seconds: { type: 'number' } }), execute: ({ id, seconds }) => preview(id, seconds) },
-    { name: 'submit', description: '完成预览检查后调用：按真实配音渲染、合成并质检，通过后提交成片。失败会报错，不会提交。', parameters: schema({}), execute: async () => {
-      if (previousDir && feedback && revised.size === 0) throw new Error('本次要求返工。请先按意见修改对应段落，再合成。')
-      for (const id of ids) await stat(path.join(scenes, `${id}.html`))
-      await onProgress?.('配音与渲染')
-      await rm(film, { recursive: true, force: true })
-      await measure('render-compose', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/pipeline.mjs'), '--prepared', path.join(scenes, 'production.json'), '--out', film, '--voice', voice], { env: { ...env, VIDEO_TTS_CACHE_DIR: audio }, maxBuffer: 32 * 1024 * 1024 }))
-      await onProgress?.('自动质检')
-      await measure('verify', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/verify.mjs'), path.join(film, 'mapping.json')], { env, maxBuffer: 32 * 1024 * 1024 }))
-      composed = true
-      return { ok: true, report: JSON.parse(await readFile(path.join(film, 'verify-report.json'), 'utf8')) }
-    } },
+    { name: 'submit', description: '完成预览检查后调用：按真实配音渲染、合成并质检，通过后提交成片。失败会报错，不会提交。', parameters: schema({}), execute: submit },
   ]
   if (!customSkill) tools.unshift({ name: 'read_skill_file', description: '读取已选项目 Skill 明确引用的相对文本资料', parameters: schema({ file: str }), execute: async ({ file }) => { const target = await realpath(path.resolve(skillDir, file)); const root = await realpath(skillDir); if (!target.startsWith(root + path.sep)) throw new Error('只能读取当前 Skill 内资料'); return { file, text: await readFile(target, 'utf8') } } })
+  if (resume) tools.push({ name: 'read_saved_scene', description: '读取本次任务已经保存的段落 HTML，继续编辑或预览', parameters: schema({ id: str }), execute: async ({ id }) => { if (!ids.has(id)) throw new Error('段号不存在'); return { id, html: await readFile(path.join(scenes, `${id}.html`), 'utf8') } } })
   if (previousDir) tools.push({ name: 'read_previous_scene', description: '读取上一版对应段落的 HTML，供按意见修改', parameters: schema({ id: str }), execute: async ({ id }) => { if (!ids.has(id)) throw new Error('段号不存在'); return { id, html: await readFile(path.join(previousDir, 'scenes', `${id}.html`), 'utf8') } } })
   if (generateAsset) tools.push({ name: 'generate_asset', description: '为未实现的声明素材生成候选，候选需作者确认', parameters: schema({ id: str }), execute: async ({ id }) => generateAsset({ id }) })
   const { skill: _skill, style: _style, ...blueprint } = production
   const prompt = `你是视频制作 Agent。完整制作方法 ${skillName} 已载入下文，不必重复调用 skill。保留方法中的讲述、设计与旁白对位标准；执行流程以本次网页制作契约为准：需求、蓝图和风格已确认，配音已生成；不重新选题、改旁白、提问或请求逐项确认，不执行本机脚本、不使用其他引擎。Skill 的历史个人偏好不代表本次用户要求。只有需要明确引用的相对资料时才用 read_skill_file，不猜文件名。用工具为每段创作独立 HTML/CSS/JS，不得执行主机代码。画布 #stage 为 1280×720，window.seek(t) 必须按秒确定画面；参考 window.__PLAN__ 和 window.STYLE。用 tts_durations 取实际配音时间，先 preview 检查画面和中途状态，必要时修正，再调用 submit 完成渲染、质检和提交；技术质检不代表已经完成事实核验或 OCR。图片通过 ../assets/文件名 或 ../现成素材/文件名引用；按蓝图意图选用已确认图片。未实现的声明只是创作线索，不得阻塞制作。\n完整制作方法：\n${skillText}\n蓝图：${JSON.stringify(blueprint)}\n可用图片：${JSON.stringify(assets)}\n视觉风格：${JSON.stringify(production.style || null)}\n修改意见：${feedback || '无'}${previousDir ? '\n本次为根据意见重新制作，可用 read_previous_scene 查看上一版对应段落。' : ''}`
-  const taskPrompt = `${prompt}${customSkill ? '\n本次方法是完整的单篇正文，没有附带资料文件。不需要寻找 README、项目源码、模板或额外设计文档；按已给蓝图与视觉规则自由创作 HTML/CSS/JS。' : ''}\n本次执行顺序：tts_durations → write_scene 写完全部段落 → 每段只 preview 一张代表性画面 → submit 渲染、基础检查并提交。默认只审一轮；仅自动修复脚本或播放错误、主体缺失、严重遮挡，修复后只复查受影响段。实际脚本错误继续修到可运行，不因已经改过一轮就停止；静帧、装饰、排版偏好和审美建议只作提示，不拦交片、不自动返工。上述方法用于创作指导，不增加额外审稿轮次或用户确认。`
+  const resumeInstructions = resume ? `\n本次从中断处继续。已保存的段落：${JSON.stringify(savedScenes)}；尚未保存的段落：${JSON.stringify([...ids].filter(id => !savedScenes.includes(id)))}。用 read_saved_scene 检查已保存内容，保留符合要求的段落，只补写缺失段落或修改需要修正的段落。` : ''
+  const taskPrompt = `${prompt}${resumeInstructions}${customSkill ? '\n本次方法是完整的单篇正文，没有附带资料文件。不需要寻找 README、项目源码、模板或额外设计文档；按已给蓝图与视觉规则自由创作 HTML/CSS/JS。' : ''}\n本次执行顺序：tts_durations → ${resume ? '检查并补齐所有段落' : 'write_scene 写完全部段落'} → 每段只 preview 一张代表性画面 → submit 渲染、基础检查并提交。默认只审一轮；仅自动修复脚本或播放错误、主体缺失、严重遮挡，修复后只复查受影响段。实际脚本错误继续修到可运行，不因已经改过一轮就停止；静帧、装饰、排版偏好和审美建议只作提示，不拦交片、不自动返工。上述方法用于创作指导，不增加额外审稿轮次或用户确认。`
   await measure('agent', () => runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt: taskPrompt, tools, onProgress, onTiming: timing }))
   if (!composed) throw new Error('视频 Agent 未完成成片')
   return { scenes, film }

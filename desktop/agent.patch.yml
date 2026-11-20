@@ -1,0 +1,20 @@
+# The desktop plugin binds each SDK request to its local project.
+- id: llm-pi-ai
+  config:
+    providers:
+      jiangjie-desktop:
+        api: openai-completions
+        apiKeyEnv: JIANGJIE_DESKTOP_AGENT_MARKER
+        baseURL: https://jiangjie-agent.invalid
+        retryPolicy: { mode: normal, maxRetries: 0 }
+        models:
+          - id: jiangjie
+            input: [text, image]
+      jiangjie-desktop-responses:
+        api: openai-responses
+        apiKeyEnv: JIANGJIE_DESKTOP_AGENT_MARKER
+        baseURL: https://jiangjie-agent.invalid
+        retryPolicy: { mode: normal, maxRetries: 0 }
+        models:
+          - id: jiangjie
+            input: [text, image]

@@ -45,8 +45,11 @@ window.BohackFilm = (() => {
   function headline(p) {
     if (!p) return '按定稿蓝图制作画面、旁白和视频。'
     if (p.status === 'failed') return p.error ? `制作失败：${failureMessage(p.error)}` : '制作失败，请重新制作。'
-    if (p.status === 'interrupted') return '制作中断，已保留已完成的段落，可以重新开始。'
+    if (p.status === 'interrupted') return '制作中断。可以从已保存的产物继续。'
+    if (p.status === 'abandoned') return '已放弃本片制作，会员制作名额已释放。'
     if (p.status === 'completed') {
+      if (p.membershipError) return p.membershipError
+      if (p.membershipPending) return '成片已保存在本机，完成回执待确认。'
       if (p.source === 'external') return `蓝图 ${p.version} 的独立制作成片已归档，请按段观看并核对。`
       if (p.verify && p.verify.pass === false) return '成片已合成，质检发现需要核对的问题。'
       return '成片已做好，点击右侧段落可跳到对应时刻。'
@@ -273,12 +276,12 @@ window.BohackFilm = (() => {
     if (filmBp) filmBp.textContent = s.currentVersion ? `蓝图 v${s.currentVersion}（${(s.sections || []).length} 段）` : '—'
     if (filmState) {
       const done = s.finalized?.version === s.currentVersion && s.stage === 'finalized'
-      const labels = { completed:'成片已出', running:p?.phase || '制作中', failed:'制作失败', interrupted:'制作中断' }
+      const labels = { completed:'成片已出', running:p?.phase || '制作中', failed:'制作失败', interrupted:'制作中断', abandoned:'已放弃' }
       filmState.textContent = labels[p?.status] || (done ? '已定稿' : '未定稿')
     }
     renderPhases(rail, p)
     if (line) {
-      const show = Boolean(p) && (p.status !== 'completed' || p.verify?.pass === false)
+      const show = Boolean(p) && (p.status !== 'completed' || p.verify?.pass === false || p.membershipPending || p.membershipError)
       line.hidden = !show
       if (show) line.textContent = headline(p)
     }

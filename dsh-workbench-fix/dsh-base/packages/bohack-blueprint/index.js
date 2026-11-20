@@ -11,6 +11,7 @@ import { createService } from './lib/service.js'
 import { createEngine } from './lib/engine.js'
 import { createWebHandler } from './lib/web.js'
 import { createThreads } from './lib/threads.js'
+import { createMembership } from './lib/membership.js'
 import { createMultiuserHandler } from './lib/multiuser.js'
 
 export const name = '@bohack/blueprint'
@@ -52,13 +53,21 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/bohack', handler }), 'bohack: multiuser route')
     return
   }
+  if (process.env.JIANGJIE_DESKTOP_WORKSPACE) {
+    config = { ...config, workspace: process.env.JIANGJIE_DESKTOP_WORKSPACE, desktop: true }
+  }
   if (config.debugNetwork) {
     ctx.effect(() => installNetworkDiagnostics(ctx), 'bohack: network diagnostics')
+  }
+  if (config.desktop) {
+    const membership = createMembership(ctx, config.workspace)
+    config = { ...config, membership, memberProject: membership.project(config.workspace) }
+    ctx.effect(() => membership.install(), 'bohack: desktop model routing')
   }
   const service = createService(ctx, config)
   const engine = createEngine(ctx, config)
   const threads = createThreads(ctx, config, service, engine)
-  const handler = createWebHandler(service, engine, ctx, threads)
+  const handler = createWebHandler(service, engine, ctx, threads, undefined, undefined, config.membership)
 
   ctx.effect(() => ctx.provide('bohack', service), 'bohack: ctx.bohack service')
   ctx.effect(() => ctx.webServer.register({

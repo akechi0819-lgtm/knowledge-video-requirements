@@ -8,7 +8,7 @@ const input = resolve(args[1]), out = resolve(args[3]);
 const p = JSON.parse(await readFile(input, 'utf8'));
 if (p.status !== '准备制作' || p.sections?.map(s => s.blueprintId).join(',') !== 'B01,B02,B03,B04,B05') throw Error('火锅演示需要已定稿的 B01–B05 五段蓝图');
 if (!p.sections[0].image || !p.sections[4].image) throw Error('B01 和 B05 必须绑定上传的火锅餐桌原图');
-await mkdir(out);
+await mkdir(out, { recursive: process.env.VIDEO_RESUME === '1' });
 for (const s of [p.sections[0], p.sections[4]]) {
   const name = `${s.id}-table${extname(s.image)}`;
   await copyFile(resolve(dirname(input), s.image), join(out, name));

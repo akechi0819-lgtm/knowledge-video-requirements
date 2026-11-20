@@ -105,7 +105,7 @@ test('video tools create and verify a film with real speech and task images', { 
   const ctx = { attachments: { saveImages: async images => { assert.equal(images[0].mediaType, 'image/png'); return [{ id: 'preview-image' }] } }, agentPresets: { mount: async () => {} }, agents: { create: async ({ setup }) => {
     await setup(toolCtx)
     return { agent: { followup: async () => {
-      const call = (name, args = {}) => registry.get(name).execute(args)
+      const call = (name, args = {}) => registry.get(name).execute(args, {})
       assert.match((await call('read_previous_scene', { id: 's1' })).html, /old/)
       assert.equal(registry.has('read_skill_file'), false)
       assert.equal(registry.has('compose'), false)
@@ -144,4 +144,44 @@ test('video tools create and verify a film with real speech and task images', { 
     assert.ok((await readFile(path.join(job, 'film/final.mp4'))).length > 0)
     assert.ok(JSON.parse(await readFile(path.join(job, 'film/verify-report.json'))).segments.length)
   } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('resume 保留已保存画面和配音缓存，并恢复返工校验', async () => {
+  for (const changed of [false, true]) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'video-resume-'))
+    const fakeKit = path.join(dir, 'fakekit'), modules = path.join(fakeKit, 'WORK/modules/video')
+    const job = path.join(dir, 'job'), previous = path.join(dir, 'previous')
+    const sentinel = new Error('agent stopped')
+    try {
+      await mkdir(modules, { recursive: true })
+      await mkdir(path.join(job, 'scenes'), { recursive: true })
+      await mkdir(path.join(job, 'audio-cache'), { recursive: true })
+      await mkdir(path.join(previous, 'scenes'), { recursive: true })
+      await writeFile(path.join(previous, 'scenes/s1.html'), 'original')
+      await writeFile(path.join(job, 'scenes/s1.html'), changed ? 'revised' : 'original')
+      await writeFile(path.join(job, 'audio-cache/s1.mp3'), 'cached audio')
+      await writeFile(path.join(modules, 'playwright.cjs'), 'module.exports = { chromium: {} }')
+      await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({ paths: { python: process.execPath, ffprobe: 'fake', playwright: path.join(modules, 'playwright.cjs') }, tts: { voice: 'fake', rate: '1' }, video: { fps: 30 }, timing: { leadIn: 0, tailPad: 0 } })}`)
+      await writeFile(path.join(modules, 'pipeline.mjs'), `export const preparedFrames = d => d.map(() => 30); export function seedTtsCache() { throw new Error('must preserve cache') }; if (process.argv.includes('--prepared')) throw new Error('render reached')`)
+      await writeFile(path.join(modules, 'isolated-page.mjs'), 'export function installSceneRoutes() {}')
+      await writeFile(path.join(modules, 'tts_driver.py'), `const fs = require('node:fs'); const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')); if (fs.readFileSync(process.argv[3] + '/s1.mp3', 'utf8') !== 'cached audio') throw Error('cache lost'); fs.writeFileSync(process.argv[7], JSON.stringify({ segments: input.segments.map(s => ({ id: s.id, duration: 1 })) }));`)
+      const registry = new Map()
+      const toolCtx = { tools: { register: tool => registry.set(tool.name, tool), guard() {}, view: () => ({ restrictableNames: [] }), restrict() {} }, on() {} }
+      const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async ({ setup }) => {
+        await setup(toolCtx)
+        return { agent: { followup: async message => {
+          assert.match(message.content[0].text, /已保存的段落：\["s1"\]/)
+          assert.match(message.content[0].text, /尚未保存的段落：\["s2"\]/)
+          assert.equal((await registry.get('read_saved_scene').execute({ id: 's1' })).html, changed ? 'revised' : 'original')
+          await writeFile(path.join(job, 'scenes/s2.html'), 'second')
+          await assert.rejects(registry.get('submit').execute({}), changed ? /render reached/ : /先按意见修改/)
+          throw sentinel
+        }, cancel() {} } }
+      } } }
+      const production = { version: 'v1', sections: [{ id: 's1', narration: 'one' }, { id: 's2', narration: 'two' }] }
+      await assert.rejects(runVideoJob({ ctx, dir: job, kit: fakeKit, production, previousDir: previous, feedback: '调整', resume: true }), error => error === sentinel)
+      assert.equal(await readFile(path.join(job, 'scenes/s1.html'), 'utf8'), changed ? 'revised' : 'original')
+      assert.equal(await readFile(path.join(job, 'audio-cache/s1.mp3'), 'utf8'), 'cached audio')
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  }
 })

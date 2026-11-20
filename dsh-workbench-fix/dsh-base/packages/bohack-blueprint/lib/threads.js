@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { createService } from './service.js'
 import { createEngine } from './engine.js'
 import { parseRequirement } from './blueprint.js'
+import { unpackProject } from './project-exchange.js'
 
 const INSTANCE_LIMIT = 32
 
@@ -39,16 +40,21 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
       cp(path.join(root, name), path.join(dir, name), { recursive: true })
     ))
   }
-  async function create({ title } = {}) {
+  async function create({ title } = {}, snapshot = undefined) {
     const id = randomUUID()
     const dir = path.join(threadsDir, id + ".creating")
     try {
       await mkdir(dir, { recursive: true })
-      // Only shared instructions are seeded; project data always starts empty.
+      let previous = {}
+      if (snapshot !== undefined) {
+        await unpackProject(snapshot, dir)
+        try { previous = JSON.parse(await readFile(path.join(dir, 'thread.json'), 'utf8')) }
+        catch (e) { if (e.code !== 'ENOENT') throw e }
+      }
       await syncInstructions(dir)
       await cp(fileURLToPath(new URL('../vendor/scene_retrieval.py', import.meta.url)), path.join(dir, 'scene_retrieval.py'))
       const at = new Date().toISOString()
-      const thread = { id, title: String(title || '新会话').trim() || '新会话', createdAt: at, updatedAt: at }
+      const thread = { id, title: String(previous?.title || title || '新会话').trim() || '新会话', createdAt: previous?.createdAt || at, updatedAt: at }
       await writeFile(path.join(dir, 'thread.json'), JSON.stringify(thread, null, 2) + '\n')
       await rename(dir, threadDir(id))
       return thread
@@ -94,6 +100,7 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
       return instance
     }
     const threadConfig = { ...config, workspace: threadDir(id), styleLibraryRoot: root, settingsRoot: root }
+    if (config.membership) threadConfig.memberProject = config.membership.project(threadConfig.workspace)
     const instance = syncInstructions(threadConfig.workspace).then(() => ({
       service: createService(ctx, threadConfig), engine: createEngine(ctx, threadConfig)
     })).catch(error => { if (instances.get(id) === instance) instances.delete(id); throw error })
@@ -109,5 +116,5 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
     await writeFile(path.join(threadDir(id), 'thread.json'), JSON.stringify(thread, null, 2) + '\n')
   }
   function reset() { for (const instance of instances.values()) instance.then(({ engine }) => engine.reset(), () => {}) }
-  return { create, list, get, metadata, touch, reset }
+  return { create, list, get, metadata, touch, reset, ...(config.desktop ? { importProject: snapshot => create({}, snapshot) } : {}) }
 }

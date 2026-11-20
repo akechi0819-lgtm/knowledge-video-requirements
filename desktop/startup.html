@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>讲界视频工坊</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; background: #000; color: #f5f5f5; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; -webkit-font-smoothing: antialiased; overflow: hidden; }
+  .slide { position: absolute; inset: 0; opacity: 0; transition: opacity 800ms ease; }
+  .slide.active { opacity: 1; }
+  .slide img { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+  .slide::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0,0,0,.78), rgba(0,0,0,.24) 70%), linear-gradient(0deg, rgba(0,0,0,.7), transparent 75%); }
+  .slide:first-child::after { background: linear-gradient(90deg, rgba(0,0,0,.38), transparent 65%), linear-gradient(0deg, rgba(0,0,0,.7), rgba(0,0,0,.1) 70%); }
+  .brand, .status, .content { position: absolute; z-index: 1; }
+  .brand { top: 28px; left: 4%; font-size: 21px; font-weight: 800; letter-spacing: .2em; }
+  .brand span { margin-left: 12px; color: #b7b7b7; font-size: 10px; font-weight: 600; letter-spacing: .3em; }
+  .content { left: 4%; right: 8%; bottom: 13%; }
+  .eyebrow { color: #f6ae62; font-size: 11px; font-weight: 700; letter-spacing: .3em; text-transform: uppercase; }
+  h1, h2 { margin: 22px 0; font-size: clamp(38px, 5.7vw, 70px); line-height: 1.1; font-weight: 800; letter-spacing: .005em; }
+  p { max-width: 580px; margin: 0; color: #d1d1d1; font-size: clamp(14px, 1.25vw, 16px); line-height: 1.7; }
+  .status { left: 4%; right: 4%; bottom: 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px; color: #d4d4d4; font-size: 12px; letter-spacing: .08em; }
+  .indicator { display: flex; gap: 7px; }
+  .indicator i { width: 26px; height: 2px; background: rgba(255,255,255,.35); transition: background 800ms ease; }
+  .indicator i.active { background: #f5f5f5; }
+  @media (max-height: 540px) { .brand { top: 20px; } .content { bottom: 14%; } h1, h2 { margin: 12px 0; } .status { bottom: 16px; } }
+  @media (prefers-reduced-motion: reduce) { .slide, .indicator i { transition: none; } }
+</style>
+</head>
+<body>
+<div class="brand">讲界<span>KNOWLEDGE FILM STUDIO</span></div>
+<main>
+  <section class="slide active" aria-label="讲界视频工坊">
+    <img src="media/projection-hall.webp" alt="">
+    <div class="content">
+      <div class="eyebrow">讲界视频工坊 · Knowledge Film Studio</div>
+      <h1>从一段对话<br>到一部知识影片</h1>
+      <p>需求整理 · 分段蓝图 · 视频 Agent。三个模块接力，把创作者的意图与资料，编排、配音、渲染、质检，交付为成片。</p>
+    </div>
+  </section>
+  <section class="slide" aria-label="需求对话">
+    <img src="media/m1.jpg" alt="">
+    <div class="content">
+      <div class="eyebrow">01 &nbsp;—&nbsp; Requirement</div>
+      <h2>需求对话</h2>
+      <p>像创作搭档一样用中文自然对话，弄清你想让观众看懂什么。信息足够就不追问；只有缺口会让蓝图讲偏时，才问一个最关键的问题。</p>
+    </div>
+  </section>
+  <section class="slide" aria-label="分段蓝图">
+    <img src="media/m2.jpg" alt="">
+    <div class="content">
+      <div class="eyebrow">02 &nbsp;—&nbsp; Blueprint</div>
+      <h2>分段蓝图</h2>
+      <p>按顺序排列的视频大纲，每段都写清讲什么、依据哪些事实、画面意图是什么。你在制作前确认，也可以随时提出修改。</p>
+    </div>
+  </section>
+  <section class="slide" aria-label="视频 Agent">
+    <img src="media/m3.jpg" alt="">
+    <div class="content">
+      <div class="eyebrow">03 &nbsp;—&nbsp; Video Agent</div>
+      <h2>视频 Agent</h2>
+      <p>独立视频 Agent 按蓝图和已确认素材编写每段 HTML / CSS / JavaScript，调用配音、预览、渲染、质检与提交工具完成成片；也可切换原结构化模式。</p>
+    </div>
+  </section>
+</main>
+<div class="status" role="status"><span>正在启动讲界工作台…</span><div class="indicator" aria-hidden="true"><i class="active"></i><i></i><i></i><i></i></div></div>
+<script>
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const slides = document.querySelectorAll('.slide');
+    const indicators = document.querySelectorAll('.indicator i');
+    let current = 0;
+    setInterval(() => {
+      slides[current].classList.remove('active');
+      indicators[current].classList.remove('active');
+      current = (current + 1) % slides.length;
+      slides[current].classList.add('active');
+      indicators[current].classList.add('active');
+    }, 3500);
+  }
+</script>
+</body>
+</html>

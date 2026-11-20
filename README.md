@@ -1,5 +1,30 @@
 # 讲界视频工坊
 
+## Mac 桌面工作台（邀请码内测）
+
+[下载 macOS 内测 DMG](https://github.com/akechi0819-lgtm/knowledge-video-requirements/releases/tag/v0.2.0-beta.1)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。真实支付尚未开放。
+
+在 macOS 14 或更高版本的 Apple Silicon Mac 上挂载 DMG，把「讲界」拖到「应用程序」后打开。App 内置 DSH、Node.js、Python、Chromium、FFmpeg 和 ffprobe，中文渲染沿用 macOS 自带字体。关闭窗口或退出时，本次启动的 DSH 会一并停止。本次内测包使用临时签名，正式分发需要 Developer ID 和 Apple 公证。
+
+数据默认保存在 `~/Library/Application Support/讲界/`。项目位于 `workspace/threads/`，个人 DSH 配置位于 `dsh/`。App 读取该目录下的 `dsh/workbench-model.env`。主页的「导入项目包」支持旧版原始 JSON 快照（`version: 1`，包含 `files`）。从「最近创作」可以重新打开已导入的项目。
+
+### 会员账号与自配 API
+
+桌面版默认使用会员模式。新账号使用一次性邀请码注册后获赠 3 条。创建或打开项目时不扣额度，第一次调用平台 AI 时开片。同一条片的后续对话、素材、配音和制作共用授权，成片成功后结算。月卡按文本供应商返回的 token 记账，配音单独记录。月卡额度用尽后，已开片可继续制作。普通用户无需供应商密钥。切到高级模式后，通用模型和配音请求直接发往自配地址，密钥保存在 macOS 钥匙串。
+
+公网内测的会员地址为 `https://jiangjie.gingers.cloud/desktop-membership`，邮箱用于登录，内测暂不发送验证邮件。部署、发码和测试月卡见[会员服务说明](membership/README.md)。联调时可用 `JIANGJIE_MEMBER_URL` 指定测试地址，分发包在构建时内置公网地址。桌面 Agent 默认使用 Chat Completions，也可通过 `JIANGJIE_MEMBER_AGENT_API=openai-responses` 走 Responses。素材、场景和视觉分析仍要求平台文本供应商支持 Chat Completions。
+
+### 构建和分发
+
+构建机需要 Apple Silicon、Xcode Command Line Tools、已检出的项目 Skill 子模块，以及下载依赖用的网络。依赖缓存写入 `.runtime/`。App 在系统临时目录组装和签名，避免桌面同步目录添加扩展属性。首次构建会编译 FFmpeg 和音视频编码依赖。DMG 内带对应源码、构建脚本和许可证。
+
+```sh
+app="$(./scripts/build-desktop.sh)"
+./scripts/package-desktop.sh "$app" "$PWD/.runtime/讲界-arm64-本地验收.dmg"
+```
+
+正式包构建和打包时使用同一个 `JIANGJIE_SIGN_IDENTITY`，值为钥匙串内有效的 Developer ID Application 签名身份。打包时同时设置 `JIANGJIE_NOTARY_PROFILE`，对应 `notarytool store-credentials` 已保存的钥匙串配置。脚本等待 Apple 接受后为 DMG 附票，并执行附票和 Gatekeeper 检查。正式验收还需要在一台干净的 Apple Silicon Mac 上从 DMG 安装并导出已有项目。
+
 ## 多人网页预览
 
 官网入口为 https://jiangjie.gingers.cloud/，点击“开始创作”进入 /bohack/ 在线工作台。官网使用 PR #9 的 `frontend/public/site/` 静态页面，由讲界专用 Nginx 配置提供首页、图片和演示视频，制作请求继续交给现有网关。
@@ -37,17 +62,11 @@ node video-kit/WORK/modules/video/verify.mjs "$out/film/mapping.json"
 如在工作台新创作中复演此片，先上传同目录的“火锅餐桌.png”，并把“hotpot-demo-scene.json”复制到该创作的 `workspace/threads/<会话 ID>/` 目录，以启用本题五段专用场景。启动工作台前设置 `VIDEO_VOICE=zh-CN-XiaoxiaoNeural`、`VIDEO_TTS_RATE=+7%`，并将 `VIDEO_PYTHON` 指向安装了 video-kit 依赖的 Python。
 
 
-本包交付需求整理与资料交接模块。它与创作者对话，生成 Markdown 视频需求；有用户提供的本地长文时，可筛选相关原文并生成可查询索引。作者要求开始整理后，由程序生成可移动的单次任务交接包。
+## 独立需求整理模块（源码运行）
 
-## 独立需求整理模块的分工边界与状态
+仅使用需求整理模块的开发者可以从下列命令启动。该入口生成 Markdown 需求和可移动的资料交接包。桌面版用户从上方 DMG 安装即可。
 
-- 需求负责人：使用本模块整理创作者意图、明确要求、待确认创意及资料线索，准备本地交接包。
-- 同学 A：接收需求、起草分段蓝图并请创作者确认；实际接收端和 DSH 跨模块调用尚未联调，本包不是已发送给 A 的证明。
-- 同学 B：根据已确认蓝图负责视频制作；本包不包含蓝图生成或视频制作功能。
-
-## 安装与启动
-
-本包包含源码、规则、配置和测试，不含 Node.js、DSH 安装包、任何模型凭据或用户资料。上游实测 DSH `0.2.2-rc.1`、Node.js `24.22.1` 和 Python 3；接收者需要自行准备 Node.js 24（DSH 要求至少 24.9.0）、Python 3，以及可用的 DeepSeek 模型凭据。按团队环境配置账号或凭据，不要把凭据写进本包或发给他人。需要新安装 DSH 时可在有网络的环境执行：
+独立入口使用 DSH `0.2.2-rc.1`、Node.js 24 和 Python 3。需要新安装 DSH 时可在有网络的环境执行：
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.2.2-rc.1
@@ -75,8 +94,6 @@ dsh --version
 
 本地长文默认以 GB18030 解码，其他编码使用 `--encoding` 指定。章内可以按自然段确定起止边界；跨多章选择时中间章节会整章收录，需先核对。查询的 `found` 是词面命中，`candidate` 是待核对候选，`not_found` 仅表示当前索引未找到依据。模型和检索结果均需人工审阅。
 
-本包未包含历史会话、作者原始资料、运行产物、账号配置或凭据。原环境中旧版 `@omdsh-dev/dsh-genui` 与本版本不兼容并被跳过；接收方若有此插件也应以自己的启动日志为准。
-
 ## 给蓝图模块的接入约定
 
 需求侧在本地准备好一次任务的交接目录后，将该目录交由蓝图模块读取。最小输入是包内 `视频需求.md`；有本地原文索引时，同目录还包含 `资料索引.json` 和 `scene_retrieval.py`。未带索引的包不具备本地引用查询能力。蓝图模块需要核实具体场面时，可在交接包目录中按问题调用：
@@ -85,4 +102,4 @@ dsh --version
 python3 ./scene_retrieval.py query --index ./资料索引.json --query '要核实的问题'
 ```
 
-命令以 JSON 返回引用、位置和状态。查询是词面检索，不自动判断答案是否成立；请读取具体引文及上下文。真实蓝图接收端与 DSH 的联调尚未完成，调用方式和错误反馈需由双方实际验证。
+命令以 JSON 返回引用、位置和状态。查询是词面检索，不自动判断答案是否成立；请读取具体引文及上下文。桌面工作台在需求确认后调用蓝图模块，创作者可查看生成的分段和示意图，再确认制作。

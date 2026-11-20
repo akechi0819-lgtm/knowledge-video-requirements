@@ -40,4 +40,7 @@ fi
 if [[ "$(uname)" == Darwin && -z "${SSL_CERT_FILE:-}" && -r /etc/ssl/cert.pem ]] && "${VIDEO_PYTHON:-python3}" -c 'import ssl, sys; p=ssl.get_default_verify_paths(); sys.exit(bool(p.cafile or p.capath))'; then
   export SSL_CERT_FILE=/etc/ssl/cert.pem
 fi
+if [[ -n "${JIANGJIE_DESKTOP_DSH_PATCH:-}" ]]; then
+  exec "$cli" --profile workbench --patch "$JIANGJIE_DESKTOP_DSH_PATCH" --port "${WORKBENCH_PORT:-3109}" --no-open "$@"
+fi
 exec "$cli" workbench --port "${WORKBENCH_PORT:-3109}" --no-open "$@"

@@ -112,7 +112,9 @@ def synth_all(segments, audio, voice, rate, ffprobe, force=False):
                           word_boundary_available=False)
             cache.unlink(missing_ok=True)
             sample.replace(mp3)
-            cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+            metadata = Path(temp) / "speech.json"
+            metadata.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+            metadata.replace(cache)
         results.append(result)
         fresh.append(sid)
     return results, fresh

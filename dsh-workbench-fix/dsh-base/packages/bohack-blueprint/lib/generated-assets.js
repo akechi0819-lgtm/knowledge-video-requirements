@@ -19,7 +19,7 @@ export function renderAsset(shapes) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">${paths.join('')}</svg>`
 }
 
-export function createGeneratedAssets(root, { settings, request = fetch, videoKitDir } = {}) {
+export function createGeneratedAssets(root, { settings, request = fetch, desktop, videoKitDir } = {}) {
   let mutating = false
   const directory = version => path.join(root, 'outbox', `素材_v${version}`)
   const stateFile = version => path.join(directory(version), '状态.json')
@@ -78,7 +78,7 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
       : doc.assets.filter(a => a.id === id)
     if (id !== undefined && !selected.length) throw new Error('素材不存在。')
     if (!selected.length) return status({ version, doc, style })
-    const dsh = process.env.SCENE_MODE === 'dsh' && !(await settings.load()).assetModel?.baseUrl
+    const dsh = !desktop && process.env.SCENE_MODE === 'dsh' && !(await settings.load()).assetModel?.baseUrl
     let url, endpoint, model, key, callDsh
     if (dsh) {
       const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
@@ -183,7 +183,7 @@ export function createGeneratedAssets(root, { settings, request = fetch, videoKi
   async function drawOne(prompt) {
     const messages = [{ role: 'user', content: prompt }]
     let content
-    if (process.env.SCENE_MODE === 'dsh' && !(await settings.load()).assetModel?.baseUrl) {
+    if (!desktop && process.env.SCENE_MODE === 'dsh' && !(await settings.load()).assetModel?.baseUrl) {
       const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
       const kit = path.resolve(videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
       const { callDsh } = await import(pathToFileURL(path.join(kit, 'scripts/dsh-model.mjs')).href)

@@ -502,7 +502,7 @@ function waitForResult(ctx, sessionId, capture, ms, handle) {
   return new Promise((resolve) => {
     const deadline = Date.now() + ms
     const tick = () => {
-      if (capture.submitted) return resolve(true)
+      if (capture.submitted || capture.failure) return resolve(true)
       const tail = extractMarkdown(lastAssistantText(ctx, sessionId, handle))
       if (tail && /^#\s+蓝图[：:]/m.test(tail)) return resolve(true)
       if (Date.now() >= deadline) return resolve(false)
@@ -695,9 +695,11 @@ export function createEngine(ctx, config = {}) {
   }
 
   async function doCreate() {
-    const routeKey = JSON.stringify((await modelSettings.load()).blueprintAgent || {})
+    const desktopRoute = await config.memberProject?.route()
+    const saved = !desktopRoute && await modelSettings.load()
+    const routeKey = JSON.stringify(desktopRoute || saved.blueprintAgent || {})
     if (handle && routeKey === blueprintRouteKey) return handle
-    if (handle) { handle.agent?.cancel?.('model changed'); handle = null; sessionId = null }
+    if (handle) { handle.agent?.cancel?.('model changed'); handle = null; config.memberProject?.unbind(sessionId); sessionId = null }
     blueprintRouteKey = routeKey
     const agents = ctx.get?.('agents') || ctx.agents
     if (!agents || typeof agents.create !== 'function') throw new Error('ctx.agents 不可用（缺 session-projection / agent-loop）')
@@ -738,6 +740,9 @@ export function createEngine(ctx, config = {}) {
       agentCtx.on?.('session/event', createActivityObserver(() => sessionId, capture))
       agentCtx.on?.('agent/assistant-stream', (payload) => {
         const chunk = payload?.frame?.type === 'chunk' ? payload.frame.chunk : null
+        if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
+          capture.failure = chunk.reason.failure?.code || 'MODEL_REQUEST_FAILED'
+        }
         if (!chunk || !capture.onProgress) return
         if (['reasoning-delta', 'reasoning', 'thinking'].includes(chunk.type)) {
           const now = Date.now()
@@ -799,7 +804,8 @@ export function createEngine(ctx, config = {}) {
     // deepseek-v4-pro is the official "stronger knowledge / difficult
     // reasoning / quality-critical" id returned by /models. Override with
     // config.model / config.provider if a teammate wants the cheap route.
-    options.agentOptions = resolveAgent(await modelSettings.load(), 'blueprintAgent', { provider: config.provider || sel?.provider || 'deepseek-official', model: config.model || 'deepseek-v4-pro' })
+    config.memberProject?.bind(sessionId, modelSettings.load)
+    options.agentOptions = desktopRoute || resolveAgent(saved, 'blueprintAgent', { provider: config.provider || sel?.provider || 'deepseek-official', model: config.model || 'deepseek-v4-pro' })
     if (sel?.reasoningEffort && !options.agentOptions.reasoningEffort) options.agentOptions.reasoningEffort = sel.reasoningEffort
 
     handle = await agents.create(options)
@@ -840,7 +846,7 @@ export function createEngine(ctx, config = {}) {
     setWebMode(web)
 
     const prompt = buildPrompt({ action, requirement, requirementText, rulesText, previousDoc, feedbackText, feedback, version, textAssets, assetDirectory, style, skill })
-    capture.markdown = null; capture.submitted = false; capture.sections = 0; capture.declaredAssets = []
+    capture.markdown = null; capture.submitted = false; capture.failure = null; capture.sections = 0; capture.declaredAssets = []
 
     const drive = async (text) => {
       // dsh 0.2.2-rc.1: followup() appends the input verbatim as a
@@ -880,6 +886,10 @@ export function createEngine(ctx, config = {}) {
     // admitted yet, give the loop a short window to land the tool call instead
     // of incorrectly declaring the real call a failure.
     await waitForResult(ctx, sessionId, capture, 12000, h)
+
+    const providerError = config.memberProject?.error(sessionId)
+    if (providerError) throw providerError
+    if (capture.failure) throw new Error(`蓝图模型请求失败（${capture.failure}）`)
 
     const assistantTail = lastAssistantText(ctx, sessionId, h)
     diag.lastAssistantChars = assistantTail.length
@@ -974,9 +984,11 @@ export function createEngine(ctx, config = {}) {
   }
 
   async function doCreateChat() {
-    const routeKey = JSON.stringify((await modelSettings.load()).requirementAgent || {})
+    const desktopRoute = await config.memberProject?.route()
+    const saved = !desktopRoute && await modelSettings.load()
+    const routeKey = JSON.stringify(desktopRoute || saved.requirementAgent || {})
     if (chatHandle && routeKey === requirementRouteKey) return chatHandle
-    if (chatHandle) { chatHandle.agent?.cancel?.('model changed'); chatHandle = null; chatStarted = false }
+    if (chatHandle) { chatHandle.agent?.cancel?.('model changed'); chatHandle = null; config.memberProject?.unbind(chatSessionId); chatStarted = false }
     requirementRouteKey = routeKey
     const agents = ctx.get?.('agents') || ctx.agents
     if (!agents || typeof agents.create !== 'function') throw new Error('ctx.agents 不可用')
@@ -1130,7 +1142,8 @@ export function createEngine(ctx, config = {}) {
     const options = { sessionId: chatSessionId, setup }
     const cwd = path.resolve(config.workspace || './workspace')
     options.meta = { cwd }
-    options.agentOptions = resolveAgent(await modelSettings.load(), 'requirementAgent', { provider: config.provider || 'deepseek-official', model: config.chatModel || config.model || 'deepseek-v4-pro' })
+    config.memberProject?.bind(chatSessionId, modelSettings.load)
+    options.agentOptions = desktopRoute || resolveAgent(saved, 'requirementAgent', { provider: config.provider || 'deepseek-official', model: config.chatModel || config.model || 'deepseek-v4-pro' })
     chatHandle = await agents.create(options)
     chatDiag.cwd = cwd
     log(ctx, 'chat session created:', chatSessionId, '| preset: bohack-chat (fallback standard) | cwd:', cwd)
@@ -1192,7 +1205,7 @@ export function createEngine(ctx, config = {}) {
       chatStarted = false
       throw new Error(`需求回合失败：${e?.message || e}`)
     }
-    if (chatCapture.failure) throw new Error('需求模型请求失败（' + chatCapture.failure + '）')
+    if (chatCapture.failure) throw config.memberProject?.error(chatSessionId) || new Error('需求模型请求失败（' + chatCapture.failure + '）')
     let reply = chatCapture.text
     {
       const deadline = Date.now() + 8000
@@ -1273,6 +1286,8 @@ export function createEngine(ctx, config = {}) {
       webDisposer = null; webGuardDisposer = null; chatWebDisposer = null
       handle = null; chatHandle = null
       chatStarted = false; chatPresetMounted = false
+      config.memberProject?.unbind(sessionId)
+      config.memberProject?.unbind(chatSessionId)
       sessionId = null; chatSessionId = null
       diag.lastReason = null
     },

@@ -34,7 +34,7 @@ const ASSETS_FILE = 'assets.jsonl'
 function now() { return new Date().toISOString() }
 function pad(n) { return String(n).padStart(2, '0') }
 function briefError(error) { return String(error || '').replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/).map(line => line.trim()).find(Boolean)?.slice(0, 240) || '' }
-function productionStatusLabel(status) { return ({ running:'制作中', failed:'失败', interrupted:'已中断', completed:'已完成' })[status] || status || '未记录' }
+function productionStatusLabel(status) { return ({ running:'制作中', failed:'失败', interrupted:'已中断', completed:'已完成', abandoned:'已放弃' })[status] || status || '未记录' }
 
 /** 归一化素材名用于去重：去空白/引号，剥掉结尾的形态后缀（示意/底图/图等）。 */
 function normAssetName(name) {
@@ -103,7 +103,7 @@ export function createService(ctx, config = {}) {
     sources: path.join(root, 'sources'),
   }
   const settings = createSettings(root, config)
-  const generatedAssets = createGeneratedAssets(root, { settings, request: config.request })
+  const generatedAssets = createGeneratedAssets(root, { settings: { load: settings.forCall }, request: config.request, desktop: config.desktop })
   const productionService = createProduction(root, { ...config, ctx, settings, generatedAssets, ensureVisual: async () => {
     const n = await latestVersion()
     if ((await visualStyle(n))?.status === 'pending') {
@@ -535,6 +535,7 @@ export function createService(ctx, config = {}) {
     const inboxNames = (await readdir(dirs.inbox).catch(() => [])).filter(x => !x.startsWith('.'))
     const outboxNames = (await readdir(dirs.outbox).catch(() => [])).filter(x => !x.startsWith('.'))
     const runNames = (await readdir(dirs.runs).catch(() => [])).filter(x => x.endsWith('.json')).sort().slice(-8)
+    const memberProduction = await config.memberProject?.current()
     return {
       ok: true,
       workspace: 'workspace/', dirs: { inbox: 'inbox/', outbox: 'outbox/', rules: 'rules/', runs: 'runs/' },
@@ -551,6 +552,7 @@ export function createService(ctx, config = {}) {
       confirmed: state.confirmed?.[`v${n}`] || [],
       sections, blueprintAssets: doc ? await assetPlan(root, n, doc) : [], validation, doc,
       lastRun: state.lastRun || null, production: await productionService.status(),
+      ...(memberProduction && !memberProduction.terminal && { memberProduction }),
       adapters: availableAdapters,
       inboxFiles: inboxNames, outboxFiles: outboxNames, recentRuns: runNames,
       engineAvailable: true,
@@ -1053,18 +1055,24 @@ export function createService(ctx, config = {}) {
       const previous = await productionService.status()
       recovery = { previousStatus: previous?.status || null, phase: previous?.phase || null, error: briefError(previous?.error) || null, action: 'none' }
       const detail = previous ? `上次状态：${productionStatusLabel(previous.status)}；阶段：${previous.phase || '未记录'}${recovery.error ? `；错误：${recovery.error}` : ''}。` : '当前没有制作记录。'
+      const receiptPending = previous?.status === 'completed' && (previous.membershipPending || previous.membershipError)
+      const canResume = ['failed', 'interrupted'].includes(previous?.status)
+      const missingGenerated = assetRepair && (assetDiagnosisResult.missingGenerated.length || assetDiagnosisResult.pendingGenerated.length)
+      const jobId = previous?.membershipAuthorizationId && (receiptPending || canResume) ? previous.id : undefined
       if (productionDiagnosis) reply = detail
-      else if (assetRepair && assetDiagnosisResult.missingRequiredImages.length) reply = `${detail}上传参考原件缺失：${assetDiagnosisResult.missingRequiredImages.join('、')}，请重新上传后再制作。`
+      else if (assetRepair && assetDiagnosisResult.missingRequiredImages.length && !receiptPending) reply = `${detail}上传参考原件缺失：${assetDiagnosisResult.missingRequiredImages.join('、')}，请重新上传后再制作。`
       else if (previous?.status === 'running') reply = `${detail}任务仍在运行，无需重复启动。`
-      else if (previous?.status === 'completed' && (!assetRepair || (!assetDiagnosisResult.missingGenerated.length && !assetDiagnosisResult.pendingGenerated.length))) reply = `${detail}成片已完成${assetRepair ? '，没有需要补齐的生成素材' : '，如需重做请明确说明'}。`
-      else if ((!previous && !assetRepair) || (previous && !['failed', 'interrupted', ...(assetRepair ? ['completed'] : [])].includes(previous.status))) reply = detail
-      else if (!alreadyFinalized || (previous?.version && previous.version !== `v${initialVersion}`)) reply = `${detail}当前蓝图版本与原制作不一致，请先检查蓝图。`
+      else if (previous?.status === 'completed' && !receiptPending && !missingGenerated) reply = `${detail}成片已完成${assetRepair ? '，没有需要补齐的生成素材' : '，如需重做请明确说明'}。`
+      else if (!canResume && !receiptPending && !((!previous || previous.status === 'completed') && assetRepair)) reply = detail
+      else if (!jobId && (!alreadyFinalized || (previous?.version && previous.version !== `v${initialVersion}`))) reply = `${detail}当前蓝图版本与原制作不一致，请先检查蓝图。`
       else {
         try {
           onProgress?.({ type: 'status', text: '正在恢复制作' })
-          production = await productionService.start({mode:productionMode})
-          recovery.action = 'started'
-          reply = `${detail}已启动新的制作任务，可在成片页查看进度。`
+          production = await productionService.start({mode:productionMode, jobId})
+          recovery.action = production.status === 'completed' ? 'completed' : 'started'
+          reply = production.status === 'completed'
+            ? (production.membershipError || '成片已保存，平台授权已结清。')
+            : jobId ? '已继续原制作，可在成片页查看进度。' : `${detail}已启动新的制作任务，可在成片页查看进度。`
         } catch (e) {
           productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
           recovery.action = 'failed'

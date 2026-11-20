@@ -34,12 +34,12 @@ function text(res, status, body, type = 'text/plain; charset=utf-8') {
   res.end(body)
 }
 
-async function readBody(req) {
+async function readBody(req, limitMiB = 2) {
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > 2 * 1024 * 1024) throw new Error('请求体过大（上限 2 MB）')
+    if (size > limitMiB * 1024 * 1024) throw new Error(`请求体过大（上限 ${limitMiB} MB）`)
     chunks.push(chunk)
   }
   if (!chunks.length) return {}
@@ -52,7 +52,7 @@ function errorBody(e) {
   return { ok: false, error: String(e?.message || e), code: e?.code || 'BOHACK_ERROR' }
 }
 
-export function createWebHandler(legacyService, legacyEngine, ctx, threads, videoAnalyzer = analyzeVideo, allowedOrigin = origin => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin)) {
+export function createWebHandler(legacyService, legacyEngine, ctx, threads, videoAnalyzer = analyzeVideo, allowedOrigin = origin => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin), membership) {
   const queues = new WeakMap()
   async function runTurn(engine, task) {
     const previous = queues.get(engine) || Promise.resolve()
@@ -72,6 +72,11 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
     if (method === 'POST' && !req.headers['x-bohack-client']) { text(res, 403, 'Forbidden'); return }
 
     try {
+      if (pathname === '/bohack/api/membership' && (method === 'GET' || method === 'POST')) {
+        if (!membership && method === 'POST') throw new Error('此工作台不支持会员账号。')
+        const result = !membership ? { enabled: false } : method === 'GET' ? await membership.view() : await membership.update(await readBody(req))
+        json(res, 200, result); return
+      }
       const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
       const asset = pathname.slice('/bohack/'.length)
       if (pathname.startsWith('/bohack/') && Object.hasOwn(assetTypes, asset) && (method === 'GET' || method === 'HEAD')) {
@@ -79,6 +84,13 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         res.writeHead(200, { 'content-type': assetTypes[asset], 'cache-control': 'no-cache' })
         res.end(method === 'HEAD' ? undefined : data)
         return
+      }
+      if (pathname === '/bohack/project-storage' && method === 'GET' && threads?.importProject) {
+        text(res, 200, await readFile(path.join(path.dirname(HTML_FILE), 'desktop-projects.js'), 'utf8'), 'text/javascript'); return
+      }
+      if (pathname === '/bohack/api/projects/import' && method === 'POST' && threads?.importProject) {
+        const thread = await threads.importProject(await readBody(req, 100))
+        json(res, 200, { ok: true, thread }); return
       }
       // ── static page ─────────────────────────────────────────────────────
       if (pathname.startsWith('/bohack/style-previews/') && (method === 'GET' || method === 'HEAD')) {
@@ -202,9 +214,9 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
             }
             if (!size) throw new Error('视频文件为空。')
           } finally { await handle.close() }
-          const saved = await service.settings?.load()
+          const saved = await (membership ? service.settings.forCall() : service.settings?.load())
           const model = saved?.styleAnalysisModel?.baseUrl ? saved.styleAnalysisModel : saved?.model
-          result = await videoAnalyzer({ videoPath, outputDir: dir, projectModel: model?.baseUrl ? { endpoint: model.baseUrl, model: model.model, key: model.apiKey, explicit: !!saved?.styleAnalysisModel?.baseUrl } : undefined })
+          result = await videoAnalyzer({ videoPath, outputDir: dir, projectModel: model?.baseUrl ? { endpoint: model.baseUrl, model: model.model, key: model.apiKey, explicit: !!saved?.styleAnalysisModel?.baseUrl || !!membership } : undefined })
         } finally { await rm(dir, { recursive: true, force: true }) }
         json(res, 200, { ok: true, draft: result.draft, evidence: { durationSeconds: result.evidence.durationSeconds, frames: result.evidence.frames.map(frame => ({ seconds: frame.seconds })) } }); return
       }
@@ -305,7 +317,8 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         case '/bohack/api/asset-implement': out = await service.implementAsset(body); break
         case '/bohack/api/preview': {
           const current = await service.status()
-          out = { ok: true, scenes: await generatePreview(current.sections, await service.settings.load(), fetch, current.visualStyle?.style) }
+          if (!current.sections?.length) throw new Error('请先生成蓝图。')
+          out = { ok: true, scenes: await generatePreview(current.sections, await (membership ? service.settings.forCall() : service.settings.load()), fetch, current.visualStyle?.style) }
           break
         }
         case '/bohack/api/style-github': out = await readGithubStyle(body); break
@@ -324,7 +337,10 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         case '/bohack/api/confirm':  out = await service.confirm(body); break
         case '/bohack/api/feedback': out = await service.feedback(body); break
         case '/bohack/api/finalize': out = await service.finalize(body); break
-        case '/bohack/api/production': out = await service.production.start({mode:body.mode,feedback:body.feedback}); break
+        case '/bohack/api/production':
+          if (body.action === 'abandon') { await service.production.abandon(body.authorizationId); out = { ok:true } }
+          else out = await service.production.start({mode:body.mode,feedback:body.feedback,jobId:body.jobId})
+          break
         case '/bohack/api/chat':     out = await runTurn(engine, () => service.chat(body, engine, streaming ? emit : undefined)); break
         case '/bohack/api/section':  out = await runTurn(engine, () => service.manualEdit(body, engine)); break
         case '/bohack/api/note':     out = await runTurn(engine, () => service.note(body, engine)); break

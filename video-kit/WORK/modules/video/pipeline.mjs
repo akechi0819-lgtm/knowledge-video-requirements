@@ -61,16 +61,21 @@ async function enforceGate(bpPath, allowUnconfirmed) {
   return { summary, gatePassed: summary.deliverable_to_video, preview: !summary.deliverable_to_video };
 }
 
-export function seedTtsCache(segments, source, audioDir, { skipMissing = false } = {}) {
+export function seedTtsCache(segments, source, audioDir, { skipMissing = false, preserveExisting = false } = {}) {
   fs.mkdirSync(audioDir, { recursive: true });
   for (const seg of segments) {
+    const localMetadata = path.join(audioDir, `${seg.id}.json`);
+    const localAudio = path.join(audioDir, `${seg.id}.mp3`);
+    if (preserveExisting && fs.existsSync(localMetadata) && fs.existsSync(localAudio)) continue;
     const metadata = path.join(source, `${seg.id}.json`);
     const mp3 = path.join(source, `${seg.id}.mp3`);
     if (skipMissing && (!fs.existsSync(metadata) || !fs.existsSync(mp3))) continue;
     const cache = JSON.parse(fs.readFileSync(metadata, 'utf8'));
-    const target = path.join(audioDir, `${seg.id}.mp3`);
-    fs.copyFileSync(mp3, target);
-    fs.writeFileSync(path.join(audioDir, `${seg.id}.json`), JSON.stringify({ ...cache, audio: target }));
+    fs.rmSync(localMetadata, { force: true });
+    fs.copyFileSync(mp3, localAudio);
+    const pending = localMetadata + '.tmp';
+    fs.writeFileSync(pending, JSON.stringify({ ...cache, audio: localAudio }));
+    fs.renameSync(pending, localMetadata);
   }
 }
 
@@ -149,10 +154,11 @@ async function main() {
 
   const outDir = path.resolve(args.out ?? path.join(WORK_DIR, 'videos', bp.case_id, `v${bp.version}`));
   if (gate.preview && !args.out) throw new Error('refusing to write an unconfirmed blueprint into the official v目录; pass --out explicitly');
-  if (args.prepared && fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`output directory is not empty: ${outDir}`);
+  const resume = args.prepared && process.env.VIDEO_RESUME === '1';
+  if (args.prepared && !resume && fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`output directory is not empty: ${outDir}`);
   fs.mkdirSync(outDir, { recursive: true });
   const audioDir = path.join(outDir, 'audio');
-  if (args.prepared && process.env.VIDEO_TTS_CACHE_DIR) seedTtsCache(bp.segments, process.env.VIDEO_TTS_CACHE_DIR, audioDir);
+  if (args.prepared && process.env.VIDEO_TTS_CACHE_DIR) seedTtsCache(bp.segments, process.env.VIDEO_TTS_CACHE_DIR, audioDir, { skipMissing: resume, preserveExisting: resume });
 
   console.log(`[gate] ${bp.blueprint_id} deliverable=${gate.gatePassed} preview=${gate.preview}`);
   console.log(`[out ] ${outDir}`);

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { createThreads } from '../lib/threads.js'
+import { createProjectExchange } from '../lib/project-exchange.js'
 
 test('threads keep project data separate and reopen from disk', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'bohack-threads-'))
@@ -179,4 +180,37 @@ test('cache temporarily exceeds the limit when every older production is active'
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('桌面导入旧版项目包，重启后可以继续编辑', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'bohack-desktop-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, '.agents'), { recursive: true })
+  await mkdir(path.join(root, 'rules'))
+  const exchange = createProjectExchange(path.join(root, 'legacy-worker'), { ttlMs: 1000, isActive: () => false })
+  const requirement = '# 旧版需求'
+  const original = await exchange.create({ version: 1, files: [
+    { path: 'thread.json', data: Buffer.from(JSON.stringify({ id: 'old', title: '旧版项目' })).toString('base64') },
+    { path: 'inbox/需求.md', data: Buffer.from(requirement).toString('base64') },
+    { path: 'sources/图.png', data: Buffer.from([0, 255, 1]).toString('base64') },
+  ] })
+  const config = { workspace: root, desktop: true }
+  const store = createThreads({}, config, {}, {})
+  const snapshot = await exchange.exportProject(original.id)
+  await assert.rejects(store.importProject({ ...snapshot, files: [...snapshot.files, { path: '.Agents/unsafe', data: '' }] }),
+    /配置或指令/)
+  const imported = await store.importProject(snapshot)
+  assert.notEqual(imported.id, original.id)
+  assert.equal(imported.title, '旧版项目')
+  assert.deepEqual(await readdir(path.join(root, 'threads')), [imported.id])
+
+  const reopened = createThreads({}, config, {}, {})
+  assert.deepEqual(await reopened.list(), [imported])
+  const { service } = await reopened.get(imported.id)
+  const folder = path.join(root, 'threads', imported.id)
+  assert.equal(await readFile(path.join(folder, 'inbox/需求.md'), 'utf8'), requirement)
+  assert.deepEqual(await readFile(path.join(folder, 'sources/图.png')), Buffer.from([0, 255, 1]))
+  await service.ingest({ kind: 'paste', text: '# 重启后修改' })
+  assert.match(await readFile(path.join(folder, 'inbox/需求.md'), 'utf8'), /# 重启后修改$/)
+  assert.equal(createThreads({}, { workspace: root }, {}, {}).importProject, undefined)
 })
