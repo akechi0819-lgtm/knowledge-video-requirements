@@ -6,6 +6,9 @@ Requires=docker.service
 WorkingDirectory=/opt/jiangjie-preview
 Environment=GATEWAY_STATE_DIR=/opt/jiangjie-preview/gateway-state
 Environment=GATEWAY_STARTUP_TIMEOUT_MS=90000
+Environment=GATEWAY_MAX_WORKERS=4
+Environment=GATEWAY_WARM_SIZE=2
+Environment=GATEWAY_IDLE_EVICT_MS=600000
 EnvironmentFile=/opt/jiangjie-preview/model.env
 ExecStart=/opt/jiangjie-preview/node scripts/cloud-gateway.mjs
 Restart=on-failure
