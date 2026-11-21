@@ -793,5 +793,18 @@ function run(){
   });
 }
 </script>
+<script>
+(function(){
+  var kicked=false;
+  function prewarm(){
+    if(kicked) return; kicked=true;
+    try{ fetch('/bohack/',{redirect:'manual',credentials:'same-origin'}).catch(function(){}) }catch(e){}
+  }
+  document.querySelectorAll('a[href^="/bohack"]').forEach(function(a){
+    a.addEventListener('pointerdown',prewarm);
+    a.addEventListener('focus',prewarm);
+  });
+})();
+</script>
 </body>
 </html>
