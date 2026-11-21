@@ -798,12 +798,14 @@ function run(){
   var kicked=false;
   function prewarm(){
     if(kicked) return; kicked=true;
+    if(typeof window.fetch!=='function') return;
     try{ fetch('/bohack/',{redirect:'manual',credentials:'same-origin'}).catch(function(){}) }catch(e){}
   }
-  document.querySelectorAll('a[href^="/bohack"]').forEach(function(a){
-    a.addEventListener('pointerdown',prewarm);
-    a.addEventListener('focus',prewarm);
-  });
+  var links=document.querySelectorAll('a[href^="/bohack"]');
+  for(var i=0;i<links.length;i++){
+    links[i].addEventListener('pointerdown',prewarm);
+    links[i].addEventListener('focus',prewarm);
+  }
 })();
 </script>
 </body>

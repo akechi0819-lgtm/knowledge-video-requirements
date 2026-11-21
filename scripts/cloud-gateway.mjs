@@ -264,13 +264,13 @@ const waitingPage = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>讲界视频工坊 · 正在准备工作台</title>
-<noscript><meta http-equiv="refresh" content="3"></noscript>
+<meta http-equiv="refresh" content="10" id="fallback-refresh">
 <style>
   :root { color-scheme: dark }
   * { box-sizing: border-box; margin: 0; padding: 0 }
-  body { min-height: 100vh; display: grid; place-items: center; background: #0a0a0c; color: #f2f2f4;
+  body { min-height: 100vh; display: flex; align-items: center; justify-content: center; display: grid; place-items: center; background: #0a0a0c; color: #f2f2f4;
     font: 15px/1.7 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif }
-  .card { width: min(420px, calc(100vw - 40px)); padding: 40px 36px; border: 1px solid #26262c;
+  .card { width: 420px; max-width: calc(100vw - 40px); width: min(420px, calc(100vw - 40px)); padding: 40px 36px; border: 1px solid #26262c;
     border-radius: 14px; background: #131317; box-shadow: 0 18px 50px rgba(0,0,0,.45) }
   .brand { font-size: 13px; letter-spacing: .35em; color: #8a8a92; margin-bottom: 26px }
   .spin { width: 42px; height: 42px; margin-bottom: 22px; border-radius: 50%;
@@ -310,6 +310,10 @@ const waitingPage = `<!doctype html>
 </main>
 <script>
 (function () {
+  // ES5 only: old iOS Safari must never hit a syntax error that kills polling.
+  var hasFetch = typeof window.fetch === 'function'
+  var fallback = document.getElementById('fallback-refresh')
+  if (hasFetch && fallback && fallback.parentNode) fallback.parentNode.removeChild(fallback)
   var stageIndex = { queued: 0, creating: 0, starting: 1, booting: 2 }
   var items = [document.getElementById('s0'), document.getElementById('s1'), document.getElementById('s2')]
   var title = document.getElementById('title')
@@ -339,10 +343,11 @@ const waitingPage = `<!doctype html>
     location.replace('/bohack/')
   }
   function schedule(ms) { timer = setTimeout(poll, ms) }
-  async function poll() {
-    try {
-      var response = await fetch('/bohack/__prepare', { cache: 'no-store' })
-      var info = await response.json()
+  function poll() {
+    if (!hasFetch) return
+    fetch('/bohack/__prepare', { cache: 'no-store' }).then(function (response) {
+      return response.json()
+    }).then(function (info) {
       if (!info.hasCookie) {
         fail('浏览器没有保存本站会话 Cookie（可能开启了严格隐私保护）。请在浏览器设置中允许本站 Cookie，然后刷新页面。', 0)
         return
@@ -352,11 +357,12 @@ const waitingPage = `<!doctype html>
       if (info.stage === 'full') { fail(info.message || '工作台实例已满，将自动重试。', 30); schedule(1000); return }
       if (info.stage === 'idle') { location.reload(); return }
       error.style.display = 'none'
-      paint(stageIndex[info.stage] ?? 0)
-    } catch (e) {
+      paint(stageIndex[info.stage] || 0)
+      schedule(1500)
+    }).catch(function () {
       title.textContent = '连接中断，正在重试…'
-    }
-    schedule(1500)
+      schedule(2000)
+    })
   }
   setInterval(function () {
     elapsed.textContent = '已等待 ' + Math.round((Date.now() - start) / 1000) + ' 秒'
