@@ -11,6 +11,7 @@
 import { readFile, writeFile, readdir, mkdir, stat, appendFile, realpath, copyFile, rename } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { createProduction } from './production.js'
+import { productionErrorMessage } from './production-error.js'
 import { assetPlan, inheritAssetPlan, assignAssetPlan, withAssetLock, writeAssetLedger } from './asset-plan.js'
 import { createGeneratedAssets } from './generated-assets.js'
 import { createSettings } from './settings.js'
@@ -954,7 +955,9 @@ export function createService(ctx, config = {}) {
     })
     const styleChoice = matches.length === 1 ? matches[0] : null
     const restyleAction = restyleRequest || (pendingRestyle && restyleAffirmative && styleChoice && restyleText.length <= styleChoice.name.length + 8)
-    const recoverRequest = affirmative(message) && /^(?:(?:(?:继续|恢复)(?:制作|生成)?|接着(?:做|制作)|重试)(?:吧|一下|了)?|(?:把|请)?(?:缺失|丢失的?|没有的?).{0,8}素材(?:补齐|补上|修复).{0,8}(?:继续|恢复|开始)(?:制作|生成|做)?[吧]*)[。！!，,\s]*$/.test(message)
+    const productionStall = !/[“”「」『』"]/.test(message) && /(?:制作|视频|成片|画面|S\d{1,3})/i.test(message) && /(?:卡住|卡在|超时|没出片|没进展)/.test(message)
+    const stallRecovery = productionStall && !/(?:别|不要|不用|无需|先不)[^，,。！？!?；;]{0,5}(?:恢复|继续|重试)|只(?:检查|看看)/.test(message) && /(?:^|[，,。！？!?；;])\s*(?:如果(?:有|是)(?:bug|故障|问题)(?:的话)?[，,\s]*)?(?:请(?:帮我)?|帮我)?(?:恢复(?:一下|制作)?|继续制作|接着做|重试(?:制作)?)(?:吧)?[。！!\s]*$/i.test(message)
+    const recoverRequest = stallRecovery || (affirmative(message) && /^(?:(?:请(?:帮我)?|帮我)?(?:(?:继续|恢复)(?:制作|生成)?|接着(?:做|制作)|重试(?:制作)?)(?:吧|一下|了)?|(?:把|请)?(?:缺失|丢失的?|没有的?).{0,8}素材(?:补齐|补上|修复).{0,8}(?:继续|恢复|开始)(?:制作|生成|做)?[吧]*)[。！!，,\s]*$/.test(message))
     const missingRegenerate = /素材.{0,6}(?:丢|缺|不见).{0,8}(?:重新生成|补齐|修复)/.test(message) && affirmative(message.replace('不见', '丢失'))
     const assetRepair = (recoverRequest && /素材/.test(message)) || missingRegenerate
     const namedMatch = message.match(/(?:重新生成|重做)(?:素材)?[「『“\"\s]*([^，,。！？?]+?)(?:[」』”\"\s]*(?:然后|并|再)?[，,。！？?]|$)/)
@@ -963,7 +966,7 @@ export function createService(ctx, config = {}) {
     const namedRequest = Boolean(namedText && !/^(?:素材|视频|成片|画面|蓝图|需求|这一段|这段)/.test(namedText) && !restyleAction && (namedDoc?.assets?.some(a => a.name === namedText) || /素材/.test(message) || (initialVersion && /然后继续制作/.test(message))))
     const assetIntent = namedRequest || assetRepair
     const assetDiagnosis = /(?:检查|看看|哪些|什么).{0,12}素材.{0,8}(?:丢|缺|不见)|素材.{0,8}(?:丢|缺|不见).{0,8}(?:吗|哪些|什么)/.test(message)
-    const productionDiagnosis = /^(?:制作|生成|任务).{0,10}(?:停在|卡在|失败|中断|出错).{0,10}(?:哪|什么|原因|怎么)|^(?:为什么|怎么).{0,8}(?:失败|中断|停了|卡住)/.test(message)
+    const productionDiagnosis = productionStall || /^(?:制作|生成|任务).{0,10}(?:停在|卡在|失败|中断|出错).{0,10}(?:哪|什么|原因|怎么)|^(?:为什么|怎么).{0,8}(?:失败|中断|停了|卡住)/.test(message)
     const produce = productionCommand(message, alreadyFinalized)
     const confirmAll = confirmAllRequest(message)
     const directAction = (initialVersion && (produce || confirmAll || restyleAction || cancelRestyle)) || recoverRequest || assetDiagnosis || productionDiagnosis || assetIntent || skillOnly || chooseBlueprintSkill
@@ -1027,7 +1030,7 @@ export function createService(ctx, config = {}) {
       try {
         production = await productionService.start({mode:'agent',feedback:turn.filmRevisionNote})
         reply = '已把画面返工意见和上一版成片资料交给视频制作 Agent。'
-      } catch(e) { productionError = {code:'PRODUCTION_FAILED',message:briefError(e.message)}; reply = '成片返工未启动：'+productionError.message }
+      } catch(e) { productionError = {code:'PRODUCTION_FAILED',message:productionErrorMessage(e)}; reply = '成片返工未启动：'+productionError.message }
     } else if (skillOnly || chooseBlueprintSkill) {
       reply = chooseBlueprintSkill ? '没有唯一匹配的风格或技能，请在风格库中选择。' : `已为本次创作选择「${blueprintSkillSelection.name}」。${initialVersion ? '当前蓝图仍沿用原风格，需要重新起草才能应用新选择。' : ''}`
     } else if (namedRequest && !affirmative(restyleText)) {
@@ -1044,7 +1047,7 @@ export function createService(ctx, config = {}) {
           production = await productionService.start({ ...(productionMode ? {mode:productionMode} : {}), regenerateAssetId: found[0].id })
           reply = `已启动重做素材「${namedText}」并继续制作，可在成片页查看进度。`
         } catch (e) {
-          productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
+          productionError = { code: e.code || 'PRODUCTION_FAILED', message: productionErrorMessage(e) }
           reply = `素材重做未启动：${productionError.message}`
         }
       }
@@ -1059,9 +1062,13 @@ export function createService(ctx, config = {}) {
       const canResume = ['failed', 'interrupted'].includes(previous?.status)
       const missingGenerated = assetRepair && (assetDiagnosisResult.missingGenerated.length || assetDiagnosisResult.pendingGenerated.length)
       const jobId = previous?.membershipAuthorizationId && (receiptPending || canResume) ? previous.id : undefined
-      if (productionDiagnosis) reply = detail
+      if (productionDiagnosis && !recoverRequest) {
+        reply = detail
+        if (jobId && canResume) reply += '可以在成片页点「继续制作」，或在这里说「继续制作」。已保存的画面和配音会尽量复用。'
+        else if (canResume) reply += '可以在成片页点「重新制作」重试。'
+      }
       else if (assetRepair && assetDiagnosisResult.missingRequiredImages.length && !receiptPending) reply = `${detail}上传参考原件缺失：${assetDiagnosisResult.missingRequiredImages.join('、')}，请重新上传后再制作。`
-      else if (previous?.status === 'running') reply = `${detail}任务仍在运行，无需重复启动。`
+      else if (previous?.status === 'running') reply = `${detail}任务仍在运行，无需重复启动。若等待超时，制作会暂停并显示原因，届时可以继续原任务。`
       else if (previous?.status === 'completed' && !receiptPending && !missingGenerated) reply = `${detail}成片已完成${assetRepair ? '，没有需要补齐的生成素材' : '，如需重做请明确说明'}。`
       else if (!canResume && !receiptPending && !((!previous || previous.status === 'completed') && assetRepair)) reply = detail
       else if (!jobId && (!alreadyFinalized || (previous?.version && previous.version !== `v${initialVersion}`))) reply = `${detail}当前蓝图版本与原制作不一致，请先检查蓝图。`
@@ -1074,7 +1081,7 @@ export function createService(ctx, config = {}) {
             ? (production.membershipError || '成片已保存，平台授权已结清。')
             : jobId ? '已继续原制作，可在成片页查看进度。' : `${detail}已启动新的制作任务，可在成片页查看进度。`
         } catch (e) {
-          productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
+          productionError = { code: e.code || 'PRODUCTION_FAILED', message: productionErrorMessage(e) }
           recovery.action = 'failed'
           reply = `${detail}制作未启动：${productionError.message}`
         }
@@ -1098,7 +1105,7 @@ export function createService(ctx, config = {}) {
           reply = `已选择「${styleChoice.name}」，重制已启动。可在成片页查看进度。`
         }
       } catch (e) {
-        productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
+        productionError = { code: e.code || 'PRODUCTION_FAILED', message: e instanceof ServiceError ? briefError(e.message) : productionErrorMessage(e) }
         reply = `${styleChoice && (await visualStyle(initialVersion))?.style?.id === styleChoice.id ? `已选择「${styleChoice.name}」，` : ''}重制未启动：${productionError.message}`
       }
     } else if (turn?.productionRequested || produce || confirmAll) {
@@ -1126,7 +1133,7 @@ export function createService(ctx, config = {}) {
           reply = `蓝图 v${initialVersion} 的成片制作已启动。可在成片页查看进度。`
         }
       } catch (e) {
-        productionError = { code: e.code || 'PRODUCTION_FAILED', message: briefError(e.message || e) }
+        productionError = { code: e.code || 'PRODUCTION_FAILED', message: e instanceof ServiceError ? briefError(e.message) : productionErrorMessage(e) }
         reply = `${confirmAll ? '蓝图未定稿' : '成片制作未启动'}：${productionError.message}`
       }
     }

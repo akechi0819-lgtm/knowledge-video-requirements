@@ -35,17 +35,10 @@ window.BohackFilm = (() => {
     return '尚未开始'
   }
 
-  function failureMessage(error) {
-    const lines=String(error || '未知错误').trim().split(/\r?\n/)
-    const reason=lines.filter(line=>/^(?:[\w.]*Error|Error):/.test(line)).at(-1) || lines[0]
-    if(reason.includes('CERTIFICATE_VERIFY_FAILED')) return '配音服务的 HTTPS 证书校验失败。'
-    return reason.replace(/^Error:\s*/, '')
-  }
-
   function headline(p) {
     if (!p) return '按定稿蓝图制作画面、旁白和视频。'
-    if (p.status === 'failed') return p.error ? `制作失败：${failureMessage(p.error)}` : '制作失败，请重新制作。'
-    if (p.status === 'interrupted') return '制作中断。可以从已保存的产物继续。'
+    if (p.status === 'failed') return p.error || '制作未完成，请稍后重试。'
+    if (p.status === 'interrupted') return '制作中断。'
     if (p.status === 'abandoned') return '已放弃本片制作，会员制作名额已释放。'
     if (p.status === 'completed') {
       if (p.membershipError) return p.membershipError
@@ -54,11 +47,16 @@ window.BohackFilm = (() => {
       if (p.verify && p.verify.pass === false) return '成片已合成，质检发现需要核对的问题。'
       return '成片已做好，点击右侧段落可跳到对应时刻。'
     }
+    if (p.waitMessage) return p.waitMessage
     const sections = p.sections || []
     const withScene = sections.filter(s => s.scene).length
     const withAudio = sections.filter(s => s.audio).length
     const withClip = sections.filter(s => s.clip).length
-    if (p.phase === '正在制作视频') return '视频 Agent 正在读取蓝图和素材，设计画面。'
+    if (p.phase === '正在制作视频' || p.phase === '编写画面') {
+      const missing = sections.filter(s => !s.scene)
+      if (withScene && missing.length) return `等待 ${missing.map(s => s.id).join('、')} 的画面，已保存 ${withScene} / ${sections.length} 段。`
+      return withScene ? '各段画面已保存，正在准备预览与合成。' : '视频 Agent 正在读取蓝图和素材，设计画面。'
+    }
     if (p.phase === '生成素材') return '正在为当前蓝图准备动画素材。'
     if (p.phase === '生成画面') {
       const current = sections.find(s => !s.scene)
@@ -294,7 +292,7 @@ window.BohackFilm = (() => {
     root.classList.toggle('is-producing', p?.status === 'running' || p?.status === 'completed')
     root.classList.toggle('is-completed', p?.status === 'completed')
     const signature = JSON.stringify({
-      id: p?.id, status: p?.status, phase: p?.phase, thread: env.threadId,
+      id: p?.id, status: p?.status, phase: p?.phase, error: p?.error, waitMessage: p?.waitMessage, thread: env.threadId,
       artifacts: p?.artifacts, sections: (p?.sections || []).map(sec => [sec.id, sec.scene, sec.sceneKind, sec.audio, sec.clip]),
     })
     const ctl = renderPlayer(player, p, env.threadId, player._active, signature)
@@ -305,5 +303,5 @@ window.BohackFilm = (() => {
     }, player._active || p?.sections?.find(sec => !sec.clip)?.id || p?.sections?.[0]?.id)
   }
 
-  return { render, headline, failureMessage, fileUrl, PHASES }
+  return { render, headline, fileUrl, PHASES }
 })()

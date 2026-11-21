@@ -10,6 +10,72 @@ import { renderBlueprint, parseBlueprint } from '../lib/blueprint.js'
 import { assignAssetPlan } from '../lib/asset-plan.js'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+test('chat diagnoses a model outage and passes the original authorized job ID to production', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'chat-resume-'))
+  try {
+    const service = createService({}, { workspace:root })
+    const previous = { id:'previous-job', membershipAuthorizationId:'authorization', status:'failed', phase:'编写画面', error:'画面模型服务暂时不可用（503），制作已暂停。' }
+    const starts = []
+    service.production.status = async () => previous
+    service.production.start = async ({ jobId }) => {
+      starts.push(jobId)
+      previous.status = 'running'
+      return previous
+    }
+    const engine = { chatTurn:async () => { throw new Error('制作指令不应依赖聊天模型') } }
+    const diagnosis = await service.chat({ text:'制作停在哪一步了？' }, engine)
+    assert.match(diagnosis.reply, /编写画面.*画面模型服务暂时不可用（503）.*继续制作.*复用/)
+    assert.deepEqual(starts, [])
+    assert.match((await service.chat({ text:'请帮我继续制作' }, engine)).reply, /已继续原制作/)
+    assert.match((await service.chat({ text:'重试' }, engine)).reply, /仍在运行，无需重复启动/)
+    assert.deepEqual(starts, [previous.id])
+  } finally { await rm(root, { recursive:true, force:true }) }
+})
+
+const naturalRecoveryRequest = '现在一直卡在S07的制作中，你检查一下什么问题？如果有bug的话恢复一下。'
+
+for (const { title, text, status, shouldResume } of [
+  { title:'reports the actual phase without restarting a running job', text:naturalRecoveryRequest, status:'running', shouldResume:false },
+  { title:'resumes a failed job once using the original job ID', text:naturalRecoveryRequest, status:'failed', shouldResume:true },
+  { title:'reports a failed job without resuming on a read-only request', text:'现在一直卡在S07的制作中，你检查一下什么问题？先不要恢复。', status:'failed', shouldResume:false }
+]) {
+  test(`natural production dialogue ${title}`, async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), 'chat-production-recovery-'))
+    try {
+      const service = createService({}, { workspace })
+      const previous = { id:'original-job', membershipAuthorizationId:'authorization', status, phase:'编写画面', error:status === 'failed' ? '画面制作超时，制作已暂停。' : null }
+      const starts = []
+      let modelCalls = 0
+      let current = previous
+      service.production.status = async () => current
+      service.production.start = async ({ jobId }) => {
+        starts.push(jobId)
+        current = { ...previous, status:'running', error:null }
+        return current
+      }
+      const engine = { chatTurn:async () => { modelCalls++; return { reply:'普通聊天回复' } } }
+
+      const result = await service.chat({ text }, engine)
+      assert.equal(result.recovery?.previousStatus, status)
+      assert.equal(result.recovery?.phase, previous.phase)
+      if (shouldResume) {
+        assert.match(result.reply, /已继续原制作/)
+        assert.equal(result.production?.id, previous.id)
+        const repeated = await service.chat({ text }, engine)
+        assert.match(repeated.reply, /编写画面/)
+        assert.equal(repeated.production, null)
+      } else {
+        assert.match(result.reply, /编写画面/)
+        assert.match(result.reply, status === 'running' ? /仍在运行|正在制作/ : /超时/)
+        assert.equal(result.production, null)
+      }
+      assert.equal(modelCalls, 0)
+      assert.deepEqual(starts, shouldResume ? [previous.id] : [])
+    } finally { await rm(workspace, { recursive:true, force:true }) }
+  })
+}
+
 test('default DSH launcher can be executed directly on POSIX', { skip: process.platform === 'win32' }, async () => {
   await access(new URL('../../../dsh.sh', import.meta.url), constants.X_OK)
 })
@@ -502,17 +568,18 @@ test('chat diagnoses and resumes failed work without rerunning completed work', 
     const finalized = (await service._internal.getState()).finalized
     await mkdir(path.join(root,'production'), {recursive:true})
     const statusPath = path.join(root,'production/status.json')
-    const state = { id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', status:'failed', phase:'生成画面', error:'画面服务失败\n    at internal.js:10\nsecret stack', version:'v1' }
+    const state = { id:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', status:'failed', phase:'生成画面', error:'400: {"message":"fetch failed"}\n    at internal.js:10\nsecret stack', version:'v1' }
     await writeFile(statusPath, JSON.stringify(state))
     const engine = { chatTurn: async () => { throw new Error('直接操作不应调用模型') } }
     const diagnostic = await service.chat({ text:'制作停在哪一步了？' }, engine)
-    assert.match(diagnostic.reply, /生成画面.*画面服务失败/)
-    assert.doesNotMatch(diagnostic.reply, /internal.js|secret stack/)
-    for (const text of ['继续制作','恢复制作','接着做','重试']) {
+    assert.match(diagnostic.reply, /生成画面.*画面模型连接失败/)
+    assert.doesNotMatch(diagnostic.reply, /400|fetch failed|internal.js|secret stack/)
+    assert.match(diagnostic.reply, /重新制作.*重试/)
+    for (const text of ['继续制作','恢复制作','接着做','重试','请帮我继续制作','帮我重试制作']) {
       const result = await service.chat({ text }, engine)
       assert.equal(result.recovery.previousStatus, 'failed')
       assert.equal(result.recovery.phase, '生成画面')
-      assert.equal(result.recovery.error, '画面服务失败')
+      assert.match(result.recovery.error, /画面模型连接失败/)
       assert.ok(result.production || result.productionError)
       assert.deepEqual((await service._internal.getState()).finalized, finalized)
     }

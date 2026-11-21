@@ -77,12 +77,19 @@ test('rejects a session missing submit', async () => {
 
 test('continues the same unfinished session after real tool progress', async () => {
   let turns = 0
+  let idle = true
+  let idlePromise
   const progress = { name: 'write_scene', parameters: {}, execute: async () => ({ ok: true }) }
   const { ctx, state } = host(async registered => {
+    assert.equal(idle, true, 'turn/end does not mean the driver can accept another turn')
+    idle = false
     turns++
-    if (turns === 1) await registered.get('write_scene').execute({})
+    if (turns === 1) {
+      await registered.get('write_scene').execute({})
+      idlePromise = new Promise(resolve => setImmediate(() => { idle = true; resolve() }))
+    }
     else await registered.get('submit').execute({ file: 'finished.mp4' })
-  }, async () => {})
+  }, () => idlePromise)
   const result = await runVideoAgent({ ctx, sessionId: 'same-job', cwd: '/tmp', prompt: 'make', tools: [...tools, progress] })
   assert.equal(turns, 2)
   assert.equal(state.options.sessionId, 'same-job')
@@ -132,6 +139,15 @@ test('reports this session’s model error after idle and ignores other sessions
   await assert.rejects(runVideoAgent({ ctx, sessionId: 'test', cwd: '/tmp', prompt: 'make', tools }), /Provider finish_reason: content_filter/)
 })
 
+test('localizes a temporary upstream model failure without exposing the response body', async () => {
+  const { ctx } = host(async (_registered, listeners) => {
+    listeners.get('session/event')({ id: 'test' }, { type: 'turn/end', data: { reason: { kind: 'error', error: { message: '503: {"message":"Service temporarily unavailable","type":"api_error"}', code: 'SERVER' } } } })
+  }, async () => {})
+  await assert.rejects(runVideoAgent({ ctx, sessionId: 'test', cwd: '/tmp', prompt: 'make', tools }), {
+    message: '画面模型服务暂时不可用（503），制作已暂停。',
+  })
+})
+
 test('keeps a session alive beyond ten minutes while tools make progress', async t => {
   let now = 0
   const timers = new Set()
@@ -156,8 +172,8 @@ test('keeps a session alive beyond ten minutes while tools make progress', async
   const result = runVideoAgent({ ctx, cwd: '/tmp', prompt: 'make', tools: [...tools, progress] })
   // Allow session setup and the inactivity timer to start.
   await new Promise(resolve => setImmediate(resolve))
-  for (let i = 0; i < 3; i++) {
-    tick(300000)
+  for (let index = 0; index < 6; index++) {
+    tick(120000)
     await registered.get('progress').execute({})
   }
   await registered.get('submit').execute({ file: 'film.mp4' })
@@ -166,8 +182,73 @@ test('keeps a session alive beyond ten minutes while tools make progress', async
   const idle = host(async () => { await new Promise(() => {}) })
   const timeout = runVideoAgent({ ctx: idle.ctx, cwd: '/tmp', prompt: 'make', tools })
   await new Promise(resolve => setImmediate(resolve))
-  tick(600000)
-  await assert.rejects(timeout, /连续十分钟没有工具进展/)
+  tick(300000)
+  await assert.rejects(timeout, /画面模型超过 5 分钟.*制作已暂停/)
+})
+
+test('warns after two minutes and clears the warning when tool progress resumes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const events = []
+  let registered
+  const progress = { name: 'progress', parameters: {}, execute: async () => ({ ok: true }) }
+  const { ctx } = host(async available => { registered = available; await new Promise(() => {}) })
+  const result = runVideoAgent({ ctx, cwd: '/tmp', prompt: 'make', tools: [...tools, progress], onProgress: event => events.push(event) })
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(119999)
+  assert.equal(events.filter(event => event.type === 'wait').length, 0)
+  t.mock.timers.tick(1)
+  assert.match(events.at(-1).text, /等待/)
+  assert.equal(events.at(-1).type, 'wait')
+  await registered.get('progress').execute({})
+  assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
+  t.mock.timers.tick(120000)
+  assert.match(events.at(-1).text, /等待/)
+  await registered.get('submit').execute({})
+  await result
+  assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
+  t.mock.timers.tick(600000)
+  assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
+})
+
+test('allows a tool ten minutes without a model-wait warning', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const events = []
+  let registered
+  let aborted
+  const slow = { name: 'slow', parameters: {}, execute: async (_args, signal) => {
+    aborted = signal
+    await new Promise(() => {})
+  } }
+  const { ctx } = host(async available => { registered = available; await new Promise(() => {}) })
+  const result = runVideoAgent({ ctx, cwd: '/tmp', prompt: 'make', tools: [...tools, slow], onProgress: event => events.push(event) })
+  await new Promise(resolve => setImmediate(resolve))
+  void registered.get('slow').execute({})
+  t.mock.timers.tick(599999)
+  assert.equal(events.filter(event => event.type === 'wait').length, 0)
+  t.mock.timers.tick(1)
+  await assert.rejects(result, /制作工具超过 10 分钟/)
+  assert.equal(aborted.aborted, true)
+})
+
+test('reports model errors immediately and clears the pending warning', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const events = []
+  let fail
+  const { ctx } = host(async (_registered, listeners) => {
+    await new Promise(resolve => { fail = () => {
+      listeners.get('session/event')({ id: 'test' }, { type: 'turn/end', data: { reason: { kind: 'error', error: { message: '503: unavailable' } } } })
+      resolve()
+    } })
+  })
+  const result = runVideoAgent({ ctx, sessionId: 'test', cwd: '/tmp', prompt: 'make', tools, onProgress: event => events.push(event) })
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(120000)
+  fail()
+  await assert.rejects(result, /画面模型服务暂时不可用（503）/)
+  assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
+  const count = events.length
+  t.mock.timers.tick(600000)
+  assert.equal(events.length, count)
 })
 
 test('projects screenshots as attachments and protects projection consistency', async () => {

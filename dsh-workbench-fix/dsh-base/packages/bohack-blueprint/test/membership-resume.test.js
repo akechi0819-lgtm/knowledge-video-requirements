@@ -27,7 +27,7 @@ test('desktop restart resumes the same authorization and recovers a lost finish 
     const route = new URL(url).pathname
     const { productionId } = JSON.parse(options.body || '{}')
     calls.push([route, productionId])
-    if (offline) throw new Error('本机模拟断线')
+    if (offline) throw new TypeError('fetch failed')
     if (route === '/api/auth/sign-in/email') {
       return Response.json({ user:{id:'owner',email:'owner@example.test'} }, { headers:{'set-auth-token':'local-fixture-token'} })
     }
@@ -99,12 +99,12 @@ test('desktop restart resumes the same authorization and recovers a lost finish 
   assert.equal(stale.status, 'interrupted')
   await assert.rejects(operate({mode:'agent',feedback:'Change the film'}), /先继续或放弃/)
   offline = true
-  await assert.rejects(operate({jobId}), /模拟断线/)
+  await assert.rejects(operate({jobId}), /制作服务连接失败/)
   assert.equal((await app.status()).id, jobId)
   offline = false
   assert.equal((await operate({jobId})).id, jobId)
   await assert.rejects(operate({jobId}), /正在运行/)
-  assert.match((await finishRun(app)).error, /fixture transient provider failure/)
+  assert.match((await finishRun(app)).error, /配音与渲染未完成/)
   assert.equal(remaining, 2)
 
   app = makeProduction(connect())
@@ -113,7 +113,7 @@ test('desktop restart resumes the same authorization and recovers a lost finish 
   const pending = await finishRun(app)
   assert.equal(pending.status, 'completed')
   assert.equal(pending.membershipPending, true)
-  assert.match(pending.membershipError, /模拟丢失 HTTP 回执/)
+  assert.match(pending.membershipError, /成片已保存.*补交完成回执/)
   assert.equal(authorized.get(authorizationId), 'finished')
   await assert.rejects(operate({mode:'agent',feedback:'Change the film'}), /先补交完成回执/)
   const callCount = calls.length
@@ -137,7 +137,7 @@ test('desktop restart resumes the same authorization and recovers a lost finish 
   assert.notEqual(fresh.id, authorizationId)
   assert.equal(remaining, 1)
   offline = true
-  await assert.rejects(operate({action:'abandon', authorizationId:fresh.id}), /模拟断线/)
+  await assert.rejects(operate({action:'abandon', authorizationId:fresh.id}), /制作服务连接失败/)
   assert.equal((await connect().project(workspace).current()).closing, 'abandon')
   offline = false
   await operate({action:'abandon', authorizationId:fresh.id})

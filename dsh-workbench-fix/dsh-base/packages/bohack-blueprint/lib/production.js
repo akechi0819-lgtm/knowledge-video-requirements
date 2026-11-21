@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveAgent } from './settings.js'
+import { productionErrorMessage, receiptMessage } from './production-error.js'
 import { exportProduction } from '../scripts/export-production.js'
 
 const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
@@ -20,6 +21,7 @@ export function createProduction(workspace, config = {}) {
   const kit = path.resolve(config.videoKitDir || process.env.VIDEO_KIT_DIR || defaultKit)
   let active = false
   let generation = 0
+  let waitMessage = ''
   const memberProject = config.memberProject
   const jobIdPattern = /^[0-9a-f-]{36}$/
   async function readState() {
@@ -110,6 +112,9 @@ export function createProduction(workspace, config = {}) {
     }
     return {
       ...state,
+      ...(state.error && { error: productionErrorMessage(state.error, state.phase) }),
+      ...(state.membershipError && { membershipError: receiptMessage }),
+      ...(state.status === 'running' && waitMessage && { waitMessage }),
       sections,
       artifacts: {
         video: await exists(path.join(film, 'final.mp4')),
@@ -309,7 +314,8 @@ export function createProduction(workspace, config = {}) {
       delete state.membershipError
     } catch (error) {
       state.membershipPending = true
-      state.membershipError = '成片已保存，平台授权回执待处理：' + error.message
+      state.membershipError = receiptMessage
+      config.ctx?.logger?.warn?.('制作回执待处理', { code: error.code, status: error.status })
     }
     await save(state)
     return state
@@ -341,6 +347,7 @@ export function createProduction(workspace, config = {}) {
         if (mode === 'agent') {
           const { runVideoJob } = await import('./video-job.js')
           const onProgress = async event => {
+            if (event?.type === 'wait') { waitMessage = event.text; return }
             const phase = typeof event === 'string' ? event : event?.type === 'status' ? event.text : null
             if (phase) { state.phase = phase; await save(state) }
           }
@@ -394,6 +401,7 @@ export function createProduction(workspace, config = {}) {
         if (auth) state.membershipPending = true
       } catch (e) { state.status = 'failed'; state.error = String(e.message || e); state.completedAt = new Date().toISOString() }
       finally {
+        waitMessage = ''
         if (state.sessionId) config.memberProject?.unbind(state.sessionId)
         try {
           await save(state)

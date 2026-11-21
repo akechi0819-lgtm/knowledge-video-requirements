@@ -9,6 +9,28 @@ const status = vm.runInNewContext(source + '\nfilmAssetStatus')
 const asset = { ledgerId:'ledger-a', name:'销烟池', status:'pending' }
 const file = { id:'ledger-a', name:'销烟池图', side:'videomake', path:'sources/pool.png', trust:'vetted' }
 
+test('成片页区分继续原任务和重新制作', () => {
+  const actions = html.slice(html.indexOf('function pendingReceipt('), html.indexOf("$('#productionMode').onchange"))
+  const { productionLabel, productionNote } = vm.runInNewContext(actions + '\n({ productionLabel, productionNote })')
+  const authorized = { production:{ status:'failed', membershipAuthorizationId:'authorization' } }
+  assert.equal(productionLabel(authorized), '继续制作')
+  assert.match(productionNote(authorized), /点「继续制作」.*说「继续制作」.*复用/)
+  const unauthorized = { production:{ status:'failed' } }
+  assert.equal(productionLabel(unauthorized), '重新制作')
+  assert.match(productionNote(unauthorized), /点「重新制作」重试/)
+  assert.equal(productionNote({ production:{ status:'running' } }), '')
+})
+
+test('续跑时显示仍在等待的段落及已保存进度', () => {
+  const film = readFileSync(new URL('../web/film.js', import.meta.url), 'utf8')
+  const window = {}
+  vm.runInNewContext(film, { window })
+  const sections = Array.from({ length: 7 }, (_, index) => ({ id:`S0${index + 1}`, scene:index < 6 }))
+  assert.match(window.BohackFilm.headline({status:'running', phase:'正在制作视频', sections}), /等待 S07 的画面，已保存 6 \/ 7 段/)
+  assert.match(window.BohackFilm.headline({status:'running', phase:'正在制作视频', sections, waitMessage:'画面模型等待时间较长，正在继续等待。'}), /等待时间较长/)
+  assert.match(window.BohackFilm.headline({status:'running', phase:'正在制作视频', sections:sections.map(section=>({...section,scene:true}))}), /各段画面已保存/)
+})
+
 test('成片页只按绑定的账本 ID 读取审核状态', () => {
   assert.equal(status(asset, [file]), 'ledger-approved')
   assert.equal(status(asset, [{ ...file, trust:'unvetted' }]), 'ledger-review')

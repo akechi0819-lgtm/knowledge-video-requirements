@@ -4,6 +4,8 @@
 <dict>
   <key>CFBundleIdentifier</key>
   <string>cloud.gingers.jiangjie</string>
+  <key>CFBundleIconFile</key>
+  <string>Jiangjie.icns</string>
   <key>CFBundleName</key>
   <string>讲界</string>
   <key>CFBundleExecutable</key>
@@ -13,8 +15,8 @@
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.0</string>
+  <string>0.2.1</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>2</string>
 </dict>
 </plist>

@@ -160,21 +160,21 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
     await rename(pending, target)
     return { ok: true }
   }
-  async function submitFilm() {
+  async function submitFilm(signal) {
     if (previousDir && feedback && revised.size === 0) throw new Error('本次要求返工。请先按意见修改对应段落，再合成。')
     for (const id of ids) await stat(path.join(scenes, `${id}.html`))
     await onProgress?.('配音与渲染')
     await rm(film, { recursive: true, force: true })
-    await measure('render-compose', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/pipeline.mjs'), '--prepared', path.join(scenes, 'production.json'), '--out', film, '--voice', voice], { env: { ...env, VIDEO_TTS_CACHE_DIR: audio }, maxBuffer: 32 * 1024 * 1024 }))
+    await measure('render-compose', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/pipeline.mjs'), '--prepared', path.join(scenes, 'production.json'), '--out', film, '--voice', voice], { signal, env: { ...env, VIDEO_TTS_CACHE_DIR: audio }, maxBuffer: 32 * 1024 * 1024 }))
     await onProgress?.('自动质检')
-    await measure('verify', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/verify.mjs'), path.join(film, 'mapping.json')], { env, maxBuffer: 32 * 1024 * 1024 }))
+    await measure('verify', () => exec(process.execPath, [path.join(kit, 'WORK/modules/video/verify.mjs'), path.join(film, 'mapping.json')], { signal, env, maxBuffer: 32 * 1024 * 1024 }))
     const report = JSON.parse(await readFile(path.join(film, 'verify-report.json'), 'utf8'))
     composed = true
     return { ok: true, report }
   }
-  function submit() {
+  function submit(_args, signal) {
     if (submission) return submission
-    submission = submitFilm().catch(error => { submission = undefined; throw error })
+    submission = submitFilm(signal).catch(error => { submission = undefined; throw error })
     return submission
   }
   const tools = [
@@ -189,7 +189,7 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   if (generateAsset) tools.push({ name: 'generate_asset', description: '为未实现的声明素材生成候选，候选需作者确认', parameters: schema({ id: str }), execute: async ({ id }) => generateAsset({ id }) })
   const { skill: _skill, style: _style, ...blueprint } = production
   const prompt = `你是视频制作 Agent。完整制作方法 ${skillName} 已载入下文，不必重复调用 skill。保留方法中的讲述、设计与旁白对位标准；执行流程以本次网页制作契约为准：需求、蓝图和风格已确认，配音已生成；不重新选题、改旁白、提问或请求逐项确认，不执行本机脚本、不使用其他引擎。Skill 的历史个人偏好不代表本次用户要求。只有需要明确引用的相对资料时才用 read_skill_file，不猜文件名。用工具为每段创作独立 HTML/CSS/JS，不得执行主机代码。画布 #stage 为 1280×720，window.seek(t) 必须按秒确定画面；参考 window.__PLAN__ 和 window.STYLE。用 tts_durations 取实际配音时间，先 preview 检查画面和中途状态，必要时修正，再调用 submit 完成渲染、质检和提交；技术质检不代表已经完成事实核验或 OCR。图片通过 ../assets/文件名 或 ../现成素材/文件名引用；按蓝图意图选用已确认图片。未实现的声明只是创作线索，不得阻塞制作。\n完整制作方法：\n${skillText}\n蓝图：${JSON.stringify(blueprint)}\n可用图片：${JSON.stringify(assets)}\n视觉风格：${JSON.stringify(production.style || null)}\n修改意见：${feedback || '无'}${previousDir ? '\n本次为根据意见重新制作，可用 read_previous_scene 查看上一版对应段落。' : ''}`
-  const resumeInstructions = resume ? `\n本次从中断处继续。已保存的段落：${JSON.stringify(savedScenes)}；尚未保存的段落：${JSON.stringify([...ids].filter(id => !savedScenes.includes(id)))}。用 read_saved_scene 检查已保存内容，保留符合要求的段落，只补写缺失段落或修改需要修正的段落。` : ''
+  const resumeInstructions = resume ? `\n本次从中断处继续。已保存的段落：${JSON.stringify(savedScenes)}；尚未保存的段落：${JSON.stringify([...ids].filter(id => !savedScenes.includes(id)))}。先补写缺失的段落，默认复用已保存段落，不逐段读回 HTML；只有为了衔接缺失段落或修正已发现的问题才调用 read_saved_scene。` : ''
   const taskPrompt = `${prompt}${resumeInstructions}${customSkill ? '\n本次方法是完整的单篇正文，没有附带资料文件。不需要寻找 README、项目源码、模板或额外设计文档；按已给蓝图与视觉规则自由创作 HTML/CSS/JS。' : ''}\n本次执行顺序：tts_durations → ${resume ? '检查并补齐所有段落' : 'write_scene 写完全部段落'} → 每段只 preview 一张代表性画面 → submit 渲染、基础检查并提交。默认只审一轮；仅自动修复脚本或播放错误、主体缺失、严重遮挡，修复后只复查受影响段。实际脚本错误继续修到可运行，不因已经改过一轮就停止；静帧、装饰、排版偏好和审美建议只作提示，不拦交片、不自动返工。上述方法用于创作指导，不增加额外审稿轮次或用户确认。`
   await measure('agent', () => runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt: taskPrompt, tools, onProgress, onTiming: timing }))
   if (!composed) throw new Error('视频 Agent 未完成成片')

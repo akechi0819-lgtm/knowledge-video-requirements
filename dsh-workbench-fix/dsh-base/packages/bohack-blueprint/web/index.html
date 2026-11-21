@@ -284,6 +284,7 @@
       <div class="row"><button class="attach" id="attachBtn" title="上传资料，可拖入文件（最多 10 MB）" aria-label="上传资料"><svg class="icon" aria-hidden="true"><use href="#icon-attach"/></svg>资料</button>
         <label for="studioUploadSide">用途</label><select id="studioUploadSide" aria-label="上传资料用途"><option value="blueprint">供蓝图参考</option><option value="videomake">用于成片</option></select><input type="file" id="filePicker" multiple hidden><button class="primary" id="btnChat">发送<svg class="icon" aria-hidden="true"><use href="#icon-send"/></svg></button></div>
       <div class="msg" id="chatMsg" aria-live="polite"></div>
+      <div class="errbox" id="chatProductionFailure" role="status" hidden></div>
     </div>
   </section>
 
@@ -412,12 +413,16 @@ function busy(on,label){
   if(!on) refresh()
 }
 async function api(url, body, threadId=state.threadId){
+  const production = url === '/bohack/api/production'
   const opt = body===undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}
   if (!url.startsWith('/bohack/api/threads') && !['/bohack/api/styles','/bohack/api/styles-import','/bohack/api/styles-update','/bohack/api/styles-remove','/bohack/api/style-github'].includes(url) && !threadId) throw new Error('请先选择创作')
   if(threadId && !url.startsWith('/bohack/api/threads')) url += (url.includes('?')?'&':'?')+'threadId='+encodeURIComponent(threadId)
-  const r = await apiFetch(url,opt)
-  const j = await r.json().catch(()=>({ok:false,error:'响应不是 JSON ('+r.status+')'}))
-  if(!r.ok || j.ok===false) throw new Error(j.error||('HTTP '+r.status))
+  const r = await apiFetch(url,opt).catch(error=>{
+    if(production) throw new Error('无法连接本地工作台，请重新打开工作台后再试。')
+    throw error
+  })
+  const j = await r.json().catch(()=>({ok:false,error:production ? '工作台未返回制作状态，请刷新后再试。' : '响应不是 JSON ('+r.status+')'}))
+  if(!r.ok || j.ok===false) throw new Error(j.error || (production ? '工作台未能处理制作操作，请稍后重试。' : 'HTTP '+r.status))
   return j
 }
 
@@ -1078,9 +1083,8 @@ async function loadAdjustments(){
 async function refresh(){
   const id=state.threadId
   try{
-    const [s,req]=await Promise.all([api('/bohack/api/status'),api('/bohack/api/requirement')])
+    const s=await api('/bohack/api/status')
     if(id!==state.threadId) return
-    renderRequirement(req.raw)
     state.status=s
     syncStudioChoice(s)
     $('#wsName').textContent=s.requirement?.title||s.requirement?.topic||state.threads.find(t=>t.id===id)?.title||'当前创作'
@@ -1099,7 +1103,10 @@ async function refresh(){
     $('#filmState').textContent=s.finalized?.version===s.currentVersion && s.stage==='finalized'?'已定稿 ✓':'未定稿'
     renderFilm(s)
     renderValidation(s.validation)
+    const req=await api('/bohack/api/requirement')
+    if(id===state.threadId) renderRequirement(req.raw)
   }catch(e){ console.warn('状态读取失败：',e.message) }
+  finally{ scheduleRefresh() }
 }
 const assetRequests=new Set()
 let filmRender=0
@@ -1170,7 +1177,8 @@ function productionNote(s){
   if(p.status==='running') return ''
   if(pendingReceipt(s)) return '成片已保存在本机，可以直接播放和下载。'
   if(p.status==='completed' || p.status==='abandoned') return ''
-  return '可在左侧问「制作停在哪一步了？」或说「继续制作」。'
+  if(resumableProduction(s)) return '稍后点「继续制作」，或在左侧说「继续制作」。已保存的画面和配音会尽量复用。'
+  return '稍后点「重新制作」重试。'
 }
 $('#productionMode').onchange=()=>{ if(state.status) updateProductionAction(state.status) }
 function updateProductionAction(s){
@@ -1354,11 +1362,15 @@ function renderCurrentAssets(s){
 }
 $('#manageFilmAssets').onclick=()=>chooseTab('assets')
 function renderFilm(s){
+  const p=s.production
+  const failure=$('#chatProductionFailure')
+  const paused=p?.status==='failed' || p?.status==='interrupted'
+  failure.hidden=!paused
+  failure.textContent=paused ? `制作已暂停：${p.error || '制作中断。'} ${productionNote(s)}` : ''
   renderFilmStyles(s)
   updateProductionAction(s)
   renderCurrentAssets(s)
   window.BohackFilm.render(s,{threadId:state.threadId})
-  scheduleRefresh()
 }
 $('#btnProduction').addEventListener('click',async()=>{
   const s=state.status, btn=$('#btnProduction')
@@ -1405,7 +1417,7 @@ function scheduleRefresh(){
   clearTimeout(refreshTimer)
   const running=state.status?.production?.status==='running'
   refreshTimer=setTimeout(async()=>{
-    if(state.threadId && !state.busy) await refresh()
+    if(state.threadId) await refresh()
     else scheduleRefresh()
   }, running?2000:15000)
 }

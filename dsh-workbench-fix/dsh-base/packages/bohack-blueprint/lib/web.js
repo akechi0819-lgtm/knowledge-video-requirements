@@ -15,6 +15,7 @@ import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import { readGithubStyle } from './github-style.js'
 import { fileURLToPath } from 'node:url'
+import { productionErrorMessage } from './production-error.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const HTML_FILE = path.resolve(HERE, '..', 'web', 'index.html')
@@ -361,7 +362,8 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       else json(res, 200, out)
     } catch (e) {
       try { ctx.logger?.warn?.('[bohack/web]', String(e?.stack || e)) } catch { /* ignore */ }
-      if (!res.headersSent) json(res, 400, errorBody(e))
+      if (!res.headersSent) json(res, 400, pathname === '/bohack/api/production'
+        ? { ...errorBody(e), error: productionErrorMessage(e) } : errorBody(e))
       else { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify({ type: 'error', message: String(e?.message || e) }) + '\n'); res.end() }
     }
   }

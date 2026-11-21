@@ -18,6 +18,7 @@ mkdir -p "$bin" "$helpers" "$runtime/python" "$base" "$kit" "$resources/scripts"
 mkdir -p "$resources/startup/media"
 cp desktop/startup.html "$resources/startup/index.html"
 cp frontend/public/site/media/{projection-hall.webp,m1.jpg,m2.jpg,m3.jpg} "$resources/startup/media/"
+cp desktop/Jiangjie.icns "$resources/Jiangjie.icns"
 cp desktop/Info.plist "$app/Contents/Info.plist"
 if [[ -n "${JIANGJIE_MEMBER_URL:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Add :JiangjieMemberURL string $JIANGJIE_MEMBER_URL" "$app/Contents/Info.plist"

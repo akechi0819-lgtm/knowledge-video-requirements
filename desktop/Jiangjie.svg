@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x2=".7" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#30323a"/><stop offset="1" stop-color="#101117"/>
+    </linearGradient>
+    <linearGradient id="film" x2="0" y2="1">
+      <stop stop-color="#ffc67a"/><stop offset="1" stop-color="#f28b40"/>
+    </linearGradient>
+  </defs>
+  <rect x="50" y="50" width="924" height="924" rx="214" fill="url(#tile)"/>
+  <!-- A speech balloon doubles as the body of the clapperboard. -->
+  <path fill="url(#film)" d="M207 462h610v186a80 80 0 0 1-80 80H440l-117 83v-83h-36a80 80 0 0 1-80-80z"/>
+  <g transform="rotate(-10 207 437)">
+    <rect x="207" y="345" width="601" height="91" rx="20" fill="#fff2dd"/>
+    <path fill="#292a31" d="M307 345h69l-64 91h-69zm163 0h69l-64 91h-69zm163 0h69l-64 91h-69z"/>
+  </g>
+  <path d="M464 518q0-10 10-5l116 65q10 6 0 12l-116 66q-10 5-10-6z" fill="#211f24"/>
+</svg>
