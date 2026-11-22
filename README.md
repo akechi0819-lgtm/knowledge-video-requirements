@@ -29,7 +29,7 @@ app="$(./scripts/build-desktop.sh)"
 
 ## 多人网页预览
 
-官网入口为 https://jiangjie.gingers.cloud/，点击“开始创作”进入 /bohack/ 在线工作台。官网使用 PR #9 的 `frontend/public/site/` 静态页面，由讲界专用 Nginx 配置提供首页、图片和演示视频，制作请求继续交给现有网关。
+官网入口为 https://jiangjie.gingers.cloud/ ，点击“开始创作”进入 /bohack/ 在线工作台。官网使用 PR #9 的 `frontend/public/site/` 静态页面，由讲界专用 Nginx 配置提供首页、图片和演示视频，制作请求继续交给现有网关。
 
 体验者打开网页即可使用，无需安装依赖、注册或订阅。制作在服务器运行，每个浏览器分配独立容器。通用文本、代码和看图由服务器配置的多模态模型统一处理，优先适配 GPT 6.1 Terra；配音默认使用小米 MiMo，独立填写小米 Key，也可选择其他兼容 OpenAI Speech 的服务。个人 API Key 仅保存在该实例内存中。模型费用由各自的服务商账户结算。
 
