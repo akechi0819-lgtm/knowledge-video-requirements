@@ -169,3 +169,45 @@ test('desktop restart resumes the same authorization and recovers a lost finish 
   assert.equal(await readFile(traces,'utf8'), 'pipeline\npipeline\n')
   assert.equal(remaining, 0)
 })
+
+test('desktop BYOK uses Responses for official OpenAI agent calls', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-byok-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const client = createMembership({}, path.join(home, 'workspace'), { url: 'http://localhost:8765', agentApi: 'openai-completions' })
+  const project = client.project(path.join(home, 'project'))
+  const load = baseUrl => async () => ({ model: { baseUrl } })
+  assert.equal((await project.route(load('https://api.openai.com/v1'))).provider, 'jiangjie-desktop')
+  await client.update({action: 'mode', mode: 'byok'})
+  assert.equal((await project.route(load('https://api.openai.com/v1'))).provider, 'jiangjie-desktop-responses')
+  assert.equal((await project.route(load('https://example.org/v1'))).provider, 'jiangjie-desktop')
+})
+
+test('BYOK resumes the original failed job without leasing or settling membership', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-byok-resume-'))
+  t.after(() => rm(home, {recursive:true,force:true}))
+  const workspace = path.join(home, 'project'), kit = path.join(home, 'kit')
+  const jobId = 'de0caa3e-9518-45b3-92c2-2a5a5fdb319d'
+  const job = path.join(workspace, 'production', jobId), scripts = path.join(kit, 'WORK/modules/video')
+  await mkdir(path.join(job, 'scenes'), {recursive:true})
+  await mkdir(path.join(job, 'film'), {recursive:true})
+  await mkdir(scripts, {recursive:true})
+  await writeFile(path.join(job, 'scenes', 'production.json'), '{}')
+  await writeFile(path.join(job, 'production.json'), JSON.stringify({version:'v1',sections:[{id:'S01',narration:'旁白'}]}))
+  await writeFile(path.join(workspace, 'production/status.json'), JSON.stringify({id:jobId,mode:'structured',version:'v1',status:'failed',error:'中断'}))
+  await writeFile(path.join(scripts, 'pipeline.mjs'), `
+    import { writeFile } from 'node:fs/promises'
+    if (process.env.VIDEO_RESUME !== '1') throw Error('missing resume flag')
+    const out = process.argv[process.argv.indexOf('--out')+1]
+    await writeFile(out+'/mapping.json', '{}'); await writeFile(out+'/final.mp4', 'fixture')
+  `)
+  await writeFile(path.join(scripts, 'verify.mjs'), `import {writeFile} from 'node:fs/promises'; await writeFile(new URL('./verify-report.json', 'file://'+process.argv[2]), '{"hardErrors":[]}')`)
+  const calls = []
+  const memberProject = { hold:()=>()=>{}, lease:async()=>{calls.push('lease'); throw Error('unexpected lease')}, close:async()=>{calls.push('close'); throw Error('unexpected close')} }
+  const app = createProduction(workspace, {desktop:true, videoKitDir:kit, memberProject, settings:{load:async()=>({model:{baseUrl:'https://example.invalid',model:'test',apiKey:'test'},tts:{baseUrl:'https://example.invalid',model:'test',voice:'test'}})}})
+  assert.equal((await app.start({jobId})).id, jobId)
+  for (let i=0; app.isActive() && i<100; i++) await delay(20)
+  const result = await app.status()
+  assert.equal(result.status, 'completed', result.error); assert.equal(result.id, jobId)
+  assert.equal(result.membershipAuthorizationId, undefined)
+  assert.deepEqual(calls, [])
+})

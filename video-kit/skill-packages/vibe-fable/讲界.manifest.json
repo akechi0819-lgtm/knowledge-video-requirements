@@ -1,0 +1,14 @@
+{
+  "id": "vibe-fable",
+  "name": "寓言场景：角色与变化仪表",
+  "skill": "vibe-know--skill",
+  "reference": "",
+  "summary": "依原版寓言风格制作知识短片。",
+  "description": "依原版寓言风格制作知识短片。",
+  "mode": "B 寓言",
+  "references": [
+    "references/worlds.md",
+    "references/visualization.md",
+    "references/visual-grammar.md"
+  ]
+}

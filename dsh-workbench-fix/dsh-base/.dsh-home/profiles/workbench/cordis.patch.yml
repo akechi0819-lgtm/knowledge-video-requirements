@@ -1,3 +1,6 @@
+# Video presets live only in the @bohack/blueprint bundle patch, which is
+# applied before this profile patch. Do not duplicate them here: a stale profile
+# would otherwise replace the updated bundle configuration on desktop startup.
 # Enable the local tools needed by the knowledge-video requirements workflow.
 - id: tool-bash
   disabled: false

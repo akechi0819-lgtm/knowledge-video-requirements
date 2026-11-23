@@ -66,15 +66,19 @@ cp -R "$source_base"/{package.json,package-lock.json,dsh-workbench.sh} "$base/"
 plugin_archive="$(node "$npm_cli" pack --silent --pack-destination "$stage" "$source_plugin")"
 tar -xzf "$stage/$plugin_archive" --strip-components=1 -C "$plugin"
 node --input-type=module -e 'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.argv[1]));' "$plugin/index.js"
-cp -R video-kit/{package.json,package-lock.json,WORK,scripts,vendor} "$kit/"
-for skill in andy-vibe-knowledge ai-teardown motion-design-prompt-generator vibe-knowledge-film; do
+cp -R video-kit/{README.md,package.json,package-lock.json,WORK,scripts,skill-packages,vendor} "$kit/"
+for skill_path in .agents/skills/*; do
+  [[ -f "$skill_path/SKILL.md" ]] || continue
+  skill="$(basename "$skill_path")"
+  # These upstreams exclude third-party reference material from redistribution.
+  [[ "$skill" != vibe-knowledge-film && "$skill" != vibe-know--skill ]] || continue
   /usr/bin/rsync -rL --exclude=.git --exclude=.DS_Store --exclude=node_modules --exclude=__pycache__ \
     ".agents/skills/$skill/" "$resources/.agents/skills/$skill/"
 done
 cp .project-skills/andy-vibe-knowledge/LICENSE "$resources/.agents/skills/andy-vibe-knowledge/"
 cp .project-skills/andy-vibe-knowledge/LICENSE "$resources/.agents/skills/ai-teardown/"
 cp .project-skills/deepseek-opus-motion-skill/LICENSE "$resources/.agents/skills/motion-design-prompt-generator/"
-cp scripts/{desktop-dsh.sh,desktop-runtime.sh} "$resources/scripts/"
+cp scripts/{desktop-dsh.sh,desktop-runtime.sh,install-external-skills.sh} "$resources/scripts/"
 cp desktop/agent.patch.yml "$resources/desktop-agent.patch.yml"
 
 node "$npm_cli" ci --prefix "$base" --omit=dev --prefer-offline --no-audit --no-fund

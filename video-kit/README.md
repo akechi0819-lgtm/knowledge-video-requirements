@@ -174,3 +174,6 @@ scene.html 通过注入的 `window.STYLE` 读同一份，渲染与编排不会�
 ### 多素材画面
 
 制作 JSON 的每段可通过 `assets` 传入本段需要的已确认素材，格式为 `{ "id": "traveler", "name": "旅行者", "type": "character", "image": "assets/traveler.svg" }`；类型为 `character`、`prop` 或 `background`。路径相对制作 JSON，素材应为已清理、可信的生成 SVG。同一 ID 可在不同段复用。画面模型必须安排该段列出的全部素材，并可逐段设置位置、大小、出现时间与移动目标；无法满足时会报错。原有 `image` 图片入口仍可使用。
+
+
+讲界通过 `skill-packages/<包>/讲界.manifest.json` 将风格入口对应到安装的原版 Skill 和所选模式。蓝图交付内容、事实、顺序及用户明确要求。制作 Agent 读取原版正文和模式资料，按原版选用模板、素材和脚本。简洁知识图解和杂志式图文沿用内置制作方式。

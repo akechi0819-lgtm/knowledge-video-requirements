@@ -182,8 +182,8 @@ test('keeps a session alive beyond ten minutes while tools make progress', async
   const idle = host(async () => { await new Promise(() => {}) })
   const timeout = runVideoAgent({ ctx: idle.ctx, cwd: '/tmp', prompt: 'make', tools })
   await new Promise(resolve => setImmediate(resolve))
-  tick(300000)
-  await assert.rejects(timeout, /画面模型超过 5 分钟.*制作已暂停/)
+  tick(720000)
+  await assert.rejects(timeout, /长时间没有活动.*已暂停/)
 })
 
 test('warns after two minutes and clears the warning when tool progress resumes', async t => {
@@ -210,7 +210,7 @@ test('warns after two minutes and clears the warning when tool progress resumes'
   assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
 })
 
-test('allows a tool ten minutes without a model-wait warning', async t => {
+test('keeps an active tool alive until the total production budget', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const events = []
   let registered
@@ -223,10 +223,11 @@ test('allows a tool ten minutes without a model-wait warning', async t => {
   const result = runVideoAgent({ ctx, cwd: '/tmp', prompt: 'make', tools: [...tools, slow], onProgress: event => events.push(event) })
   await new Promise(resolve => setImmediate(resolve))
   void registered.get('slow').execute({})
-  t.mock.timers.tick(599999)
+  t.mock.timers.tick(660000)
   assert.equal(events.filter(event => event.type === 'wait').length, 0)
-  t.mock.timers.tick(1)
-  await assert.rejects(result, /制作工具超过 10 分钟/)
+  assert.equal(aborted.aborted, false)
+  t.mock.timers.tick(3600000 - 660000)
+  await assert.rejects(result, /达到总时间预算/)
   assert.equal(aborted.aborted, true)
 })
 
@@ -267,6 +268,22 @@ test('projects screenshots as attachments and protects projection consistency', 
   assert.equal(captured.value.image, undefined)
   assert.equal(captured.content[1].attachment.id, 'attachment')
   assert.doesNotMatch(captured.content[0].text, /aW1hZ2U=/)
+})
+
+test('reports unavailable visual review for a text-only production route', async () => {
+  let preview
+  const { ctx } = host(async registered => {
+    preview = await registered.get('view_image').execute({}, {})
+    await registered.get('submit').execute({})
+  })
+  ctx.llm = { resolveModelInfo: async () => ({ inputModalities: ['text'] }) }
+  ctx.attachments = { saveImages: async () => assert.fail('text-only route must not receive an image attachment') }
+  await runVideoAgent({ ctx, cwd: '/tmp', runtime: {}, model: 'text-only', provider: 'provider', prompt: 'make', tools: [
+    ...tools,
+    { name: 'view_image', execute: async () => ({ ok: true, image: { mimeType: 'image/png', data: 'aW1hZ2U=' } }) },
+  ] })
+  assert.equal(preview.ok, false)
+  assert.match(preview.message, /视觉自检尚未完成/)
 })
 
 test('propagates attachment service errors instead of reporting a successful preview', async () => {

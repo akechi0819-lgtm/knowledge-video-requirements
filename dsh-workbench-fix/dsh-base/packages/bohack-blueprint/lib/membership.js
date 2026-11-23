@@ -175,13 +175,15 @@ export function createMembership(ctx, root, options = {}) {
         return terminal
       })
     }
-    function bind(sessionId, load, id) {
-      sessions.set(String(sessionId), { lease: options => lease({ ...options, id }), load })
+    function bind(sessionId, load, id, byok = false) {
+      sessions.set(String(sessionId), { lease: byok ? async () => null : options => lease({ ...options, id }), load })
     }
     function unbind(sessionId) { sessions.delete(String(sessionId)) }
-    async function route() {
+    async function route(loadSettings) {
       const { mode } = await account()
-      return { provider: mode === 'member' && memberResponses ? responsesProvider : agentProvider, model: alias }
+      const baseUrl = mode === 'byok' && loadSettings ? (await loadSettings()).model?.baseUrl : null
+      const useResponses = mode === 'member' ? memberResponses : baseUrl && new URL(baseUrl).origin === 'https://api.openai.com'
+      return { provider: useResponses ? responsesProvider : agentProvider, model: alias }
     }
     return { lease, current, close, bind, unbind, route, hold, error: id => sessions.get(String(id))?.error }
   }

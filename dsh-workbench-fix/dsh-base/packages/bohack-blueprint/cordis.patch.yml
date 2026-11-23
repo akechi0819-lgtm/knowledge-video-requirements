@@ -62,6 +62,79 @@
                 先写完全部段落，每段只看一张代表性预览，默认只审一轮；仅对脚本或播放错误、主体缺失、严重遮挡进行自动修复，修复后只复查受影响段。
                 静帧、装饰、排版偏好和审美建议不拦交片，也不自动触发返工。实际脚本错误继续修到可运行，完成后调用 submit 一次完成渲染、基础检查和提交；其余调整交给创作者的返工意见。
                 无法完成时明确说明问题，不要声称已经提交。
+    - id: preset-skill-runner
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: bohack-skill-runner
+        order: 11
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                你是知识视频制作师。按选定的原版制作方法和已确认蓝图制作，读取其引用的资料、模板和脚本；
+                不修改上游原件，在任务目录中工作。完成检查并通过 submit 提交；不能完成时明确报告原因。
+          - id: skill-command-runtime
+            name: cordis:group
+            group: true
+            isolate:
+              subprocess: true
+              shell: true
+              fs: true
+            config:
+              - id: skill-process
+                name: '@bohack/blueprint/skill-process'
+              - id: bash-executor
+                name: '@deepseek-ai/dsh-bash-local'
+              - id: tool-bash
+                name: '@deepseek-ai/dsh-tool-bash'
+              - id: tool-fs
+                name: '@deepseek-ai/dsh-tool-fs'
+                config:
+                  applyPatch: true
+                  readImage: false
+              - id: tool-fs-search
+                name: '@deepseek-ai/dsh-tool-fs-search'
+                config:
+                  sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelection: true
+                  modelDiscovery: true
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: false
     # The product service + temporary UI. One plugin registers ctx.bohack and
     # the /bohack prefix route, so there is exactly one row for this package.
     - id: bohack

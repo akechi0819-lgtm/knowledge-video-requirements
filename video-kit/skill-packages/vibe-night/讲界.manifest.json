@@ -1,0 +1,14 @@
+{
+  "id": "vibe-night",
+  "name": "夜曲知识实验：暗底光点",
+  "skill": "vibe-know--skill",
+  "reference": "",
+  "summary": "依原版夜色风格制作知识短片。",
+  "description": "依原版夜色风格制作知识短片。",
+  "mode": "C 夜曲",
+  "references": [
+    "references/worlds.md",
+    "references/visualization.md",
+    "references/visual-grammar.md"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "huashu-whiteboard",
+  "name": "白板手绘：关系逐步展开",
+  "skill": "huashu-art-motion",
+  "summary": "以白板绘制和逐步推演解释知识。",
+  "description": "以白板绘制和逐步推演解释知识。",
+  "references": [
+    "references/动画语法/y3_whiteboard.md"
+  ]
+}

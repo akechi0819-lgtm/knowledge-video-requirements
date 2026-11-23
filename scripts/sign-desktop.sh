@@ -25,7 +25,7 @@ while IFS= read -r -d '' path; do
   description="$(file -b "$path")"
   if [[ "$description" == *Mach-O* ]]; then
     case "$path" in
-      */MacOS/node|*/runtime/python/bin/python3.*)
+      */MacOS/node|*/site-packages/playwright/driver/node|*/runtime/python/bin/python3.*)
         codesign "${options[@]}" --entitlements "$entitlements" "$path" ;;
       *) codesign "${options[@]}" "$path" ;;
     esac

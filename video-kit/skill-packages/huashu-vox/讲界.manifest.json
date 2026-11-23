@@ -1,0 +1,10 @@
+{
+  "id": "huashu-vox",
+  "name": "剪报调查：拼贴与标注",
+  "skill": "huashu-art-motion",
+  "summary": "用素材、标注和镜头组织调查式讲述。",
+  "description": "用素材、标注和镜头组织调查式讲述。",
+  "references": [
+    "references/动画语法/y2_vox.md"
+  ]
+}

@@ -12,12 +12,24 @@ mkdir -p "$profile" "$workspace"
 for name in package.json cordis.yml cordis.patch.yml; do
   [[ -e "$profile/$name" ]] || cp "$base/.dsh-home/profiles/workbench/$name" "$profile/$name"
 done
-# Repoint the generated link on every launch because the App can be moved or updated.
+# Repoint the bundle on every launch so preset updates reach existing profiles.
+# Video presets are defined in the bundle, not the first-launch profile copy.
 mkdir -p "$profile/node_modules/@bohack"
 ln -sfn "$base/packages/bohack-blueprint" "$profile/node_modules/@bohack/blueprint"
 for name in .agents rules; do
   [[ -e "$workspace/$name" ]] || cp -R "$base/workspace/$name" "$workspace/$name"
 done
+# Older installs copied these bundled rules only on first launch. Upgrade the
+# shipped versions while preserving locally edited rules and installed skills.
+refresh_blueprint_rule() {
+  local relative="$1" previous="$2" target="$workspace/$1"
+  if [[ ! -e "$target" ]] || [[ "$(shasum -a 256 < "$target" | cut -d' ' -f1)" == "$previous" ]]; then
+    mkdir -p "$(dirname "$target")"
+    cp "$base/workspace/$relative" "$target"
+  fi
+}
+refresh_blueprint_rule rules/blueprint.md 81ac3e016afa941a601326ea4be9c2fb0a9a03011c3ce6af13fdbcc8eb93e83e
+refresh_blueprint_rule .agents/skills/blueprint/SKILL.md 16a7ee10d894b058eeed52893f6776eda10eddfe1eea1e7be3902a1842b0efb1
 export JIANGJIE_DESKTOP_WORKSPACE="$workspace"
 export BOHACK_DESKTOP_KEYCHAIN_HELPER="$bin/Jiangjie"
 plist="$resources/../Info.plist"

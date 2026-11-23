@@ -1,0 +1,10 @@
+{
+  "id": "andy-pixel-quest",
+  "name": "像素闯关：地图与状态栏（Andy）",
+  "skill": "andy-vibe-knowledge",
+  "summary": "像素角色和道具构成关卡，配旁白讲解。",
+  "description": "像素角色和道具构成关卡，配旁白讲解。",
+  "references": [
+    "styles/pixel/STYLE.md"
+  ]
+}

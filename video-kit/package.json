@@ -5,6 +5,15 @@
   "type": "module",
   "description": "Blueprint-driven deterministic video pipeline: HTML/SVG frames + headless Edge + ffmpeg + edge-tts, with forced BGM mix and QA",
   "dependencies": {
-    "playwright-core": "^1.65.1"
+    "playwright-core": "^1.65.1",
+    "@remotion/cli": "4.0.537",
+    "@remotion/google-fonts": "4.0.537",
+    "@remotion/noise": "4.0.537",
+    "@remotion/paths": "4.0.537",
+    "@remotion/shapes": "4.0.537",
+    "@remotion/transitions": "4.0.537",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.537"
   }
 }

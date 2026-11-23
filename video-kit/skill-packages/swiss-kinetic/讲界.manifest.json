@@ -1,0 +1,10 @@
+{
+  "id": "swiss-kinetic",
+  "name": "瑞士动态排版：网格与大字",
+  "skill": "motion-design-prompt-generator",
+  "summary": "以瑞士网格、文字和运动图形组织画面。",
+  "description": "以瑞士网格、文字和运动图形组织画面。",
+  "references": [
+    "design-systems/swiss-kinetic.md"
+  ]
+}

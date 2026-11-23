@@ -6,7 +6,8 @@
   "description": "Knowledge-video blueprint workbench: a Cordis service plus a temporary /bohack Web UI.",
   "exports": {
     ".": "./index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./skill-process": "./lib/skill-process.js"
   },
   "files": [
     "index.js",

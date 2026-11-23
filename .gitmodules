@@ -7,3 +7,9 @@
 [submodule "vibe-knowledge-film"]
 	path = .project-skills/vibe-knowledge-film
 	url = https://github.com/HeyChengC/vibe-knowledge-film.git
+[submodule ".project-skills/huashu-art-motion"]
+	path = .project-skills/huashu-art-motion
+	url = https://github.com/alchaincyf/huashu-art-motion.git
+[submodule "vibe-know--skill"]
+	path = .project-skills/vibe-know--skill
+	url = https://github.com/zhaosenlin12-creator/vibe-know--skill.git
