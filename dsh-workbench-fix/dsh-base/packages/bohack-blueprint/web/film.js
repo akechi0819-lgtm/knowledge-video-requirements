@@ -1,6 +1,6 @@
-/* 讲界成片台：按蓝图段展示制作进度，并用段落映射同步播放。 */
+/* 讲界成片台：播放完整视频，并在有映射时提供时间跳转。 */
 window.BohackFilm = (() => {
-  const PHASES = ['生成素材', '生成画面', '配音与渲染', '自动质检', '制作完成']
+  const PHASES = ['编码素材', '生成画面', '配音与渲染', '自动质检', '制作完成']
 
   function qs(root, sel) { return root.querySelector(sel) }
 
@@ -43,9 +43,9 @@ window.BohackFilm = (() => {
     if (p.status === 'completed') {
       if (p.membershipError) return p.membershipError
       if (p.membershipPending) return '成片已保存在本机，完成回执待确认。'
-      if (p.source === 'external') return `蓝图 ${p.version} 的独立制作成片已归档，请按段观看并核对。`
+      if (p.source === 'external') return `蓝图 ${p.version} 的独立制作成片已归档，请观看并核对。`
       if (p.verify && p.verify.pass === false) return '成片已合成，质检发现需要核对的问题。'
-      return '成片已做好，点击右侧段落可跳到对应时刻。'
+      return mappedSections(p).length ? '成片已做好，可点击时间点跳转观看。' : '成片已做好，可以播放和下载。'
     }
     if (p.waitMessage) return p.waitMessage
     const sections = p.sections || []
@@ -57,7 +57,7 @@ window.BohackFilm = (() => {
       if (withScene && missing.length) return `等待 ${missing.map(s => s.id).join('、')} 的画面，已保存 ${withScene} / ${sections.length} 段。`
       return withScene ? '各段画面已保存，正在准备预览与合成。' : '视频 Agent 正在读取蓝图和素材，设计画面。'
     }
-    if (p.phase === '生成素材') return '正在为当前蓝图准备动画素材。'
+    if (['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)) return '素材 Agent 正在按蓝图和选定风格制作、检查素材。'
     if (p.phase === '生成画面') {
       const current = sections.find(s => !s.scene)
       if (current) return withScene ? `${current.id} 正在生成画面，已完成 ${withScene} / ${sections.length} 段。` : '正在根据蓝图生成各段画面。'
@@ -75,8 +75,10 @@ window.BohackFilm = (() => {
 
   function renderPhases(rail, p) {
     if (!p || p.status === 'completed') { rail.hidden = true; rail.replaceChildren(); return }
-    const phases = p.mode === 'agent' ? ['启动视频制作 Agent', '生成配音', '编写画面', '预览画面', '配音与渲染', '自动质检', '制作完成'] : PHASES
-    const idx = Math.max(0, phases.indexOf(p.phase === '正在制作视频' ? '编写画面' : p.phase))
+    const phases = p.mode === 'agent' ? ['编码素材', '启动视频制作 Agent', '生成配音', '编写画面', '预览画面', '配音与渲染', '自动质检', '制作完成'] : PHASES
+    const isAssetPhase = ['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)
+    const phase = isAssetPhase ? '编码素材' : p.phase === '正在制作视频' ? '编写画面' : p.phase
+    const idx = Math.max(0, phases.indexOf(phase))
     const failed = p.status === 'failed' || p.status === 'interrupted'
     rail.hidden = false
     rail.innerHTML = phases.map((name, i) => {
@@ -85,18 +87,29 @@ window.BohackFilm = (() => {
     }).join('')
   }
 
-  function renderCards(rail, p, onSelect, activeId) {
+  function mappedSections(p) {
     const sections = p?.sections || []
+    return (p?.mapping?.segments || []).flatMap(seg => {
+      const section = sections.find(item => item.id === (seg.blueprintId || seg.id))
+      return section ? [{...seg, id:section.id, title:seg.title || section.title || section.id}] : []
+    })
+  }
+
+  function renderCards(rail, p, onSelect, activeId) {
+    const mapped = mappedSections(p)
+    const sections = p?.status === 'completed' && p.artifacts?.video
+      ? mapped.map(seg => ({...p.sections?.find(sec=>sec.id===seg.id), id:seg.id, title:seg.title || p.sections?.find(sec=>sec.id===seg.id)?.title || seg.id}))
+      : p?.sections || []
     if (!sections.length) { rail.hidden = true; rail.replaceChildren(); return }
     rail.hidden = false
     const verifyMap = Object.fromEntries((p.verify?.segments || []).map(s => [s.id, s]))
     rail.innerHTML = sections.map(sec => {
-      const step = sectionStep(sec, p.phase, p.status)
+      const step = p.status==='completed' && p.artifacts?.video ? '跳转观看' : sectionStep(sec, p.phase, p.status)
       const issues = verifyMap[sec.id]?.issues || []
       const on = sec.id === activeId ? ' is-on' : ''
       const ready = sec.clip || p.artifacts?.video ? ' is-ready' : ''
-      return `<button type="button" class="sec-card${on}${ready}" data-sec="${sec.id}">
-        <header><span class="sid">${sec.id}</span><span class="step">${step}</span></header>
+      return `<button type="button" class="sec-card${on}${ready}" data-sec="${esc(sec.id)}">
+        <header><span class="sid">${esc(sec.id)}</span><span class="step">${step}</span></header>
         <h3>${esc(sec.title || sec.id)}</h3>
         ${sec.narration ? `<p class="narration">${esc(sec.narration)}</p>` : ''}
         ${issues.length ? `<p class="sec-issue">${esc(issues.join('；'))}</p>` : ''}
@@ -136,8 +149,8 @@ window.BohackFilm = (() => {
     const track = qs(shell, '.timeline-track')
     const playbackError = qs(shell, '.player-error')
     if (!video || !track) return
-    const segments = p.mapping?.segments || []
-    const duration = () => video.duration || p.mapping?.duration || 0
+    const segments = mappedSections(p)
+    const duration = () => video.duration || p.mapping?.duration || p.verify?.duration || 0
 
     function currentId() {
       const t = video.currentTime || 0
@@ -227,8 +240,8 @@ window.BohackFilm = (() => {
       player._ctl = null
       return null
     }
-    const segments = p.mapping?.segments || []
-    const total = p.mapping?.duration || 0
+    const segments = mappedSections(p)
+    const total = p.mapping?.duration || p.verify?.duration || 0
     const ticks = segments.map(seg => {
       const left = total ? `${(seg.start / total) * 100}%` : '0%'
       return `<button type="button" class="timeline-tick" style="left:${left}" data-start="${seg.start || 0}" title="${esc(seg.title || seg.id)}"></button>`
@@ -236,9 +249,18 @@ window.BohackFilm = (() => {
     const downloads = p.status === 'completed' ? `<p class="film-downloads">
       <a href="${fileUrl(threadId, 'video')}" download="final.mp4">下载成片</a>
       ${p.mode === 'agent' ? `<a href="${fileUrl(threadId, 'source')}" download="source.zip">下载源码</a>` : ''}
-      <a href="${fileUrl(threadId, 'mapping')}" download="mapping.json">下载段落映射</a>
+      ${segments.length ? `<a href="${fileUrl(threadId, 'mapping')}" download="mapping.json">下载时间映射</a>` : ''}
       ${p.source === 'external' ? `<a href="/bohack/api/file?threadId=${encodeURIComponent(threadId)}&path=outbox%2F%E5%88%B6%E4%BD%9C%E8%93%9D%E5%9B%BE.md" target="_blank" rel="noopener">制作蓝图</a><a href="/bohack/api/file?threadId=${encodeURIComponent(threadId)}&path=outbox%2F%E5%BD%92%E6%A1%A3%E9%AA%8C%E6%94%B5.md" target="_blank" rel="noopener">归档验收</a>` : ''}
     </p>` : ''
+    if (media.kind === 'video' && !segments.length) {
+      player.innerHTML = `<div class="player"><video id="filmVideo" controls playsinline preload="metadata" src="${esc(media.src)}"></video></div>${downloads}`
+      if (p.previousJobId) {
+        const previous = new URL(fileUrl(threadId, 'video'), location.origin); previous.searchParams.set('jobId', p.previousJobId)
+        player.insertAdjacentHTML('beforeend', `<details><summary>对照上一版</summary><video controls preload="metadata" src="${esc(previous.pathname + previous.search)}"></video></details>`)
+      }
+      player._ctl = null
+      return null
+    }
     player.innerHTML = `<div class="player">
       <video id="filmVideo" playsinline preload="metadata" src="${esc(media.src)}"></video>
       <p class="player-error" role="status"></p>
@@ -259,6 +281,29 @@ window.BohackFilm = (() => {
     return player._ctl
   }
 
+  function renderPixelAssets(root, p, threadId) {
+    let panel = root.querySelector('#pixelAssets')
+    if (!panel) {
+      panel = document.createElement('section')
+      panel.id = 'pixelAssets'
+      root.querySelector('#filmHeadline')?.insertAdjacentElement('afterend', panel)
+    }
+    const assets = p?.pixelAssets || []
+    panel.hidden = !assets.length
+    const signature = JSON.stringify([p?.id, assets, threadId])
+    if (panel.dataset.signature === signature) return
+    panel.dataset.signature = signature
+    const candidates = new URL(fileUrl(threadId, 'pixel-candidates'), location.origin)
+    if (p?.id) candidates.searchParams.set('jobId', p.id)
+    panel.innerHTML = assets.length ? '<h3>片中使用的像素素材</h3><a target="_blank" rel="noopener" href="' + esc(candidates.pathname + candidates.search) + '">查看候选造型与选用理由</a><div style="display:flex;gap:16px;flex-wrap:wrap">' + assets.map(asset => {
+      const url = new URL(fileUrl(threadId, 'pixel-image'), location.origin)
+      url.searchParams.set('jobId', p.id)
+      url.searchParams.set('assetId', asset.id)
+      const label = esc(asset.label || asset.name || asset.id)
+      return `<figure><img src="${esc(url.pathname + url.search)}" alt="${label}" style="width:96px;height:96px;object-fit:contain;image-rendering:pixelated"><figcaption>${label}<br>${esc(asset.sceneIds.join('、'))}</figcaption></figure>`
+    }).join('') + '</div>' : ''
+  }
+
   function render(s, env) {
     const root = document.getElementById('pane-film')
     if (!root) return
@@ -271,12 +316,13 @@ window.BohackFilm = (() => {
     const prep = document.getElementById('filmPrep')
     const filmBp = document.getElementById('filmBp')
     const filmState = document.getElementById('filmState')
-    if (filmBp) filmBp.textContent = s.currentVersion ? `蓝图 v${s.currentVersion}（${(s.sections || []).length} 段）` : '—'
+    if (filmBp) filmBp.textContent = s.currentVersion ? `蓝图 v${s.currentVersion}（${(s.sections || []).length} 个内容要点）` : '—'
     if (filmState) {
       const done = s.finalized?.version === s.currentVersion && s.stage === 'finalized'
       const labels = { completed:'成片已出', running:p?.phase || '制作中', failed:'制作失败', interrupted:'制作中断', abandoned:'已放弃' }
       filmState.textContent = labels[p?.status] || (done ? '已定稿' : '未定稿')
     }
+    renderPixelAssets(root, p, env.threadId)
     renderPhases(rail, p)
     if (line) {
       const show = Boolean(p) && (p.status !== 'completed' || p.verify?.pass === false || p.membershipPending || p.membershipError)
@@ -293,7 +339,7 @@ window.BohackFilm = (() => {
     root.classList.toggle('is-completed', p?.status === 'completed')
     const signature = JSON.stringify({
       id: p?.id, status: p?.status, phase: p?.phase, error: p?.error, waitMessage: p?.waitMessage, thread: env.threadId,
-      artifacts: p?.artifacts, sections: (p?.sections || []).map(sec => [sec.id, sec.scene, sec.sceneKind, sec.audio, sec.clip]),
+      artifacts: p?.artifacts, mapping:p?.mapping, duration:p?.verify?.duration, sections: (p?.sections || []).map(sec => [sec.id, sec.scene, sec.sceneKind, sec.audio, sec.clip]),
     })
     const ctl = renderPlayer(player, p, env.threadId, player._active, signature)
     renderCards(cards, p, id => {

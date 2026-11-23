@@ -300,13 +300,13 @@
     <div class="side-body">
       <!-- 需求单 -->
       <div class="pane on" id="pane-req">
-        <div class="skill-choice studio-skill" id="blueprintSkillGallery"><label for="studioSkill">制作风格 / Skill</label><select id="studioSkill" disabled></select><span id="studioSkillSummary"></span><button type="button" class="sm ghost" id="replanWithSkill" hidden>按此 Skill 重新起草</button></div>
+        <div class="skill-choice studio-skill" id="blueprintSkillGallery"><label for="studioSkill">制作风格 / Skill</label><select id="studioSkill" disabled></select><span id="studioSkillSummary"></span></div>
         <div class="doc" id="reqDoc"><div class="empty">需求单为空。在左侧写下第一句话，助手会开始整理。</div></div>
 
       </div>
       <!-- 资产 -->
       <div class="pane" id="pane-assets">
-        <p class="hint" style="margin-bottom:10px">待补的声明可上传图片，或用素材图小工具生成；有文件后请人工审核。可用的成片素材按蓝图对应段落提供给制作，是否实际入片以成片为准。删除只移除登记，不删除文件。</p>
+        <p class="hint" style="margin-bottom:10px">上传参考资料，或查看成片制作时生成的素材。删除只移除登记，不删除文件。</p>
         <section id="filmAssets" aria-label="本片素材"></section>
         <div id="assetList"><div class="empty">还没有资料。可以将文件拖到对话区上传。</div></div>
       </div>
@@ -315,14 +315,20 @@
 
         <div id="styleList" style="margin:12px 0"></div>
         <details>
-          <summary>导入风格正文</summary>
-          <p class="hint">可导入自己的 SKILL.md，或粘贴已取得的 GitHub、社媒正文并填写来源链接。</p>
+          <summary>导入纯文字视觉参考</summary>
+          <p class="hint">粘贴视觉规则或导入文字文件；这些内容作为视觉参考，不会执行其中的脚本。</p>
           <input id="styleName" placeholder="风格名称" style="width:100%;margin:8px 0">
           <input id="styleFile" type="file" accept=".md,.txt,text/markdown,text/plain">
           <textarea id="styleText" placeholder="粘贴风格正文" style="width:100%;min-height:140px;margin:8px 0"></textarea>
           <input id="styleSource" placeholder="来源链接（粘贴网页正文时填写）" style="width:100%;margin-bottom:8px">
-          <button class="sm ghost" id="styleGithub">读取 GitHub</button>
           <button class="sm primary" id="styleImport">保存到风格库</button>
+        </details>
+        <details style="margin-top:12px">
+          <summary>安装 GitHub 制作 Skill</summary>
+          <p class="hint">输入 GitHub 仓库链接，检查后选择要安装的 Skill。安装会保留仓库中的脚本和参考资料。</p>
+          <label>GitHub 仓库链接<input id="skillGithubUrl" type="url" style="width:100%;margin:8px 0"></label>
+          <button class="sm ghost" id="skillGithubInspect">检查仓库</button>
+          <div id="skillGithubResults"></div>
         </details>
         <details style="margin-top:12px">
           <summary>从参考视频学习</summary>
@@ -415,7 +421,7 @@ function busy(on,label){
 async function api(url, body, threadId=state.threadId){
   const production = url === '/bohack/api/production'
   const opt = body===undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}
-  if (!url.startsWith('/bohack/api/threads') && !['/bohack/api/styles','/bohack/api/styles-import','/bohack/api/styles-update','/bohack/api/styles-remove','/bohack/api/style-github'].includes(url) && !threadId) throw new Error('请先选择创作')
+  if (!url.startsWith('/bohack/api/threads') && !['/bohack/api/styles','/bohack/api/styles-import','/bohack/api/styles-update','/bohack/api/styles-remove','/bohack/api/styles/github/inspect','/bohack/api/styles/github/install'].includes(url) && !threadId) throw new Error('请先选择创作')
   if(threadId && !url.startsWith('/bohack/api/threads')) url += (url.includes('?')?'&':'?')+'threadId='+encodeURIComponent(threadId)
   const r = await apiFetch(url,opt).catch(error=>{
     if(production) throw new Error('无法连接本地工作台，请重新打开工作台后再试。')
@@ -687,7 +693,7 @@ function chooseTab(tab){
   state.tab=tab
   $$('.side-tabs .tab').forEach(x=>{x.classList.toggle('on',x.dataset.tab===tab);x.setAttribute('aria-pressed',String(x.dataset.tab===tab))})
   $$('.pane').forEach(p=>p.classList.toggle('on',p.id==='pane-'+tab))
-  $('#panelTitle').textContent=({req:'视频需求单',assets:'参考资料',bp:'分段蓝图',film:'成片工作台'})[tab]
+  $('#panelTitle').textContent=({req:'视频需求单',assets:'参考资料',bp:'内容蓝图',film:'成片工作台'})[tab]
   $('#modeBtn').hidden=tab!=='bp' || !state.status?.currentVersion
   $('.app')?.classList.toggle('film-focus', tab==='film')
   $('.side-body').scrollTop=0
@@ -910,7 +916,7 @@ function leafHTML(sec, s, manual){
   const head=`<div class="leaf-head"><span class="sid">${esc(sec.id)}</span><span class="stitle">${esc(sec.title)}</span><span style="flex:1"></span>${badge}</div>
     <div class="intent">${esc(sec.intent||'（缺）')}</div>
     <div class="facts">关键事实：${sec.facts?.length?sec.facts.map(esc).join('；'):'（缺）'}</div>
-    <div class="intent" style="color:var(--muted)">画面意图：${esc(sec.visual||'（缺）')}</div>`
+    ${sec.visual ? `<div class="intent" style="color:var(--muted)">画面意图：${esc(sec.visual)}</div>` : ''}`
   const ops=manual
     ? `<div class="ops">
         <button class="sm ghost" data-act="edit" data-id="${esc(sec.id)}">改这段</button>
@@ -995,7 +1001,7 @@ function beginEdit(id){
     <textarea id="edTitle" style="min-height:30px">${esc(sec.title)}</textarea>
     <textarea id="edIntent" placeholder="讲什么">${esc(sec.intent||'')}</textarea>
     <textarea id="edFacts" placeholder="关键事实（每行一条）">${esc((sec.facts||[]).join('\n'))}</textarea>
-    <textarea id="edVisual" placeholder="画面意图">${esc(sec.visual||'')}</textarea>
+    <textarea id="edVisual" placeholder="画面意图（可选）">${esc(sec.visual||'')}</textarea>
     <textarea id="edNarration" placeholder="旁白">${esc(sec.narration||'')}</textarea>
     <div class="ops"><button class="sm primary" id="edSave">保存新版本</button><button class="sm ghost" id="edCancel">取消</button></div>`
   $('#edSave').addEventListener('click',async()=>{
@@ -1099,7 +1105,7 @@ async function refresh(){
     const blueprintKey=JSON.stringify([id,s.currentVersion,s.sections,s.locked,s.blueprintSkill,s.hasFeedback,s.lastRun,s.stage,s.blueprintAssets])
     if(state.blueprintKey!==blueprintKey && !$('#edTitle') && !$('#noteText')?.value){ state.blueprintKey=blueprintKey; renderBlueprint(); if(state.assets) renderAssets(state.assets) }
 
-    $('#filmBp').textContent=s.currentVersion?`蓝图 v${s.currentVersion}（${s.sections.length} 段）`:'—'
+    $('#filmBp').textContent=s.currentVersion?`蓝图 v${s.currentVersion}（${s.sections.length} 个内容要点）`:'—'
     $('#filmState').textContent=s.finalized?.version===s.currentVersion && s.stage==='finalized'?'已定稿 ✓':'未定稿'
     renderFilm(s)
     renderValidation(s.validation)
@@ -1112,7 +1118,10 @@ const assetRequests=new Set()
 let filmRender=0
 let productionRequest=null, productionFailure=null
 function styleItems(list){
-  return (list||[]).filter(item => item.kind === 'style' || (!item.kind && !String(item.id||'').startsWith('repo-skill:')))
+  return list||[]
+}
+function styleKindLabel(item){
+  return ({skill:'制作 Skill',preset:'Skill 预设',visual:'纯文字视觉参考',builtin:'内置轻量风格'})[item.kind] || (item.kind==='process'?'制作 Skill':'视觉参考')
 }
 function stylePreviewHtml(item){
   const file=item.preview?.file, kind=item.preview?.kind
@@ -1147,7 +1156,7 @@ function pendingReceipt(s){
   return s.production?.status==='completed' && Boolean(s.production.membershipPending || s.production.membershipError)
 }
 function resumableProduction(s){
-  return Boolean(s.production?.membershipAuthorizationId) && ['failed','interrupted'].includes(s.production.status)
+  return Boolean(s.production?.id) && ['failed','interrupted'].includes(s.production.status)
 }
 function productionLabel(s){
   if(pendingReceipt(s)) return '补交完成回执'
@@ -1168,7 +1177,7 @@ function productionReason(s){
   if(s.memberProduction?.closing==='abandon') return '请先重试放弃本片授权。'
   if(pendingReceipt(s) || resumableProduction(s)) return ''
   if(!s.currentVersion) return '请先生成蓝图。'
-  if(s.finalized?.version!==s.currentVersion || s.stage!=='finalized') return '请先在分段蓝图中确认定稿。'
+  if(s.finalized?.version!==s.currentVersion || s.stage!=='finalized') return '请先在内容蓝图中确认定稿。'
   return ''
 }
 function productionNote(s){
@@ -1184,7 +1193,10 @@ $('#productionMode').onchange=()=>{ if(state.status) updateProductionAction(stat
 function updateProductionAction(s){
   const feedback=$('#productionFeedback')
   const resuming=pendingReceipt(s) || resumableProduction(s)
-  $('#productionMode').closest('label').hidden=resuming
+  const selected=s.visualStyle?.style
+  const executable=['skill','preset','process'].includes(selected?.kind) || selected?.skillPackage || selected?.id?.startsWith('repo-skill:')
+  if(executable) $('#productionMode').value='agent'
+  $('#productionMode').closest('label').hidden=resuming || Boolean(executable)
   feedback.disabled=resuming || $('#productionMode').value!=='agent' || !(s.production?.status==='completed' || s.production?.previousJobId)
   feedback.parentElement.hidden=feedback.disabled
   const btn=$('#btnProduction')
@@ -1199,68 +1211,52 @@ function updateProductionAction(s){
   const error=productionFailure?.thread===state.threadId && productionFailure.version===s.currentVersion && !reason ? productionFailure.message : ''
   setProductionStatus(error || reason || productionNote(s), error || failed ? 'error' : '')
 }
-function filmAssetStatus(asset, ledger) {
-  if(asset.status==='approved') return 'generated-approved'
-  const record=ledger.find(a=>a.id===asset.ledgerId)
-  if(record?.path && !record.generatedAssetId) return record.trust==='vetted' ? 'ledger-approved' : 'ledger-review'
-  return asset.status
-}
 async function renderFilmAssets(s, ready, generation){
   const box=$('#filmAssets'), thread=state.threadId, version=s.currentVersion
   const key=JSON.stringify([thread,version])
-  if(!ready){ box.innerHTML=s.finalized?.version===s.currentVersion && s.stage==='finalized' && s.blueprintAssets?.length ? '<p class="hint">请先在成片页选择视觉风格，再生成本片素材。</p>' : ''; updateProductionAction(s); return }
-  updateProductionAction(s, {needed:true, busy:true})
+  if(!ready){ box.replaceChildren(); return }
   const current=()=>generation===filmRender && state.threadId===thread
   try {
-    const [data, ledger] = await Promise.all([
-      api('/bohack/api/generated-assets?version='+version,undefined,thread),
-      api('/bohack/api/assets',undefined,thread),
-    ])
+    const data=await api('/bohack/api/generated-assets?version='+version,undefined,thread)
     if(!current()) return
-    const generated=new Map(data.assets.map(a=>[a.id,a]))
-    const items=(s.blueprintAssets||[]).map(plan=>({status:'pending',...plan,...generated.get(plan.id),ledgerId:plan.ledgerId,sections:plan.sections,name:plan.name,description:plan.description}))
-    if(!items.length){ box.replaceChildren(); updateProductionAction(s); return }
-    const busy=assetRequests.has(key) || state.busy || s.production?.status==='running'
-    for(const a of items) a.displayStatus=filmAssetStatus(a,ledger.assets||[])
-    const approved=items.every(a=>['generated-approved','ledger-approved'].includes(a.displayStatus))
-    const pending=items.some(a=>a.displayStatus==='pending')
-    const banner=pending ? '<p class="asset-banner">待补素材可以上传，也可以用素材图小工具生成；生成后请人工确认，也可先制作。</p>' : ''
-    const statusLabel={'pending':'待生成','generated':'待确认','generated-approved':'已确认','ledger-approved':'已确认 · 来自资料库','ledger-review':'待确认 · 请到资料页审核','conflict':'资料库有多份已确认文件，请保留一份'}
-    box.innerHTML=banner+'<h3>本片已关联的素材</h3>'+items.map(a=>`<div class="leaf">
-      ${a.previewUrl && ['generated','generated-approved'].includes(a.displayStatus)?`<img src="${esc(a.previewUrl)}" alt="${esc(a.name)}" style="width:120px;height:90px;object-fit:contain;background:var(--surface);border-radius:10px">`:''}
-      <b>${esc(a.name)}</b> · ${esc(a.sections.join('、'))} · ${esc(statusLabel[a.displayStatus])}
-      <p>${esc(a.description)}</p>${['pending','generated','generated-approved'].includes(a.displayStatus)?`<button class="sm ghost" data-generate="${esc(a.id)}">${a.previewUrl?'用小工具重做':'用小工具生成素材图'}</button>`:''}
-      ${a.displayStatus==='generated'?`<button class="sm primary" data-approve="${esc(a.id)}">确认此项</button>`:''}</div>`).join('')
-      + '<p role="status" class="hint"></p>'
-    updateProductionAction(s, {needed:true, busy, pending, unapproved:!approved})
-    const buttons=box.querySelectorAll('button')
-    for(const btn of buttons){
+    const items=new Map((data.assets||[]).map(a=>[a.id,a]))
+    for(const a of s.production?.assets||[]) items.set(a.id,{...items.get(a.id),...a})
+    if(!items.size){ box.replaceChildren(); return }
+    const busy=assetRequests.has(key) || state.busy || s.production?.status==='running' || productionRequest===thread
+    const canRevise=s.production?.status==='completed' && !pendingReceipt(s) && s.production.version==='v'+version && (s.production.styleId||null)===(s.visualStyle?.style?.id||null)
+    const drafts=box.dataset.assetThread===thread ? new Map([...box.querySelectorAll('[data-asset-feedback]')].map(el=>[el.dataset.assetFeedback,el.value])) : new Map()
+    box.dataset.assetThread=thread
+    box.innerHTML='<h3>本片素材</h3>'+[...items.values()].map(a=>{
+      const previews=a.files?.length ? a.files : a.variants?.length ? a.variants : a.previewUrl ? [{previewUrl:a.previewUrl}] : []
+      return `<div class="leaf"><b>${esc(a.name || a.id)}</b>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">${previews.filter(f=>f.previewUrl).map(f=>`<figure><img src="${esc(f.previewUrl)}" alt="${esc(a.name || a.id)}" style="width:120px;height:90px;object-fit:contain;background:var(--surface);border-radius:10px"><figcaption>${esc(f.variant || '')}</figcaption></figure>`).join('')}</div>
+        ${a.sourceUrl ? `<a href="${esc(a.sourceUrl)}" download>下载素材源文件</a>` : ''}
+        ${canRevise && a.revisable!==false && (s.production.assets||[]).some(item=>item.id===a.id) ? `<label>素材修改意见<textarea data-asset-feedback="${esc(a.id)}" placeholder="例如：给人物换一顶红帽子"></textarea></label><button class="sm ghost" data-revise-asset="${esc(a.id)}">修改此素材并重新制作</button>` : ''}</div>`
+    }).join('')+'<p role="status" class="hint"></p>'
+    for(const input of box.querySelectorAll('[data-asset-feedback]')) input.value=drafts.get(input.dataset.assetFeedback) || ''
+    for(const btn of box.querySelectorAll('[data-revise-asset]')){
       btn.disabled=busy
       btn.onclick=async()=>{
-        assetRequests.add(key)
-        for(const b of buttons) b.disabled=true
-        updateProductionAction(s, {needed:true, busy:true, pending, unapproved:!approved})
-        box.querySelector('[role=status]').textContent='正在处理素材…'
-        let error=''
+        const id=btn.dataset.reviseAsset
+        const feedback=[...box.querySelectorAll('[data-asset-feedback]')].find(el=>el.dataset.assetFeedback===id).value.trim()
+        if(!feedback){ box.querySelector('[role=status]').textContent='请先填写素材修改意见。'; return }
+        assetRequests.add(key); productionRequest=thread; productionFailure=null
+        for(const b of box.querySelectorAll('button')) b.disabled=true
+        updateProductionAction(s)
+        box.querySelector('[role=status]').textContent='正在启动素材修改和成片制作…'
         try {
-          const approve=btn.hasAttribute('data-approve')
-          const id=approve?btn.dataset.approve:btn.dataset.generate
-          const item=items.find(a=>a.id===id)
-          await api('/bohack/api/generated-assets-'+(approve?'approve':'generate'),approve ? {version,id,revisions:{[id]:item.revision}} : {version,id},thread)
-        } catch(e){ error=e.message }
-        finally { assetRequests.delete(key) }
-        if(thread===state.threadId){
-          await refresh()
-          if(error) box.querySelector('[role=status]').textContent='素材处理失败：'+error
-          else await loadAssets()
+          const result=await api('/bohack/api/production',{mode:s.production.mode,regenerateAssetId:id,assetFeedback:feedback},thread)
+          if(result.membershipError) throw new Error(result.membershipError)
+        } catch(e){ productionFailure={thread,version,message:e.message} }
+        finally {
+          assetRequests.delete(key)
+          if(productionRequest===thread) productionRequest=null
+          if(thread===state.threadId){ await refresh(); updateProductionAction(state.status) }
         }
       }
     }
   } catch(e){
-    if(current()){
-      box.textContent='无法加载素材：'+e.message
-      setProductionStatus('无法加载素材：'+e.message, 'error')
-    }
+    if(current()) box.textContent='无法加载素材：'+e.message
   }
 }
 function styleSummary(item){
@@ -1339,7 +1335,7 @@ function renderFilmStyles(s){
   if(!showGallery){
     const item=styleItems(state.styleLibrary).find(x=>x.id===visual.style?.id) || visual.style || {}
     const change=s.production?.status==='running'?'':`<button type="button" class="ghost" data-pick-style>更换风格</button>`
-    commitFilmStyles(styleBox,`<div class="style-current"><div class="style-preview">${stylePreviewHtml(item)}</div><div class="style-current-copy"><strong>${esc(item.name||'当前风格')}</strong><span>${esc(styleSummary(item))}</span></div>${change}</div>`,'current',()=>{
+    commitFilmStyles(styleBox,`<div class="style-current"><div class="style-preview">${stylePreviewHtml(item)}</div><div class="style-current-copy"><strong>${esc(item.name||'当前风格')}</strong><span>${esc(styleKindLabel(item))}</span><span>${esc(styleSummary(item))}</span></div>${change}</div>`,'current',()=>{
       bindStylePreviewMedia(styleBox)
       styleBox.querySelector('[data-pick-style]')?.addEventListener('click',()=>{ state.pickingStyle=true; renderFilm(state.status) })
     })
@@ -1348,7 +1344,7 @@ function renderFilmStyles(s){
   const collapse=!s.pendingRestyle && visual?.status==='selected'?`<button type="button" class="ghost" data-collapse-style>收起</button>`:''
   const choices=styleItems(state.styleLibrary).map(item=>{
     const on=visual?.status==='selected' && visual.style?.id===item.id
-    return `<button type="button" class="style-card${on?' is-on':''}" data-film-style="${esc(item.id)}" aria-pressed="${on?'true':'false'}"><div class="style-preview">${stylePreviewHtml(item)}</div><span class="style-caption"><span class="style-name">${esc(item.name)}</span><span class="style-desc">${esc(styleSummary(item))}</span></span></button>`
+    return `<button type="button" class="style-card${on?' is-on':''}" data-film-style="${esc(item.id)}" aria-pressed="${on?'true':'false'}"><div class="style-preview">${stylePreviewHtml(item)}</div><span class="style-caption"><span class="style-name">${esc(item.name)}</span><span class="style-desc">${esc(styleKindLabel(item))}</span><span class="style-desc">${esc(styleSummary(item))}</span></span></button>`
   }).join('')
   const gallery=`<div class="style-gallery"><div class="style-gallery-body"><div class="style-pick-head"><h3>${s.pendingRestyle?'选择风格并重绘':'选择视觉风格'}</h3>${collapse}</div>`+(choices?`<div class="style-grid">${choices}</div>`:'<p class="hint">还没有可选择的视觉风格。</p>')+`</div></div>`
   commitFilmStyles(styleBox,gallery,'gallery',()=>{
@@ -1425,11 +1421,11 @@ scheduleRefresh()
 
 let entryLibrary=[]
 function fillSkillChoices(select,library,id){
-  const groups=[['视觉风格',false],['制作 Skill',true]]
+  const groups=[['制作 Skill 与预设',true],['视觉参考与内置风格',false]]
   select.replaceChildren(new Option('默认制作方式',''))
   for(const [label,process] of groups){
     const group=document.createElement('optgroup'); group.label=label
-    for(const item of library.filter(x=>(x.kind==='process')===process)) group.append(new Option(item.name,item.id))
+    for(const item of library.filter(x=>(['skill','preset','process'].includes(x.kind))===process)) group.append(new Option(item.name,item.id))
     if(group.children.length) select.append(group)
   }
   select.value=id || ''
@@ -1452,11 +1448,8 @@ function syncStudioChoice(s){
   const picker=$('#studioSkill'), selected=s?.selectedBlueprintSkill
   picker.value=selected?.id || ''
   const item=state.styleLibrary?.find(x=>x.id===selected?.id)
-  const changed=s?.currentVersion && (selected?.name || '通用制作方法') !== s.blueprintSkill
-  $('#studioSkillSummary').textContent=changed?`蓝图 v${s.currentVersion} 仍使用「${s.blueprintSkill}」。重新起草后应用新选择。`:(item?.summary || '')
-  $('#replanWithSkill').hidden=!changed
+  $('#studioSkillSummary').textContent=item?.summary || ''
 }
-$('#replanWithSkill').onclick=doGenerate
 $('#studioSkill').onchange=async e=>{
   const thread=state.threadId, id=e.target.value
   busy(true,'保存制作风格');setSkillGalleryDisabled(true)

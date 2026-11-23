@@ -14,7 +14,7 @@
 
 画面 Agent 等待模型 2 分钟没有新的工具进展时会提示仍在等待，5 分钟时暂停；正在执行的制作工具仍使用 10 分钟上限。明确的上游报错无需等到超时，成片工作台会用中文解释并提示下一步。会员模式可在成片页点「继续制作」，也可在创作对话中说「继续制作」，继续原任务并尽量复用已保存的画面和配音。
 
-公网内测的会员地址为 `https://jiangjie.gingers.cloud/desktop-membership`，邮箱用于登录，内测暂不发送验证邮件。部署、发码和测试月卡见[会员服务说明](membership/README.md)。联调时可用 `JIANGJIE_MEMBER_URL` 指定测试地址，分发包在构建时内置公网地址。桌面 Agent 默认使用 Chat Completions，也可通过 `JIANGJIE_MEMBER_AGENT_API=openai-responses` 走 Responses。素材、场景和视觉分析仍要求平台文本供应商支持 Chat Completions。
+公网内测的会员地址为 `https://jiangjie.gingers.cloud/desktop-membership`，邮箱用于登录，内测暂不发送验证邮件。部署、发码和测试月卡见[会员服务说明](membership/README.md)。联调时可用 `JIANGJIE_MEMBER_URL` 指定测试地址，分发包在构建时内置公网地址。桌面 Agent 默认使用 Chat Completions，也可通过 `JIANGJIE_MEMBER_AGENT_API=openai-responses` 走 Responses。场景和视觉分析仍要求平台文本供应商支持 Chat Completions。
 
 ### 构建和分发
 
@@ -39,17 +39,21 @@ app="$(./scripts/build-desktop.sh)"
 
 服务端入口为 `scripts/cloud-gateway.mjs`，每个实例运行 `scripts/cloud-worker.mjs`。运行镜像由 `preview.Dockerfile` 和 `preview-worker.Dockerfile` 构建。网关只暴露工作台路由，容器内 DSH 管理入口通过内部端口访问。
 
-视频制作直接接收已定稿蓝图、完整制作方法和视觉规则：先生成真实配音并取得时长，再写场景、看预览、必要时修正，最后一次完成渲染、质检和提交。默认方法不提供不存在的外部资料读取入口；项目 Skill 的公共参考库也不复制进用户项目。每次制作在任务目录记录 `timings.jsonl`，只记录分阶段时间、工具名与字符数，不记录 Key、提示词或模型正文。
+视频制作接收定稿的内容蓝图和选定风格。可执行 Skill 和七个快捷预设都由 DSH 制作 Agent 加载原版正文、引用资料和脚本，自动处理编码素材与成片。已安装的独立 Skill 无需讲界专用清单即可在工作台选择。简洁知识图解和杂志式图文继续使用工作台内置流程。每次制作在任务目录记录 `timings.jsonl`（阶段和工具用时）与 `commands.jsonl`（命令、工作目录、退出码、耗时和错误摘要）。审计时可用退出码核对上游原生脚本的执行结果。
 
-首次安装风格 Skill 时，在仓库根目录运行 `git submodule update --init`。若单独运行 vibe-knowledge 的建片脚本，可用 `git -C .project-skills/andy-vibe-knowledge apply ../../patches/vibe-knowledge-sibling-skill.patch` 让它读取同目录的 ai-teardown。
+原版 Skill 任务使用 DSH 原生文件工具、本地 Bash 和后台作业。文件工具检查任务与资料路径；本地 Bash 沿用宿主进程权限。受管 HOME 位于开发态 `.runtime/skill-runtime` 或桌面数据目录下的 `skill-runtime`，会按目录名和 Skill 声明的名称建立链接，并复用浏览器缓存。需要额外 Python 包时，可在受管 HOME 建立 `venv` 并在其中安装 Skill 声明的依赖。原版任务默认总预算 60 分钟、空闲预算 12 分钟，可分别用 `BOHACK_VIDEO_BUDGET_MS` 和 `BOHACK_VIDEO_IDLE_MS` 调整。暂停后从当前任务文件继续制作。
+
+首次安装风格 Skill 时，在仓库根目录运行 `git submodule update --init`。
+
+桌面版的 `vibe-knowledge-film` 和 `vibe-know--skill` 含上游限制再发布的参考片材料，应用不直接携带。使用前可在终端运行 `bash /Applications/讲界.app/Contents/Resources/scripts/install-external-skills.sh`，从原作者仓库安装固定版本到 `~/Library/Application Support/讲界/workspace/.agents/skills/`；应用位于其他位置时请相应调整命令。已存在的目录不会覆盖。
 
 ## 三模块工作台与正式演示
 
 [播放或下载 90 秒火锅成片](交付/没有美洲火锅会少些什么_90秒/没有美洲，火锅会少些什么？.mp4) · [定稿蓝图](交付/没有美洲火锅会少些什么_90秒/定稿蓝图.md) · [逐段核对](交付/没有美洲火锅会少些什么_90秒/逐段核对.md)
 
-完整工作台使用 DSH 对话整理需求、上传资料、生成并确认蓝图。默认由独立视频 Agent 按蓝图和已确认素材编写各段 HTML/CSS/JavaScript，调用配音、预览、渲染、质检与提交工具完成视频；成片页也可选择「原结构化模式」，由模型输出图层数据，再交给固定渲染器。安装和启动见[工作台部署说明](dsh-workbench-fix/dsh-base/部署说明-队友机.md)与[视频模块说明](video-kit/README.md)。原有 1 号模块仍可按下方说明独立运行。
+完整工作台使用 DSH 对话整理需求、上传资料、生成并确认蓝图。使用工作台内置风格时，独立视频 Agent 可按蓝图和已确认素材编写各段 HTML/CSS/JavaScript，调用配音、预览、渲染、质检与提交工具完成视频；成片页也可选择「原结构化模式」，由模型输出图层数据，再交给固定渲染器。安装和启动见[工作台部署说明](dsh-workbench-fix/dsh-base/部署说明-队友机.md)与[视频模块说明](video-kit/README.md)。原有 1 号模块仍可按下方说明独立运行。
 
-事实核对、旁白审阅、时间线检查和画面对照等通用制作方法默认应用于每个创作。首页可选择制作风格或 Skill，起草时保存本版快照；素材账本负责审核、版本与段落关联，视频 Agent 可用代码表现尚未实现的概念素材。成片完成后可提交返工意见，读取上一版段落源码并复用符合条件的旁白。也可以导入外部 SKILL.md，或从一段参考视频提取个人风格。需求、蓝图、视频 Agent 与素材、预览、风格分析工具可分别设置模型，见[工作台部署说明](dsh-workbench-fix/dsh-base/部署说明-队友机.md#项目模型与风格库)。
+蓝图用于确认内容梗概、事实、出处和用户要求。可执行 Skill 有自身分镜与节奏时按其规划编排，缺少规划时沿用蓝图顺序。选用无旁白 Skill 可直接提交整片，无段落映射时用完整播放器观看。首页可选择制作风格或 Skill；待编码的角色、道具等素材由独立 Agent 按选中 Skill 的视觉规范制作，逐变体查看并提交素材清单后自动交给成片 Agent。项目保留素材文件、预览和生成源码，成片后可以查看素材或按反馈重做单件。视频返工可以读取上一版段落源码并复用符合条件的旁白。可在设置中从公开 GitHub 整仓导入 Skill，先检查依赖提示并勾选要启用的 Skill。安装记录保留来源和 commit SHA。粘贴文字和参考视频提取均作为纯视觉参考使用。需求、蓝图、视频 Agent 与素材、预览、风格分析工具可分别设置模型，见[工作台部署说明](dsh-workbench-fix/dsh-base/部署说明-队友机.md#项目模型与风格库)。
 
 本次演示使用普通话晓晓音色。完成视频依赖安装后，在仓库根目录运行以下命令，可从随附的定稿制作单重新渲染。输出目录需为新路径，神经配音需要网络。
 

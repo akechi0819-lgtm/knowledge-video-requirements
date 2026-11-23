@@ -220,8 +220,8 @@ async function loadStyles(){
   try {
     const data=await api('/bohack/api/styles'); if(thread!==state.threadId) return
     state.styleLibrary=data.styles; if(state.status) renderFilm(state.status)
-    const visible=(data.styles||[]).filter(style=>style.kind==='style'||(!style.kind && !String(style.id||'').startsWith('repo-skill:')))
-    document.querySelector('#styleList').innerHTML=visible.map(style=>`<div class="leaf" style="margin-bottom:8px"><b>${esc(style.name)}</b><p class="hint">${esc(style.summary || style.description.split(/[。\n]/).find(Boolean) || '')}</p>${style.source?.kind==='builtin'?'':`<details><summary>管理</summary><button class="sm ghost" data-style-edit="${esc(style.id)}">编辑</button><a href="/bohack/api/style-export?id=${encodeURIComponent(style.id)}${thread?'&amp;threadId='+encodeURIComponent(thread):''}" download="SKILL.md">导出</a><button class="sm ghost" data-style-remove="${esc(style.id)}">移除</button></details>`}</div>`).join('')
+    const visible=data.styles||[]
+    document.querySelector('#styleList').innerHTML=visible.map(style=>`<div class="leaf" style="margin-bottom:8px"><b>${esc(style.name)}</b> <span class="tag">${esc(styleKindLabel(style))}</span><p class="hint">${esc(style.summary || (style.description||'').split(/[。\n]/).find(Boolean) || '')}</p>${style.source?.kind==='builtin' || !['visual','style'].includes(style.kind)?'':`<details><summary>管理</summary><button class="sm ghost" data-style-edit="${esc(style.id)}">编辑</button><a href="/bohack/api/style-export?id=${encodeURIComponent(style.id)}${thread?'&amp;threadId='+encodeURIComponent(thread):''}" download="SKILL.md">导出</a><button class="sm ghost" data-style-remove="${esc(style.id)}">移除</button></details>`}</div>`).join('')
     document.querySelector('#styleList').querySelectorAll('[data-style-edit]').forEach(b=>b.addEventListener('click',()=>{
       const item=data.styles.find(s=>s.id===b.dataset.styleEdit); if(!item) return
       const card=b.closest('.leaf'); card.innerHTML=`<input class="style-edit-name" value="${esc(item.name)}" style="width:100%"><textarea class="style-edit-text" style="width:100%;min-height:140px">${esc(item.description)}</textarea><button class="sm primary style-edit-save">保存</button><button class="sm ghost style-edit-cancel">取消</button>`
@@ -270,9 +270,25 @@ document.querySelector('#styleFile').addEventListener('change',async e=>{
   styleFileName=file.name; document.querySelector('#styleText').value=content
   if(!document.querySelector('#styleName').value) document.querySelector('#styleName').value=file.name.replace(/\.(md|txt)$/i,'')
 })
-document.querySelector('#styleGithub').addEventListener('click',async()=>{
-  const thread=state.threadId
-  try{ const r=await api('/bohack/api/style-github',{url:document.querySelector('#styleSource').value.trim()}); if(thread!==state.threadId) return; document.querySelector('#styleName').value=r.name; document.querySelector('#styleText').value=r.content; document.querySelector('#styleSource').value=r.source; document.querySelector('#styleMessage').textContent='已读取，请查看正文后保存。' }catch(e){ if(thread===state.threadId) document.querySelector('#styleMessage').textContent=e.message }
+document.querySelector('#skillGithubInspect').addEventListener('click',async()=>{
+  const button=document.querySelector('#skillGithubInspect'), results=document.querySelector('#skillGithubResults')
+  const url=document.querySelector('#skillGithubUrl').value.trim()
+  button.disabled=true; results.textContent='正在检查仓库…'
+  try {
+    const data=await api('/bohack/api/styles/github/inspect',{url})
+    results.innerHTML=(data.skills||[]).length ? `<p class="hint">选择要安装的 Skill：</p>${data.skills.map(skill=>`<label style="display:block;margin:8px 0"><input type="checkbox" value="${esc(skill.id)}" checked> <b>${esc(skill.name)}</b> · ${esc(skill.path)}<br><span class="hint">${esc(skill.description||'')}</span>${(skill.dependencyHints||[]).length?`<br><span class="hint">依赖：${esc(skill.dependencyHints.join('、'))}</span>`:''}</label>`).join('')}<button class="sm primary" id="skillGithubInstall">安装所选 Skill</button>` : '<p class="hint">仓库中没有发现 Skill。</p>'
+    results.querySelector('#skillGithubInstall')?.addEventListener('click',async e=>{
+      const selected=[...results.querySelectorAll('input:checked')].map(input=>input.value)
+      if(!selected.length){document.querySelector('#styleMessage').textContent='请至少选择一个 Skill。';return}
+      e.currentTarget.disabled=true
+      try {
+        const installed=await api('/bohack/api/styles/github/install',{installId:data.installId,selected})
+        results.textContent='已安装：'+installed.skills.map(skill=>skill.name).join('、')
+        await loadStyles(); await loadEntrySkills(); if(state.threadId) await loadBlueprintSkill(state.threadId)
+      } catch(error){document.querySelector('#styleMessage').textContent=error.message; e.currentTarget.disabled=false}
+    })
+  } catch(error){results.textContent='检查失败：'+error.message}
+  finally{button.disabled=false}
 })
 document.querySelector('#styleImport').addEventListener('click',async()=>{
   const source=document.querySelector('#styleSource').value.trim(), thread=state.threadId
