@@ -135,7 +135,7 @@ test('model secrets remain independent and skill toggles are retired', async () 
   assert.equal((await settings.get()).skills, undefined)
 })
 
-test('all four methods are applied and frozen regardless of legacy switches', async () => {
+test('default production guidance is frozen but not injected into blueprint drafting', async () => {
   const { createService } = await import('../lib/service.js')
   const root = await mkdtemp(path.join(os.tmpdir(), 'skill-blueprint-'))
   await mkdir(root, {recursive:true})
@@ -146,10 +146,10 @@ test('all four methods are applied and frozen regardless of legacy switches', as
   const engine = { async chatTurn() { return { reply: '已整理', requirementMarkdown: '# 主题\n测试' } }, async produce(args) { received = args.skill; return { markdown: '# 蓝图：测试\n', engine: 'test' } } }
   await service.chat({ text: '整理需求' }, engine)
   await service.generate({}, engine)
-  assert.deepEqual(received, defaultProcessGuidance())
-  for (const name of ['拆解与核证','知识讲述','动态设计','直观演示']) assert.match(received.content, new RegExp(name))
+  assert.equal(received, undefined)
   const frozen = JSON.parse(await readFile(path.join(root, 'outbox', '蓝图_v1.技能.json'), 'utf8'))
-  assert.deepEqual(frozen, received)
+  assert.deepEqual(frozen, defaultProcessGuidance())
+  for (const name of ['拆解与核证','知识讲述','动态设计','直观演示']) assert.match(frozen.content, new RegExp(name))
 })
 
 test('changing endpoint clears old credentials independently', async () => {
@@ -173,8 +173,13 @@ test('an imported design Skill binds to this blueprint and survives library edit
   const engine = { async chatTurn(){return {reply:'已整理',requirementMarkdown:'# 主题\n日食'}}, async produce(args){ selected=args.skill;return {markdown:'# 蓝图：日食\n',engine:'test'} } }
   await service.chat({text:'整理需求'},engine)
   await service.generate({},engine)
-  assert.equal(selected.content,'使用墨线表现光影边界')
-  assert.deepEqual(JSON.parse(await readFile(path.join(workspace,'outbox','蓝图_v1.技能.json'),'utf8')), selected)
+  assert.equal(selected, undefined)
+  const snapshot = JSON.parse(await readFile(path.join(workspace,'outbox','蓝图_v1.技能.json'),'utf8'))
+  assert.equal(snapshot.id, style.id)
+  assert.equal(snapshot.content,'使用墨线表现光影边界')
+  const visual = JSON.parse(await readFile(path.join(workspace,'outbox','蓝图_v1.视觉选择.json'),'utf8'))
+  assert.equal(visual.style.id, style.id)
+  assert.equal(visual.style.description, snapshot.content)
 })
 
 test('concurrent updates serialize so no field is lost, even across instances', async () => {

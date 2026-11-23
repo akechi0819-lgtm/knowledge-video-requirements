@@ -213,7 +213,7 @@ async function embeddedImage(file, sectionId) {
   if (ext in signatures && !bytes.subarray(0, signatures[ext].length / 2).equals(Buffer.from(signatures[ext], 'hex'))) {
     throw new Error(`Invalid image content for ${sectionId}`);
   }
-  const mime = { svg: 'image/svg+xml', jpg: 'image/jpeg', png: 'image/png' }[ext];
+  const mime = { svg: 'image/svg+xml', jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }[ext];
   return `data:${mime};base64,${bytes.toString('base64')}`;
 }
 
@@ -245,7 +245,7 @@ for (const section of production.sections) {
   const assets = Object.create(null);
   const assetInfo = [];
   for (const asset of section.assets || []) {
-    if (!asset || typeof asset.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(asset.id) || Object.hasOwn(assets, asset.id) || typeof asset.name !== 'string' || !['character', 'prop', 'background'].includes(asset.type) || !['svg', 'png', 'jpg'].some(ext => asset.image === `assets/${asset.id}.${ext}`)) throw new Error(`Invalid asset for ${section.id}`);
+    if (!asset || typeof asset.id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(asset.id) || Object.hasOwn(assets, asset.id) || typeof asset.name !== 'string' || !['character', 'prop', 'background'].includes(asset.type) || !/^assets\/(?:[\w-]+\/)*[\w.-]+\.(?:svg|png|webp|jpg)$/.test(asset.image)) throw new Error(`Invalid asset for ${section.id}`);
     assets[asset.id] = await embeddedImage(asset.image, section.id);
     assetInfo.push({id: asset.id, name: asset.name, type: asset.type});
   }

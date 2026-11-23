@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createService } from '../lib/service.js'
@@ -98,75 +98,41 @@ test('素材声明合并：契约 assets 字段与 declare_asset 双通道按归
   assert.equal(order[0].name, 'std::string 字符串盒子')
 })
 
-test('implementAsset：声明态素材可由模型直接实现并转正（待审核）', async () => {
+test('implementAsset：调用素材 Agent 并将产物转正', async () => {
   const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-asset-implement-'))
-  const old = { ...process.env }
   try {
-    const shapes = Array.from({ length: 5 }, (_, i) => ({ d: `M ${i} 0 L 10 10 Z`, fill: '#123456', stroke: 'none', width: 1 }))
-    let received = ''
-    const service = createService({}, {
-      workspace,
-      request: async (_url, options) => {
-        received = JSON.parse(options.body).messages[0].content
-        return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ shapes }) } }] }) }
-      },
-    })
+    const service = createService({}, { workspace })
     await service._internal.ensureDirs()
     const declared = await service.declareAsset({ name: '枫叶素材', note: '一片秋天的枫叶，用于转场' })
-    Object.assign(process.env, { SCENE_ENDPOINT: 'http://localhost/test', SCENE_MODEL: 'test' })
+    const rendered = path.join(workspace, 'render.svg')
+    await writeFile(rendered, '<svg/>')
+    let received
+    service.production.generateAsset = async args => { received = args }
+    service.generatedAssets.availableFiles = async () => ({ approved: [{ path: rendered }] })
     const out = await service.implementAsset({ id: declared.asset.id })
-    assert.match(received, /枫叶素材/, '画图指令必须带上声明名')
-    assert.match(received, /枫叶/, '画图指令必须带上声明备注')
-    assert.equal(out.ok, true)
-    assert.match(out.path, /^sources\/.+\.svg$/)
-    assert.equal(out.asset.declared, undefined, '实现后不再处于声明态')
-    assert.equal(out.asset.trust, 'unvetted', '生成不等于审核')
-    const svg = await import('node:fs/promises').then(fs => fs.readFile(path.join(workspace, out.path), 'utf8'))
-    assert.match(svg, /<svg/)
-    // 已实现后不能再次实现
+    assert.equal(received.id, declared.asset.id)
+    assert.equal(received.doc.assets[0].name, '枫叶素材')
+    assert.match(received.doc.assets[0].description, /枫叶/)
+    assert.match(out.asset.path, /^sources\/.+\.svg$/)
+    assert.equal(out.asset.declared, undefined)
+    assert.equal(out.asset.trust, 'unvetted')
+    assert.match(await readFile(path.join(workspace, out.asset.path), 'utf8'), /<svg/)
     await assert.rejects(service.implementAsset({ id: declared.asset.id }), /声明态/)
-  } finally {
-    for (const key of ['SCENE_ENDPOINT', 'SCENE_MODEL']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
-    await rm(workspace, { recursive: true, force: true })
-  }
+  } finally { await rm(workspace, { recursive: true, force: true }) }
 })
 
-test('filmApprove：成片素材确认后按归一化名同步转正账本声明', async () => {
-  const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-film-approve-'))
-  const old = { ...process.env }
+test('历史已确认素材可转换为素材池清单', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-legacy-asset-'))
   try {
-    const shapes = Array.from({ length: 5 }, () => ({ d: 'M 0 0 L 10 10 Z', fill: '#123456', stroke: 'none', width: 1 }))
-    const service = createService({}, {
-      workspace,
-      request: async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ shapes }) } }] }) }),
-    })
-    await service._internal.ensureDirs()
-    // 模拟 produce 落库：蓝图清单声明同名进了账本（声明态）
-    const slot = await service.declareAsset({ name: '字符串盒子示意', note: '横向盒子；用于段落 B01' })
-    Object.assign(process.env, { SCENE_ENDPOINT: 'http://localhost/test', SCENE_MODEL: 'test' })
-    const doc = { assets: [{ id: 'box', ledgerId: slot.asset.id, name: '字符串盒子', type: 'prop', description: '横向盒子', sections: ['B01'] }] }
-    const args = { version: 1, doc, style: { name: '纸绘' } }
-    const gen = await service.generatedAssets.generate(args)
-    const revisions = Object.fromEntries(gen.assets.map(a => [a.id, a.revision]))
-    const result = await service.filmApprove({ ...args, revisions })
-    assert.equal(result.assets[0].status, 'approved')
-    // 账本里的同名声明已被转正（归一化名匹配："字符串盒子示意" ≈ "字符串盒子"）
-    const entry = (await service.listAssets()).assets.find(a => a.name === '字符串盒子示意')
-    assert.ok(entry && entry.path, '确认后账本声明必须有本体')
-    assert.match(entry.path, /^sources\/.+\.svg$/)
-    assert.equal(entry.declared, undefined)
-    assert.equal(entry.trust, 'vetted')
-    const oldPath = entry.path
-    const newer = await service.generatedAssets.generate({ ...args, id: 'box' })
-    await service.filmApprove({ ...args, id: 'box', revisions: { box: newer.assets[0].revision } })
-    const updated = (await service.listAssets()).assets.find(a => a.id === entry.id)
-    assert.notEqual(updated.path, oldPath)
-    assert.equal(updated.generatedRevision, newer.assets[0].revision)
-    assert.equal(updated.trust, 'vetted')
-  } finally {
-    for (const key of ['SCENE_ENDPOINT', 'SCENE_MODEL']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
-    await rm(workspace, { recursive: true, force: true })
-  }
+    const { copyAssetPool } = await import('../lib/generated-assets.js')
+    const source = path.join(workspace, 'old.svg')
+    await writeFile(source, '<svg/>')
+    const output = path.join(workspace, 'film')
+    const manifest = await copyAssetPool(output, { id: 'general' }, [{ id: 'box', name: '盒子', type: 'prop', sections: ['B01'], path: source }])
+    assert.equal(manifest.assets[0].files[0].path, 'assets/box.svg')
+    assert.equal(await readFile(path.join(output, 'assets/box.svg'), 'utf8'), '<svg/>')
+    assert.deepEqual(JSON.parse(await readFile(path.join(output, 'assets/manifest.json'), 'utf8')), manifest)
+  } finally { await rm(workspace, { recursive: true, force: true }) }
 })
 
 test('上传直接补入声明，不新增账本记录且须另行审核', async () => {

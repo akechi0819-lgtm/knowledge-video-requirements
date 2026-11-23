@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, access, cp } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { constants } from 'node:fs'
@@ -13,8 +13,8 @@ import { defaultProcessGuidance } from '../lib/process-guidance.js'
 const root = path.resolve(import.meta.dirname, '../../../../..')
 const kit = path.join(root, 'video-kit')
 
-for (const skill of [undefined, defaultProcessGuidance()]) {
-  test(`default production guidance reaches the agent (${skill ? 'explicit default' : 'missing skill'})`, async () => {
+for (const [skill, styleId] of [[undefined, null], [defaultProcessGuidance(), null]]) {
+  test(`default production guidance reaches the agent (${styleId || (skill ? 'explicit default' : 'missing skill')})`, async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'video-default-test-'))
     const fakeKit = path.join(dir, 'fakekit')
     const modules = path.join(fakeKit, 'WORK/modules/video')
@@ -25,6 +25,7 @@ for (const skill of [undefined, defaultProcessGuidance()]) {
     try {
       await mkdir(modules, { recursive: true })
       await mkdir(job)
+      if (styleId) await cp(path.join(kit, 'styles'), path.join(fakeKit, 'styles'), {recursive:true})
       await writeFile(path.join(modules, 'playwright.cjs'), 'module.exports = { chromium: { launch() { throw new Error("unexpected browser launch") } } }')
       await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({ paths: { python: process.execPath, ffprobe: 'fake-ffprobe', playwright: path.join(modules, 'playwright.cjs') }, tts: { voice: 'fake', rate: '1' }, video: { fps: 30 }, timing: { leadIn: 0, tailPad: 0 } })}`)
       await writeFile(path.join(modules, 'pipeline.mjs'), 'export const preparedFrames = durations => durations.map(d => Math.ceil(d * 30)); export function seedTtsCache() {}')
@@ -36,7 +37,7 @@ for (const skill of [undefined, defaultProcessGuidance()]) {
         await setup(toolCtx)
         return { agent: { followup: async message => { prompt = message.content[0].text; throw sentinel }, cancel() {} } }
       } } }
-      const production = { status: '准备制作', version: 'v1', topic: 'test', ...(skill ? { skill } : {}), sections: [{ id: 's1', title: 'test', narration: 'Hello.' }] }
+      const production = { status: '准备制作', version: 'v1', topic: 'test', ...(skill ? { skill } : {}), ...(styleId ? {style:{id:styleId,description:'视觉风格'}} : {}), sections: [{ id: 's1', title: 'test', narration: 'Hello.' }] }
       await assert.rejects(runVideoJob({ ctx, dir: job, kit: fakeKit, production, settings: { tts: { baseUrl: 'https://example.invalid', apiKey: secret } } }), error => error === sentinel)
       const guidance = defaultProcessGuidance()
       assert.ok(prompt.includes(guidance.content), '完整默认方法应直接出现在提示词中')
@@ -104,7 +105,9 @@ test('video tools create and verify a film with real speech and task images', { 
   let previewPath
   const ctx = { attachments: { saveImages: async images => { assert.equal(images[0].mediaType, 'image/png'); return [{ id: 'preview-image' }] } }, agentPresets: { mount: async () => {} }, agents: { create: async ({ setup }) => {
     await setup(toolCtx)
-    return { agent: { followup: async () => {
+    return { agent: { followup: async ({ content }) => {
+      assert.match(content[0].text, /冻结的视觉规则/)
+      assert.match(content[0].text, /自定义制作规则/)
       const call = (name, args = {}) => registry.get(name).execute(args, {})
       assert.match((await call('read_previous_scene', { id: 's1' })).html, /old/)
       assert.equal(registry.has('read_skill_file'), false)
@@ -137,7 +140,7 @@ test('video tools create and verify a film with real speech and task images', { 
     await writeFile(input, JSON.stringify({ blueprint_id: 'v1', segments: [{ id: 's1', narration: 'Changed narration.' }] }))
     await synthesize()
     assert.equal(JSON.parse(await readFile(result)).cache_hits_this_run, 0)
-    assert.match(await readFile(path.join(job, 'video-agent/.agents/skills/film-visual-style/SKILL.md'), 'utf8'), /冻结的视觉规则/)
+    await assert.rejects(access(path.join(job, 'video-agent/.agents/skills')), { code: 'ENOENT' })
     assert.ok((await readFile(previewPath)).length > 100)
     const mapping = JSON.parse(await readFile(path.join(job, 'film/mapping.json')))
     assert.equal(mapping.segments[0].blueprint_id, 'B01')

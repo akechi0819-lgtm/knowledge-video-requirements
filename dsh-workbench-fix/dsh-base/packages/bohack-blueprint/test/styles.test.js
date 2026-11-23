@@ -20,9 +20,9 @@ test('personal library is shared but choices are isolated per creative thread', 
   try {
     const a = createStyles(path.join(root, 'a'), root), b = createStyles(path.join(root, 'b'), root), other = createStyles(path.join(root, 'other'))
     const initial = (await a.list()).styles
-    assert.ok(initial.some(s => s.name === "vibe-knowledge" && s.summary && s.kind === 'process'))
-    assert.ok(initial.filter(s => s.kind === 'process').every(s => String(s.id).startsWith('repo-skill:')))
-    assert.ok(initial.some(s => s.id === 'general' && s.kind === 'style' && s.preview.file === 'general.svg'))
+    assert.ok(initial.some(s => s.name === "vibe-knowledge" && s.summary && s.kind === 'skill'))
+    assert.ok(initial.filter(s => s.kind === 'skill').every(s => String(s.id).startsWith('repo-skill:')))
+    assert.ok(initial.some(s => s.id === 'general' && s.kind === 'builtin' && s.preview.file === 'general.svg'))
     assert.equal(await a.selected(), null)
     const item = (await a.importStyle({name:'我的风格',description:'# 视觉\n参考正文',source:{kind:'web',label:'https://example.com/style'}})).style
     assert.ok((await b.list()).styles.some(s => s.id === item.id))
@@ -44,21 +44,24 @@ test('personal library is shared but choices are isolated per creative thread', 
   } finally { await rm(root, { recursive:true, force:true }) }
 })
 
-test('内置参考包含具名规则和可核对来源', async () => {
+test('九个正式入口分别加载七个上游制作包和两个内置风格', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'styles-builtins-'))
   try {
     const service = createStyles(root), list = (await service.list()).styles
+    assert.equal(list.filter(s => ['builtin','preset'].includes(s.kind)).length, 9)
+    assert.deepEqual(list.filter(s => s.kind === 'builtin').map(s => s.id).sort(), ['editorial', 'general'])
     for (const id of ['andy-pixel-quest','heychengc-concrete','huashu-vox','huashu-whiteboard','swiss-kinetic','vibe-night','vibe-fable']) {
       const item = list.find(s => s.id === id)
-      assert.ok(item?.description && item.source.label)
-      assert.equal(item.kind, 'style')
+      assert.equal(item?.skillPackage, true)
+      assert.ok(item.description && item.source.label)
+      assert.equal(item.kind, 'preset')
       assert.ok(item.summary)
       assert.ok(item.preview?.file)
       await service.select({ id }); assert.equal((await service.selected()).id, id)
     }
     const imported = (await service.importStyle({name:'手写风格',description:'以手写标注组织讲解。',source:{kind:'text'}})).style
     const listed = (await service.list()).styles.find(s => s.id === imported.id)
-    assert.equal(listed.kind, 'style')
+    assert.equal(listed.kind, 'visual')
     assert.equal(listed.preview.kind, 'poster')
     assert.match(listed.summary, /手写标注/)
   } finally { await rm(root, { recursive: true, force: true }) }
@@ -96,9 +99,11 @@ test('repo skills are found at a repository root marked by .git, past a package.
     await writeFile(path.join(pkg, 'package.json'), '{"name":"@bohack/blueprint"}')
     const skills = await collectRepoSkills(path.join(pkg, 'lib'))
     assert.equal(skills.length, 4)
-    assert.ok(skills.every(s => s.kind === 'process' && String(s.id).startsWith('repo-skill:')))
+    assert.ok(skills.every(s => s.kind === 'skill' && String(s.id).startsWith('repo-skill:')))
     assert.ok(skills.some(s => s.name === 'project-vibe-knowledge-film' && s.summary && s.description))
     assert.deepEqual(await collectRepoSkills(root), skills)
+    await rm(path.join(root, '.agents/skills/vibe-knowledge-film'), { recursive: true })
+    assert.equal((await collectRepoSkills(root)).length, 3)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

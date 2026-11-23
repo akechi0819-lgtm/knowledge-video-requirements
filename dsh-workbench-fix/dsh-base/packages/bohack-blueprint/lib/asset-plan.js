@@ -97,7 +97,7 @@ export async function assignAssetPlan(workspace, version, doc, id, sections, typ
     if (!entry || sideOf(entry) !== 'videomake') throw Object.assign(new Error('素材不存在或不是制作素材'), { code: 'BAD_INPUT' })
     const key = keyOf(version)
     const previous = entry.planBindings?.[key]
-    if (sections.some(section => !previous?.sections.includes(section)) && !(entry.declared && !entry.path) && !/\.(png|jpe?g|svg)$/i.test(entry.path || '')) throw Object.assign(new Error('关联段落需要待补素材声明或 PNG、JPEG、SVG 图片'), { code: 'BAD_INPUT' })
+    if (sections.some(section => !previous?.sections.includes(section)) && !(entry.declared && !entry.path) && !/\.(png|jpe?g|svg|webp)$/i.test(entry.path || '')) throw Object.assign(new Error('关联段落需要待补素材声明或 PNG、JPEG、SVG、WebP 图片'), { code: 'BAD_INPUT' })
     entry.planBindings ||= {}
     if (!sections.length) { if (previous) entry.planBindings[key] = { ...previous, sections: [] } }
     else entry.planBindings[key] = { id: previous?.id || `ledger-${entry.id}`, type: type || previous?.type || 'prop', description: previous?.description || entry.note || entry.name, sections: [...sections] }

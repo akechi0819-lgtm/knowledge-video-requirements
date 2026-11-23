@@ -119,3 +119,24 @@ test('exports current ledger assignments and removes unbound assets', async () =
     assert.deepEqual(exported.assets, [])
   } finally { await rm(workspace,{recursive:true,force:true}) }
 })
+
+
+test('无画面意图的蓝图可确认和编辑，旧版画面内容仍保留', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'blueprint-optional-visual-'))
+  try {
+    const service = createService({}, { workspace }); await service._internal.ensureDirs()
+    const sections = [
+      {id:'B01', title:'开场', intent:'讲述背景'},
+      {id:'B02', title:'结果', intent:'讲述结果', visual:'旧版画面要求'},
+    ]
+    const raw = renderBlueprint({topic:'测试', userRequirements:[], sections, meta:{}})
+    assert.doesNotMatch(raw, /画面意图：\*\* \n/)
+    await writeFile(path.join(workspace, 'outbox/蓝图_v1.md'), raw)
+    await service.confirm({all:true}); await service.finalize()
+    await service.manualEdit({section:'B01', fields:{title:'修改标题', visual:''}}, {note:async()=>({})})
+    await service.confirm({all:true}); await service.finalize()
+    const result = await service.status()
+    assert.equal(result.sections[0].visual, '')
+    assert.equal(result.sections[1].visual, '旧版画面要求')
+  } finally { await rm(workspace, {recursive:true, force:true}) }
+})

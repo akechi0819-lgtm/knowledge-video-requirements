@@ -61,6 +61,7 @@ export async function exportProduction(workspace) {
   return {
     skill,
     status: '准备制作', version: `v${n}`, topic: doc.topic,
+    contentOutline: { core: doc.core, audience: doc.audience, order: doc.order, source: doc.meta['来源'] || null },
     userRequirements: doc.userRequirements, notes: doc.notes.trim(), assets: await assetPlan(workspace, n, doc),
     targetDurationSeconds: requestedDuration(doc.userRequirements),
     style,

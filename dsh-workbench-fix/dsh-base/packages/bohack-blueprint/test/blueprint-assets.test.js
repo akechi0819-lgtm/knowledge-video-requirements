@@ -109,3 +109,16 @@ test('asset diagnosis and repair skip malformed reference records', async () => 
     assert.equal(repair.ok, true)
   } finally { await rm(workspace, { recursive: true, force: true }) }
 })
+
+test('明确的制作要求保留在蓝图中，不因实现词误报越界', () => {
+  const requirements = ['以 24 帧率渲染，并使用指定素材']
+  const sections = [
+    { id: 'B01', title: '开场', intent: '说明背景', visual: '按用户要求以关键帧呈现', narration: '用户给出的旁白' },
+    { id: 'B02', title: '发展', intent: '说明结果', visual: '呈现结果' },
+  ]
+  const doc = parseBlueprint(renderBlueprint({ topic: '测试', userRequirements: requirements, sections, assets: [], meta: {} }))
+  assert.deepEqual(doc.userRequirements, requirements)
+  assert.equal(doc.sections[0].narration, '用户给出的旁白')
+  assert.match(doc.sections[0].visual, /关键帧/)
+  assert.ok(!validateBlueprint(doc).warnings.some(w => w.includes('越界指定实现')))
+})

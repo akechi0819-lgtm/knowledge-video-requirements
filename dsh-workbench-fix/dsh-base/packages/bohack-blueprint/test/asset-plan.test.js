@@ -65,7 +65,7 @@ test('素材写入与首次同步并发不会丢失记录，也不将 PDF 绑入
   } finally { await rm(root, {recursive:true,force:true}) }
 })
 
-test('转正和确认生成图并发保留各自账本更新', async () => {
+test('并发转正素材保留各自账本更新', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'plan-realize-'))
   try {
     const service = createService({}, { workspace: root })
@@ -73,18 +73,15 @@ test('转正和确认生成图并发保留各自账本更新', async () => {
     await service.addAsset({id:'generated', name:'生成图', side:'videomake', declared:true})
     await mkdir(path.join(root, 'sources'), {recursive:true})
     const input = path.join(root,'sources','manual.png')
-    const rendered = path.join(root,'render.svg')
     await writeFile(input, 'picture')
-    await writeFile(rendered, '<svg/>')
-    service.generatedAssets.approve = async () => ({ok:true})
-    service.generatedAssets.availableFiles = async () => ({approved:[{id:'A01',name:'生成图',path:rendered,revision:'r1'}]})
+    await writeFile(path.join(root, 'sources', 'generated.svg'), '<svg/>')
     await Promise.all([
       service.realizeAsset({id:'manual',path:'sources/manual.png'}),
-      service.filmApprove({version:1,doc:{assets:[{id:'A01',ledgerId:'generated'}]}}),
+      service.realizeAsset({id:'generated',path:'sources/generated.svg'}),
     ])
     const list = (await service.listAssets()).assets
     assert.equal(list.find(a=>a.id==='manual').path,'sources/manual.png')
-    assert.equal(list.find(a=>a.id==='generated').generatedRevision,'r1')
+    assert.equal(list.find(a=>a.id==='generated').path,'sources/generated.svg')
   } finally { await rm(root, {recursive:true,force:true}) }
 })
 

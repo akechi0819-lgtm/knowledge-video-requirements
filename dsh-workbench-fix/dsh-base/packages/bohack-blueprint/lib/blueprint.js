@@ -14,17 +14,11 @@ export const SECTION_ID = /^B(\d{2})([a-z])?$/
 const HEADER = /^###\s+(B\d{2}[a-z]?)\s*[｜|]\s*(.+?)\s*$/
 const FIELD = /^\*\*(.+?)[：:]\*\*\s*(.*)$/
 
-// 通用契约（跨项目稳定）只有讲什么 / 画面意图两项必填。
+// 通用契约要求每段写明讲什么；画面意图可选。
 // 「关键事实」等内容门槛是本项目/本片的质量 policy（validateBlueprint 的 opts.quality），
 // 不属于通用契约 —— 不要把单个视频的要求固化进契约，那是对着样例打补丁。
-const REQUIRED_FIELDS = ['讲什么', '画面意图']
-const OPTIONAL_FIELDS = ['关键事实', '旁白', '备注']
-
-/** Words that signal the blueprint over-specifies implementation (warn, never hard-fail). */
-const IMPLEMENTATION_HINTS = [
-  '逐帧', '关键帧', '关键帧动画', '帧率', 'AE', 'After Effects',
-  'CSS 动画', 'transform:', 'keyframes', 'ffmpeg', 'SVG 路径', '组件名',
-]
+const REQUIRED_FIELDS = ['讲什么']
+const OPTIONAL_FIELDS = ['关键事实', '画面意图', '旁白', '备注']
 
 /**
  * v2 content gate. These phrases describe *what should be written* instead of
@@ -234,11 +228,6 @@ export function validateBlueprint(doc, opts = {}) {
         warnings.push(`段 ${s.id} 有未定义字段「${f}」`)
       }
     }
-    const hay = `${s.intent} ${s.visual} ${s.narration}`
-    for (const w of IMPLEMENTATION_HINTS) {
-      if (hay.includes(w)) warnings.push(`段 ${s.id} 可能越界指定实现：「${w}」`)
-    }
-
     // ── 本项目质量 policy（不是通用契约）──────────────────────────────
     if (!factGate) continue
     const minFacts = Number(q.minFactsPerSection) > 0 ? Number(q.minFactsPerSection) : 1
@@ -353,8 +342,7 @@ export function renderBlueprint(doc) {
     L.push('')
     const facts = Array.isArray(s.facts) ? s.facts : []
     if (facts.length) { L.push(`**关键事实：** ${facts.join('；')}`); L.push('') }
-    L.push(`**画面意图：** ${s.visual || ''}`)
-    L.push('')
+    if (s.visual) { L.push(`**画面意图：** ${s.visual}`); L.push('') }
     if (s.narration) { L.push(`**旁白：** ${s.narration}`); L.push('') }
     if (s.notes) { L.push(`**备注：** ${s.notes}`); L.push('') }
   }

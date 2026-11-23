@@ -103,9 +103,10 @@ export function createService(ctx, config = {}) {
     dialogue: path.join(root, 'dialogue'),
     sources: path.join(root, 'sources'),
   }
+  const skillsRoot = path.resolve(config.styleLibraryRoot || process.env.JIANGJIE_DESKTOP_WORKSPACE || root)
   const settings = createSettings(root, config)
-  const generatedAssets = createGeneratedAssets(root, { settings: { load: settings.forCall }, request: config.request, desktop: config.desktop })
-  const productionService = createProduction(root, { ...config, ctx, settings, generatedAssets, ensureVisual: async () => {
+  const generatedAssets = createGeneratedAssets(root)
+  const productionService = createProduction(root, { ...config, ctx, settings, skillsRoot, generatedAssets, ensureVisual: async () => {
     const n = await latestVersion()
     if ((await visualStyle(n))?.status === 'pending') {
       const versionSkill = await readJson(path.join(dirs.outbox, `蓝图_v${n}.技能.json`), null)
@@ -115,7 +116,7 @@ export function createService(ctx, config = {}) {
     }
   } })
   let produceInFlight = false
-  const styles = createStyles(root, config.styleLibraryRoot || root)
+  const styles = createStyles(root, config.styleLibraryRoot || root, { skillsRoot, kit: config.videoKitDir, logger: ctx.logger })
   const log = (...a) => { try { ctx.logger?.info?.('[bohack]', ...a) } catch { /* ignore */ } }
 
   async function ensureDirs() {
@@ -153,6 +154,18 @@ export function createService(ctx, config = {}) {
     const result = await styles.select({ id })
     await writeFile(visualPath(n), JSON.stringify({ status: 'selected', style: result.style }, null, 2) + '\n', 'utf8')
     return { ...result, version: n }
+  }
+
+  async function setBlueprintSkill({ id } = {}) {
+    const result = await styles.chooseBlueprintSkill({ id })
+    const n = await latestVersion()
+    if (n) {
+      const skill = result.skill || defaultProcessGuidance()
+      const visual = await visualFromSkill(result.skill)
+      await writeFile(path.join(dirs.outbox, `蓝图_v${n}.技能.json`), JSON.stringify(skill, null, 2) + '\n', 'utf8')
+      await writeFile(visualPath(n), JSON.stringify(visual ? { status: 'selected', style: visual } : { status: 'pending', style: null }, null, 2) + '\n', 'utf8')
+    }
+    return result
   }
 
   async function readJson(file, fallback) {
@@ -342,6 +355,7 @@ export function createService(ctx, config = {}) {
     const next = n + 1
     const selectedSkill = await styles.blueprintSkill()
     const skill = selectedSkill || defaultProcessGuidance()
+    const selectedMetadata = selectedSkill && { id: selectedSkill.id, name: selectedSkill.name, description: selectedSkill.description, kind: selectedSkill.kind, planning: selectedSkill.planning }
     const state = await getState()
     let previousDoc = null
     if (action === 'revise') {
@@ -366,11 +380,12 @@ export function createService(ctx, config = {}) {
     let result
     try {
       result = await engine.produce({
-        action, requirement, requirementText, rulesText, previousDoc, skill,
+        action, requirement, requirementText, rulesText, previousDoc,
         textAssets: allAssets.filter(a => a.type === 'text' && a.side !== 'videomake' && a.trust === 'vetted'),
         assetDirectory,
         feedbackText, feedback: state.pendingFeedback || null,
         version: next, config, options, onProgress,
+        ...(selectedSkill?.kind === 'skill' || selectedSkill?.kind === 'preset' ? { skill: selectedMetadata } : selectedSkill ? { style: selectedMetadata } : {}),
       })
     } catch (e) {
       await writeRun({ action, version: next, ok: false, engine: 'error', error: String(e?.message || e), ms: Date.now() - t0 })
@@ -506,7 +521,7 @@ export function createService(ctx, config = {}) {
     L.push('')
     L.push('- 本文件包含已确认的分段内容，对应的蓝图版本见同目录 `蓝图_v' + n + '.md`。')
     L.push('- 修改时可用段落编号定位，例如 B01。')
-    L.push('- 每段列出讲述内容和画面意图。')
+    L.push('- 每段列出讲述内容；画面意图按需记录。')
     L.push('')
     L.push('---')
     L.push('')
@@ -712,61 +727,22 @@ export function createService(ctx, config = {}) {
     })
   }
 
-  const safeAssetFile = name => {
-    const base = String(name || '').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 40)
-    return `sources/${base || '素材'}-${randomUUID().slice(0, 4)}.svg`
-  }
-
-  /** 成片页直接实现声明：模型画一张 SVG 实物 → 写入 sources/ → 转正（实现方式与通道解耦，这只是便捷通道之一）。 */
   async function implementAsset({ id } = {}) {
     await ensureDirs()
-    const lines = await readAssetLines()
-    const target = lines.find(a => a.id === id)
-    if (!target) throw new ServiceError(`资产 ${id} 不存在`, 'NOT_FOUND')
-    if (target.side !== 'videomake' || !target.declared || target.path) {
+    const target = (await readAssetLines()).find(asset => asset.id === id)
+    if (!target || target.side !== 'videomake' || !target.declared || target.path) {
       throw new ServiceError(`资产 ${id} 不是待实现的声明态素材`, 'BAD_INPUT')
     }
-    const n = await latestVersion()
-    const visual = n ? await visualStyle(n) : null
+    const version = await latestVersion() || 1
+    const visual = await visualStyle(version)
     const style = visual?.status === 'selected' ? visual.style : null
-    const prompt = `为知识视频制作一张可复用的独立素材，必须画出「${target.name}」的具体形象。${target.note ? `内容要求：${target.note}。` : ''}画布为 400×400，不要文字。主体周围留透明空间。仅返回 JSON：{"shapes":[{"d":"SVG path d","fill":"#RRGGBB 或 none","stroke":"#RRGGBB 或 none","width":0到12}]}。使用 5 到 80 个 path，只用 M L H V C Q S T A Z 命令与数字。${style ? `视觉风格：${JSON.stringify(style)}` : ''}`
-    const svg = await generatedAssets.drawOne(prompt)
-    const rel = safeAssetFile(target.name)
-    await writeFile(path.join(root, rel), svg, 'utf8')
-    const out = await realizeAsset({ id, path: rel })
+    const doc = { assets: [{ id, name: target.name, type: 'prop', description: target.note || target.name, sections: [] }], sections: [] }
+    await productionService.generateAsset({ version, doc, style, id })
+    const { approved: [entry] } = await generatedAssets.availableFiles({ version, doc, style })
+    const rel = `sources/${randomUUID()}${path.extname(entry.path)}`
+    await copyFile(entry.path, path.join(root, rel))
+    const result = await realizeAsset({ id, path: rel })
     await writeRun({ action: 'asset-implement', id, path: rel })
-    return { ok: true, id, path: rel, asset: out.asset }
-  }
-
-  /** 成片素材确认后转正：确认过的生成物拷进 sources/，按归一化名字填进账本对应声明位（账本 = 唯一事实源）。 */
-  async function filmApprove(args = {}) {
-    const result = await generatedAssets.approve(args)
-    try {
-      const { approved } = await generatedAssets.availableFiles(args)
-      await ensureDirs()
-      await withAssetLock(root, async () => {
-      const lines = await readAssetLines()
-      for (const item of approved) {
-        if (args.id && item.id !== args.id) continue
-        const planned = args.doc.assets.find(a => a.id === item.id)
-        const hit = lines.find(a => a.id === planned?.ledgerId)
-        if (!hit) throw new Error('素材已从资料库移除，请刷新后重试。')
-        if (hit.generatedRevision === item.revision) continue
-        const rel = safeAssetFile(item.name)
-        await copyFile(item.path, path.join(root, rel))
-        hit.path = rel
-        hit.type = 'image'
-        hit.trust = 'vetted'
-        hit.realizedAt = now()
-        hit.approvedAt = now()
-        hit.generatedAssetId = item.id
-        hit.generatedVersion = args.version
-        hit.generatedRevision = item.revision
-        delete hit.declared
-      }
-      await writeAssetLedger(root, lines)
-      })
-    } catch (e) { throw new ServiceError(`素材已确认，但账本同步失败：${e.message || e}`, 'ASSET_SYNC_FAILED') }
     return result
   }
 
@@ -933,21 +909,21 @@ export function createService(ctx, config = {}) {
     const skillCandidates = !alreadyFinalized && skillVerb && affirmativeSkill ? (await styles.list()).styles : []
     const skillHits = skillCandidates.flatMap(item => [item.id, item.name].filter(token => token && skillClause.includes(token)).map(token => ({ item, token })))
     const fullSkills = [...new Map(skillHits.filter(hit => !skillHits.some(other => other.item.id !== hit.item.id && other.token.length > hit.token.length && other.token.includes(hit.token))).map(hit => [hit.item.id, hit])).values()]
-    const aliasSkills = skillCandidates.flatMap(item => item.kind === 'style' ? [...item.name.split(/[：:（(]/).slice(0, 1), item.name.slice(0, 2)].map(token => ({item, token})) : []).filter(hit => hit.token.length >= 2 && skillClause.includes(hit.token))
+    const aliasSkills = skillCandidates.flatMap(item => item.kind !== 'skill' ? [...item.name.split(/[：:（(]/).slice(0, 1), item.name.slice(0, 2)].map(token => ({item, token})) : []).filter(hit => hit.token.length >= 2 && skillClause.includes(hit.token))
     const skillMatches = fullSkills.length ? fullSkills : [...new Map(aliasSkills.sort((a, b) => a.token.length - b.token.length).map(hit => [hit.item.id, hit])).values()]
     const skillRequested = !alreadyFinalized && skillVerb && affirmativeSkill && (skillMatches.length || /(?:风格|画风|技能|skill)/i.test(skillClause))
     const skillHit = skillMatches.length === 1 ? skillMatches[0] : null
     const remainder = skillHit ? skillText.replace(skillHit.token, '').replace(/(?:使用|采用|选用|选择|切换到|换成|用|这个|本次|这次|风格|画风|风|技能|skill|吧|了|就|作为|的|[，,。！!\s])/gi, '') : ''
     const skillOnly = skillRequested && (!skillHit || !remainder)
     let blueprintSkillSelection = null, chooseBlueprintSkill = false
-    if (skillRequested && skillHit) blueprintSkillSelection = (await styles.chooseBlueprintSkill({id:skillHit.item.id})).skill
+    if (skillRequested && skillHit) blueprintSkillSelection = (await setBlueprintSkill({id:skillHit.item.id})).skill
     else if (skillRequested) chooseBlueprintSkill = true
     const restyleText = message.replace(/[“”「」『』"]/g, '')
     const restyleAffirmative = affirmative(restyleText)
     const pendingRestyle = alreadyFinalized && stateBeforeAction.pendingRestyle?.version === initialVersion
     const cancelRestyle = pendingRestyle && /^(?:算了|取消(?:重绘|重制|制作|换画风|换风格)?|不用了|不重绘了|不重做了)[吧了。！!，,\s]*$/.test(restyleText)
     const restyleRequest = alreadyFinalized && restyleAffirmative && /(?:换|更换|修改|改).{0,12}(?:画风|风格)|(?:重绘|重新制作).{0,8}(?:画风|风格)|(?:换成|改成)|(?:用.{1,80}(?:重绘|重做|重新做|重新画)|(?:重绘|重做|重新做|重新画).{0,80}用)/.test(restyleText)
-    const availableStyles = (restyleRequest || pendingRestyle) ? (await styles.list()).styles.filter(item => item.kind === 'style') : []
+    const availableStyles = (restyleRequest || pendingRestyle) ? (await styles.list()).styles : []
     const exactMatches = availableStyles.filter(item => restyleText.includes(item.name) || restyleText.includes(item.id))
     const matches = exactMatches.length ? exactMatches : availableStyles.filter(item => {
       const aliases = [...item.name.split(/[：:（(]/).map(part => part.trim()), item.name.slice(0, 2)]
@@ -1032,7 +1008,7 @@ export function createService(ctx, config = {}) {
         reply = '已把画面返工意见和上一版成片资料交给视频制作 Agent。'
       } catch(e) { productionError = {code:'PRODUCTION_FAILED',message:productionErrorMessage(e)}; reply = '成片返工未启动：'+productionError.message }
     } else if (skillOnly || chooseBlueprintSkill) {
-      reply = chooseBlueprintSkill ? '没有唯一匹配的风格或技能，请在风格库中选择。' : `已为本次创作选择「${blueprintSkillSelection.name}」。${initialVersion ? '当前蓝图仍沿用原风格，需要重新起草才能应用新选择。' : ''}`
+      reply = chooseBlueprintSkill ? '没有唯一匹配的风格或技能，请在风格库中选择。' : `已为本次创作选择「${blueprintSkillSelection.name}」。`
     } else if (namedRequest && !affirmative(restyleText)) {
       const found = blueprintAssets.filter(a => a.name === namedText)
       reply = found.length === 1 ? `素材「${namedText}」已在蓝图中登记；本次没有启动重做。` : `当前蓝图没有唯一匹配的素材「${namedText}」；本次没有启动重做。`
@@ -1061,7 +1037,7 @@ export function createService(ctx, config = {}) {
       const receiptPending = previous?.status === 'completed' && (previous.membershipPending || previous.membershipError)
       const canResume = ['failed', 'interrupted'].includes(previous?.status)
       const missingGenerated = assetRepair && (assetDiagnosisResult.missingGenerated.length || assetDiagnosisResult.pendingGenerated.length)
-      const jobId = previous?.membershipAuthorizationId && (receiptPending || canResume) ? previous.id : undefined
+      const jobId = (canResume || (previous?.membershipAuthorizationId && receiptPending)) ? previous.id : undefined
       if (productionDiagnosis && !recoverRequest) {
         reply = detail
         if (jobId && canResume) reply += '可以在成片页点「继续制作」，或在这里说「继续制作」。已保存的画面和配音会尽量复用。'
@@ -1137,7 +1113,7 @@ export function createService(ctx, config = {}) {
         reply = `${confirmAll ? '蓝图未定稿' : '成片制作未启动'}：${productionError.message}`
       }
     }
-    if (blueprintSkillSelection && initialVersion && !skillOnly && !turn?.blueprintRequested) reply += `\n\n已选择「${blueprintSkillSelection.name}」；当前蓝图仍沿用原风格，需要重新起草才能应用新选择。`
+    if (blueprintSkillSelection && initialVersion && !skillOnly && !turn?.blueprintRequested) reply += `\n\n已选择「${blueprintSkillSelection.name}」；已应用于当前版本的制作风格。`
     await appendDialogue('user', message)
     await appendDialogue('assistant', reply)
     if (activities.length) {
@@ -1274,7 +1250,7 @@ export function createService(ctx, config = {}) {
   return {
     ingest, generate, show, validate, confirm, feedback, revise, finalize, status, trace,
     lock, chat, chatHistory, manualEdit, note, adjustments, requirement,
-    listAssets, updateAsset, assignAsset, addAsset, uploadAsset, openAsset, declareAsset, realizeAsset, implementAsset, filmApprove, readMaterial, styles, selectVisualStyle, settings, generatedAssets, production: productionService,
+    listAssets, updateAsset, assignAsset, addAsset, uploadAsset, openAsset, declareAsset, realizeAsset, implementAsset, readMaterial, styles, skillsRoot, skillsInstallEnabled: !config.multiuser, chooseBlueprintSkill: setBlueprintSkill, selectVisualStyle, settings, generatedAssets, production: productionService,
     _internal: { dirs, versions, latestVersion, readVersion, getState, setState, writeRun, ensureDirs },
   }
 }

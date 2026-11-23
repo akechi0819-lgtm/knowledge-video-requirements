@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, access, readdir, realpath, chmod } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -101,7 +101,6 @@ test('production requires a current confirmed blueprint and executes the kit con
     const doc = narration => renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01', narration), section('B02','旁白二')], notes:'', meta:{'版本':'v1'} })
     await writeFile(path.join(workspace, 'outbox/蓝图_v1.md'), doc(''))
     await service.confirm({ all:true }); await service.finalize()
-    await assert.rejects(service.production.start(), /缺少旁白：B01/)
     await writeFile(path.join(workspace, 'outbox/蓝图_v1.md'), doc('旁白一'))
     await service.finalize()
     assert.equal((await service.production.start()).status, 'running')
@@ -317,7 +316,7 @@ test('a new production reuses only complete scenes with matching inputs and asse
     await service.confirm({all:true}); await service.finalize()
     const source = path.join(root,'asset.svg')
     await writeFile(source,'first')
-    service.generatedAssets.availableFiles = async () => ({approved: assets.map(asset => ({...asset,path:source})), pending: []})
+    service.generatedAssets.prepare = async ({ planned }) => ({ pool: planned.map(asset => ({...asset, path:source})) })
     async function complete() {
       let state = await service.production.start()
       for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
@@ -343,12 +342,39 @@ test('a new production reuses only complete scenes with matching inputs and asse
   }
 })
 
+test('无预设的可执行 Skill 从 structured 切换到 Agent 素材阶段', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'production-direct-skill-'))
+  try {
+    const kit = path.join(root, 'kit'), skill = path.join(root, '.agents/skills/new-skill')
+    await mkdir(kit, { recursive:true })
+    await mkdir(skill, { recursive:true })
+    await writeFile(path.join(skill, 'SKILL.md'), '---\nname: new-skill\ndescription: 测试风格\n---\n原版流程')
+    const service = createService({}, { productionMode:'structured', workspace:root, videoKitDir:kit })
+    await service._internal.ensureDirs()
+    const section = { id:'B01', title:'开头', intent:'介绍', facts:[], visual:'画面', narration:'', notes:'' }
+    await writeFile(path.join(root, 'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', userRequirements:[], sections:[section, { ...section, id:'B02', title:'结尾' }], assets:[], meta:{'版本':'v1'} }))
+    await service.confirm({ all:true }); await service.finalize()
+    await service.selectVisualStyle({ id:'repo-skill:new-skill', version:1 })
+    let input
+    service.generatedAssets.prepare = async options => { input = options; throw new Error('测试到达素材阶段') }
+    const started = await service.production.start({ mode:'structured' })
+    assert.equal(started.mode, 'agent')
+    let state
+    for (let i = 0; i < 100; i++) { state = await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
+    assert.equal(state.status, 'failed')
+    assert.equal(input.auto, true)
+    assert.deepEqual(input.planned, [])
+    assert.equal(typeof input.run, 'function')
+    assert.equal(input.doc.style.id, 'repo-skill:new-skill')
+  } finally { await rm(root, { recursive:true, force:true }) }
+})
+
 test('restyle asks when unspecified and applies the next named choice without reconfirmation', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-restyle-'))
   const previous = process.env.SCENE_API_KEY
   delete process.env.SCENE_API_KEY
   try {
-    const service = createService({}, {productionMode:"structured",  workspace: root })
+    const service = createService({}, {productionMode:"structured", multiuser:true, workspace: root })
     await service._internal.ensureDirs()
     const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
@@ -574,7 +600,7 @@ test('chat diagnoses and resumes failed work without rerunning completed work', 
     const diagnostic = await service.chat({ text:'制作停在哪一步了？' }, engine)
     assert.match(diagnostic.reply, /生成画面.*画面模型连接失败/)
     assert.doesNotMatch(diagnostic.reply, /400|fetch failed|internal.js|secret stack/)
-    assert.match(diagnostic.reply, /重新制作.*重试/)
+    assert.match(diagnostic.reply, /继续制作/)
     for (const text of ['继续制作','恢复制作','接着做','重试','请帮我继续制作','帮我重试制作']) {
       const result = await service.chat({ text }, engine)
       assert.equal(result.recovery.previousStatus, 'failed')
@@ -649,7 +675,7 @@ test('chat regenerates only the named asset and rejects uncertain requests', asy
   } finally { await rm(root,{recursive:true,force:true}) }
 })
 
-test('未实现的声明素材不阻塞成片，而是以声明随行交给片内实现', async () => {
+test('声明素材先经素材阶段制作并交接给成片', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-declared-'))
   const old = { ...process.env }
   try {
@@ -666,17 +692,22 @@ test('未实现的声明素材不阻塞成片，而是以声明随行交给片�
     const assets = [{ id:'box', name:'字符串盒子', type:'prop', description:'std::string 对象的横向盒子示意', sections:['B01'] }]
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], assets, notes:'', meta:{'版本':'v1'} }))
     await service.confirm({all:true}); await service.finalize()
-    // 声明素材从未生成、从未确认：成片仍能启动并完成。
+    const source = path.join(root, 'fixture.svg')
+    await writeFile(source, '<svg/>')
+    let plannedAssets
+    service.generatedAssets.prepare = async ({ planned }) => { plannedAssets = planned; return { pool: planned.map(asset => ({ ...asset, path: source })) } }
+    // 素材阶段完成后自动继续成片。
     assert.equal((await service.production.start()).status, 'running')
     let state
     for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
     assert.equal(state.status, 'completed', state.error)
     const bundle = path.join(root, 'production', state.id)
     const exported = JSON.parse(await readFile(path.join(bundle, 'production.json')))
-    assert.deepEqual(exported.declaredPending.map(a => a.id), ['box'])
-    const note = await readFile(path.join(bundle, '声明素材.md'), 'utf8')
-    assert.match(note, /字符串盒子/)
-    assert.match(note, /不要求全部实现/)
+    assert.deepEqual(plannedAssets.map(a => a.id), ['box'])
+    const manifest = JSON.parse(await readFile(path.join(bundle, 'assets/manifest.json'), 'utf8'))
+    assert.deepEqual(manifest.assets.map(a => a.id), ['box'])
+    assert.equal(exported.assetManifest, 'assets/manifest.json')
+    assert.equal(exported.sections[0].assets[0].image, manifest.assets[0].files[0].path)
   } finally {
     for (const key of ['SCENE_API_KEY','SCENE_ENDPOINT','SCENE_MODEL','VIDEO_VOICE']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
     await rm(root, { recursive:true, force:true })
@@ -711,6 +742,8 @@ test('only vetted production images bind and fulfilled declarations target their
     const blueprint = parseBlueprint(await readFile(path.join(root,'outbox/蓝图_v1.md'),'utf8'))
     await assignAssetPlan(root,1,blueprint,'old',['B01'])
     await assignAssetPlan(root,1,blueprint,'moon',['B02'])
+    let plannedAssets
+    service.generatedAssets.prepare = async ({ planned }) => { plannedAssets = planned; return { pool: planned.map(asset => ({ ...asset, path: path.join(root, 'sources/star.png') })) } }
     let state=await service.production.start(); for(let i=0;i<100;i++){state=await service.production.status();if(state.status!=='running')break;await sleep(20)}
     assert.equal(state.status,'completed',state.error)
     const dir=path.join(root,'production',state.id), doc=JSON.parse(await readFile(path.join(dir,'production.json')))
@@ -722,9 +755,136 @@ test('only vetted production images bind and fulfilled declarations target their
     assert.equal(doc.sections[2].image,undefined)
     const manifest=await readFile(path.join(dir,'现成素材','素材清单.md'),'utf8')
     assert.doesNotMatch(manifest,/星星/)
-    assert.equal(doc.sections[2].assets,undefined)
-    assert.deepEqual(doc.declaredPending.map(a=>a.id),['A02'])
-    const note=await readFile(path.join(dir,'声明素材.md'),'utf8')
-    assert.match(note,/星星/); assert.doesNotMatch(note,/月亮/)
+    assert.deepEqual(plannedAssets.map(a => a.id), ['A02'])
+    const generated = JSON.parse(await readFile(path.join(dir, 'assets/manifest.json'), 'utf8'))
+    assert.deepEqual(generated.assets.map(a => a.id), ['A02'])
+    assert.equal(doc.sections[2].assets[0].image, generated.assets[0].files[0].path)
   } finally { for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']) {if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]} await rm(root,{recursive:true,force:true}) }
+})
+
+test('completed jobs regenerate missing source archive atomically without changing status', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'source-recovery-'))
+  try {
+    const id = '11111111-1111-4111-8111-111111111111'
+    const root = path.join(workspace, 'production'), dir = path.join(root, id)
+    await mkdir(path.join(dir, 'scenes'), {recursive:true})
+    await mkdir(path.join(dir, 'audio-cache'), {recursive:true})
+    const state = {id, status:'completed', mode:'agent', version:'v1'}
+    const original = JSON.stringify(state) + '\n'
+    await writeFile(path.join(root, 'status.json'), original)
+    await writeFile(path.join(dir, 'completed.json'), original)
+    await writeFile(path.join(dir, 'production.json'), '{}')
+    await writeFile(path.join(dir, 'scenes', 'S01.json'), '{"elements":[]}')
+    await writeFile(path.join(dir, 'audio-cache', 'S01.mp3'), 'test audio')
+    const production = createProduction(workspace)
+    const [first, second] = await Promise.all([production.file('source'), production.file('source', undefined, id)])
+    assert.equal(first, await realpath(path.join(dir, 'source.zip')))
+    assert.equal(second, first)
+    const {execFileSync} = await import('node:child_process')
+    const files = JSON.parse(execFileSync(process.env.VIDEO_PYTHON || 'python3', ['-c', 'import json,sys,zipfile; print(json.dumps(zipfile.ZipFile(sys.argv[1]).namelist()))', first], {encoding:'utf8'}))
+    assert.ok(files.includes('scenes/S01.json'))
+    assert.ok(files.includes('audio-cache/S01.mp3'))
+    assert.equal(await readFile(path.join(root, 'status.json'), 'utf8'), original)
+    assert.equal(await readFile(path.join(dir, 'completed.json'), 'utf8'), original)
+    assert.deepEqual((await readdir(dir)).filter(n => n.startsWith('.source-')), [])
+  } finally { await rm(workspace, {recursive:true, force:true}) }
+})
+
+test('source recovery refuses incomplete jobs', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'source-incomplete-'))
+  try {
+    const id = '22222222-2222-4222-8222-222222222222'
+    await mkdir(path.join(workspace, 'production', id), {recursive:true})
+    await assert.rejects(createProduction(workspace).file('source', undefined, id), /成片尚不可用/)
+  } finally { await rm(workspace, {recursive:true, force:true}) }
+})
+
+test('pixel asset lookup serves only a listed code-drawn PNG within the job', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pixel-file-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const id = 'c1d7daa5-7cd0-470f-869c-8dd1fdc0190f'
+  const assets = path.join(root, 'production', id, 'assets')
+  await mkdir(path.join(assets, 'pixel'), { recursive: true })
+  const image = path.join(assets, 'pixel', 'pool.png')
+  await writeFile(image, Buffer.from([137,80,78,71]))
+  await writeFile(path.join(assets, 'pixel-library.json'), JSON.stringify({ assets: [
+    { id:'pool', name:'销烟池', file:'assets/pixel/pool.png', sceneIds:['S02'] }
+  ] }))
+  const production = createProduction(root)
+  assert.equal(await production.file('pixel-image', null, id, 'pool'), await import('node:fs/promises').then(fs => fs.realpath(image)))
+  await assert.rejects(production.file('pixel-image', null, id, 'other'), /素材不存在/)
+  await assert.rejects(production.file('pixel-image', null, id, '../pool'), /编号无效/)
+})
+
+
+for (const styleId of ['general', 'editorial']) {
+  test(`${styleId} 轻蓝图开工时保留用户旁白并以讲述内容补齐`, async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), 'light-blueprint-start-'))
+    const previousVoice = process.env.VIDEO_VOICE
+    process.env.VIDEO_VOICE = 'say:Tingting'
+    try {
+      const service = createService({}, {workspace, videoKitDir:path.join(workspace,'no-kit')})
+      await service._internal.ensureDirs()
+      const sections = [
+        {id:'B01', title:'一', intent:'第一段讲述内容'},
+        {id:'B02', title:'二', intent:'第二段讲述内容', narration:'用户原有旁白'},
+      ]
+      await writeFile(path.join(workspace,'outbox/蓝图_v1.md'), renderBlueprint({topic:'测试', userRequirements:[], sections, meta:{}}))
+      await service.confirm({all:true}); await service.finalize()
+      await service.selectVisualStyle({id:styleId, version:1})
+      const started = await service.production.start()
+      assert.equal(started.status, 'running')
+      const production = JSON.parse(await readFile(path.join(workspace,'production',started.id,'production.json'), 'utf8'))
+      assert.deepEqual(production.sections.map(s=>s.narration), ['第一段讲述内容','用户原有旁白'])
+      assert.ok(!production.sections[0].gaps.includes('旁白未提供'))
+      let state
+      for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(10) }
+      assert.equal(state.status, 'failed') // 测试环境没有视频工具，不运行成片
+    } finally {
+      if (previousVoice === undefined) delete process.env.VIDEO_VOICE; else process.env.VIDEO_VOICE = previousVoice
+      await rm(workspace, {recursive:true, force:true})
+    }
+  })
+}
+
+test('原版静音成片可在无 TTS、无映射的情况下恢复并交付完整视频', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'silent-original-resume-'))
+  try {
+    const kit = path.join(root, 'kit')
+    const modules = path.join(kit, 'WORK/modules/video')
+    const jobId = '8b542786-1dc5-4566-be8d-76055fa2c113'
+    const job = path.join(root, 'production', jobId)
+    const film = path.join(job, 'film')
+    const skill = path.join(root, '.agents/skills/silent-local')
+    await Promise.all([modules, film, skill].map(dir => mkdir(dir, { recursive: true })))
+    await writeFile(path.join(skill, 'SKILL.md'), '---\nname: silent-local\ndescription: 无旁白短片\n---\n正文')
+    const ffprobe = path.join(kit, 'ffprobe')
+    const ffmpeg = path.join(kit, 'ffmpeg')
+    await writeFile(ffprobe, '#!/bin/sh\nprintf \'%s\\n\' \'{"format":{"duration":"4"},"streams":[{"codec_type":"video","width":1280,"height":720}]}\'\n')
+    await writeFile(ffmpeg, '#!/bin/sh\nprintf \'frame=120\\nprogress=end\\n\'\n')
+    await Promise.all([ffprobe, ffmpeg].map(file => chmod(file, 0o755)))
+    await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({paths:{ffprobe,ffmpeg}})}`)
+    await writeFile(path.join(root, 'production/status.json'), JSON.stringify({
+      id: jobId, mode: 'agent', status: 'interrupted', version: 'v1', phase: '正在制作视频',
+    }))
+    const narration = [1, 2, 3].map(i => ({ id: `S0${i}`, blueprintId: `B0${i}`, intent: '保留内容要点', narration: null }))
+    await writeFile(path.join(job, 'production.json'), JSON.stringify({
+      version: 'v1', style: { id: 'repo-skill:silent-local', kind: 'skill' }, sections: narration,
+    }))
+    await writeFile(path.join(film, 'final.mp4'), 'unit media fixture')
+    await writeFile(path.join(job, 'decisions.json'), '{}')
+    const production = createProduction(root, { desktop:true, skillsRoot:root, videoKitDir:kit, settings:{ load:async () => ({tts:{}}) } })
+    assert.equal((await production.start({ jobId })).status, 'completed')
+    const status = await production.status()
+    assert.equal(status.artifacts.video, true)
+    assert.equal(status.artifacts.mapping, false)
+    assert.equal(status.mapping, null)
+    assert.equal(status.verify.pass, true)
+    assert.equal(status.verify.duration, 4)
+    assert.equal(status.verify.mappingMode, 'full')
+    assert.ok(status.sections.every(section => !section.narration))
+    assert.equal(await production.file('video'), await realpath(path.join(film, 'final.mp4')))
+    await assert.rejects(production.file('mapping'), /不存在|尚不可用|ENOENT/)
+    assert.equal(await production.file('source'), await realpath(path.join(job, 'source.zip')))
+  } finally { await rm(root, { recursive:true, force:true }) }
 })

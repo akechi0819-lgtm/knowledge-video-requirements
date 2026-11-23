@@ -4,6 +4,8 @@ export function productionErrorMessage(error, phase) {
   if (!error) return '制作遇到未识别的问题，请稍后重试。若反复出现，请联系支持。'
   const raw = String(error.message || error)
   if (raw.startsWith('成片已保存，平台授权回执待处理')) return receiptMessage
+  if (['成片文件不存在。', '成片文件为空或无效。', '成片不是有效视频', '成片没有可解码的视频帧。', '成片画面全黑。'].includes(raw)) return raw
+  if (raw.startsWith('成片无法解码或检查：')) return '成片无法解码，请继续制作以重新渲染。'
   const step = ['正在制作视频', '编写画面', '生成画面'].includes(phase) ? '画面模型'
     : ({ 生成配音:'配音服务', 生成素材:'素材服务', 预览画面:'画面预览', 配音与渲染:'配音与渲染', 自动质检:'自动质检' })[phase] || '制作服务'
   const status = error.status || /^(?:HTTP\s+)?([45]\d\d)\s*[:：\s]/m.exec(raw)?.[1]

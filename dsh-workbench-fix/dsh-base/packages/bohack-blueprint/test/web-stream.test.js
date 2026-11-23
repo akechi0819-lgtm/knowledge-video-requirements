@@ -67,40 +67,41 @@ test('video upload streams to temporary storage and returns review data without 
   } finally { await new Promise(resolve=>server.close(resolve)) }
 })
 
-test('asset review serves the thread preview and confirms its exact revision', async () => {
+test('asset endpoints retain thread, revision, variant and selected style', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const path = await import('node:path')
+  const dir = await mkdtemp(path.join(tmpdir(), 'web-asset-'))
+  const file = path.join(dir, 'preview.png')
+  await writeFile(file, 'preview')
+  const calls = []
+  const context = {version:1, doc:{assets:[{id:'guide',ledgerId:'library'}]}, style:{id:'general'}}
   const service = {
-    status: async () => ({ currentVersion: 1, finalized: {version: 1}, doc: {assets: [{id:'only-in-markdown'}]}, blueprintAssets: [{id:'guide',ledgerId:'library'}], visualStyle: {status: 'selected', style: {id:'general'}} }),
+    status: async () => ({currentVersion:1,finalized:{version:1},doc:{assets:[{id:'old'}]},blueprintAssets:context.doc.assets,visualStyle:{status:'selected',style:context.style}}),
     generatedAssets: {
-      status: async () => ({assets: [{previewUrl:'/bohack/api/generated-asset-file?version=1&id=guide&rev=r1'}]}),
+      status: async args => {calls.push(['status',args]); return {assets:[{previewUrl:'/bohack/api/generated-asset-file?version=1&id=guide&rev=r1',variants:[{variant:'walk',previewUrl:'/bohack/api/generated-asset-file?version=1&id=guide&rev=r1&variant=walk'}]}]}},
+      file: async args => {calls.push(['file',args]); return file},
     },
-    filmApprove: async ({version, doc, style, id, revisions}) => {
-      assert.equal(version, 1)
-      assert.deepEqual(doc.assets, [{id:'guide', ledgerId:'library'}])
-      assert.deepEqual(style, {id:'general'})
-      assert.equal(id, 'guide')
-      if (revisions?.guide !== 'r1') throw new Error('素材已变化，请重新预览后确认。')
-      return {assets:[], allApproved:true}
-    },
+    production: {generateAsset:async args => {calls.push(['generate',args]); return {assets:[]}}},
   }
-  const threads = {get: async id => { assert.equal(id, 'example'); return {service} }, touch: async () => {}}
-  const server = http.createServer(createWebHandler(null, null, {}, threads))
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  const url = 'http://127.0.0.1:'+server.address().port+'/bohack/api/generated-assets'
+  const threads = {get:async id=>{assert.equal(id,'example');return {service}},touch:async()=>{}}
+  const server = http.createServer(createWebHandler(null,null,{},threads))
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
+  const url=`http://127.0.0.1:${server.address().port}/bohack/api/generated-assets`
   try {
-    const res = await fetch(url+'?version=1&threadId=example')
-    assert.equal(res.status, 200)
-    assert.match((await res.json()).assets[0].previewUrl, /threadId=example/)
-    const approve = (body) => fetch(url+'-approve?threadId=example', {method:'POST', headers:{'content-type':'application/json','x-bohack-client':'1'}, body:JSON.stringify(body)})
-    const confirm = await approve({version:1,id:'guide',revisions:{guide:'r1'}})
-    assert.equal(confirm.status, 200)
-    assert.equal((await confirm.json()).allApproved, true)
-    const stale = await approve({version:1,id:'guide',revisions:{guide:'old'}})
-    assert.equal(stale.status, 400)
-    assert.match((await stale.json()).error, /素材已变化/)
-    const wrongVersion = await approve({version:2,id:'guide',revisions:{guide:'r1'}})
-    assert.equal(wrongVersion.status, 400)
-    assert.match((await wrongVersion.json()).error, /当前蓝图版本/)
-  } finally { await new Promise(resolve => server.close(resolve)) }
+    const data=await (await fetch(url+'?version=1&threadId=example')).json()
+    assert.match(data.assets[0].previewUrl,/threadId=example/)
+    assert.match(data.assets[0].variants[0].previewUrl,/threadId=example/)
+    const preview=await fetch(`http://127.0.0.1:${server.address().port}`+data.assets[0].variants[0].previewUrl)
+    assert.equal(await preview.text(),'preview')
+    assert.equal(preview.headers.get('content-type'),'image/png')
+    assert.deepEqual(calls.find(c=>c[0]==='file')[1],{...context,id:'guide',revision:'r1',variant:'walk'})
+    const generated=await fetch(url+'-generate?threadId=example',{method:'POST',headers:{'content-type':'application/json','x-bohack-client':'1'},body:JSON.stringify({version:1,id:'guide',feedback:'换红帽子'})})
+    assert.equal(generated.status,200)
+    assert.deepEqual(calls.find(c=>c[0]==='generate')[1],{...context,id:'guide',feedback:'换红帽子'})
+    const wrong=await fetch(url+'?version=2&threadId=example')
+    assert.equal(wrong.status,400)
+  } finally {await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true})}
 })
 
 test('CSRF gate rejects foreign origins and POSTs without the client header', async () => {
@@ -157,5 +158,22 @@ test('thread touch failure does not turn a successful request into 400', async (
     assert.equal((await res.json()).reply, 'ok')
     assert.equal(warnings.length, 1)
     assert.match(warnings[0].join(' '), /touch down/)
+  } finally { await new Promise(resolve => server.close(resolve)) }
+})
+
+test('GitHub 安装接口可在无会话时访问，并禁止多人工作台', async () => {
+  let enabled = true
+  const service = { skillsRoot: '/tmp/unused-github-skills', get skillsInstallEnabled() { return enabled } }
+  const threads = { get: async id => { assert.equal(id, null); return { service } } }
+  const server = http.createServer(createWebHandler(null, null, {}, threads))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/bohack/api/styles/github/`
+    const post = async (endpoint, body) => (await fetch(base + endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'x-bohack-client': '1' }, body: JSON.stringify(body) })).json()
+    assert.match((await post('inspect', { url: 'https://example.com/a/b' })).error, /GitHub/)
+    assert.match((await post('install', { installId: 'missing', selected: ['a'] })).error, /失效/)
+    enabled = false
+    assert.match((await post('inspect', { url: 'https://github.com/a/b' })).error, /不支持安装/)
+    assert.match((await post('install', {})).error, /不支持安装/)
   } finally { await new Promise(resolve => server.close(resolve)) }
 })

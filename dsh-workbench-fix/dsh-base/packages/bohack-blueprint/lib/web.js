@@ -13,8 +13,9 @@ import { generatePreview } from './preview.js'
 import { listModels } from './models.js'
 import { createReadStream } from 'node:fs'
 import path from 'node:path'
-import { readGithubStyle } from './github-style.js'
+import { createGithubInstaller } from './github-style.js'
 import { fileURLToPath } from 'node:url'
+import { assetMime } from './generated-assets.js'
 import { productionErrorMessage } from './production-error.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -55,6 +56,7 @@ function errorBody(e) {
 
 export function createWebHandler(legacyService, legacyEngine, ctx, threads, videoAnalyzer = analyzeVideo, allowedOrigin = origin => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin), membership) {
   const queues = new WeakMap()
+  const githubInstallers = new Map()
   async function runTurn(engine, task) {
     const previous = queues.get(engine) || Promise.resolve()
     const current = previous.catch(() => {}).then(task)
@@ -148,20 +150,29 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         return { version: current.currentVersion, doc: { ...current.doc, assets: current.blueprintAssets }, style: current.visualStyle?.style || null }
       }
       function generatedUrls(result) {
-        if (threadId) for (const asset of result.assets) if (asset.previewUrl) asset.previewUrl += `&threadId=${encodeURIComponent(threadId)}`
+        if (threadId) for (const asset of result.assets) {
+          for (const item of [asset, ...(asset.variants || [])]) if (item.previewUrl) item.previewUrl += `&threadId=${encodeURIComponent(threadId)}`
+        }
+        return result
+      }
+      function productionUrls(result) {
+        if (result && threadId) for (const asset of result.assets || []) {
+          for (const file of asset.files) file.previewUrl += `&threadId=${encodeURIComponent(threadId)}`
+          if (asset.sourceUrl) asset.sourceUrl += `&threadId=${encodeURIComponent(threadId)}`
+        }
         return result
       }
       if (pathname === '/bohack/api/generated-assets' && method === 'GET') {
         json(res, 200, generatedUrls(await service.generatedAssets.status(await generatedContext(params.get('version'))))); return
       }
       if (pathname === '/bohack/api/generated-asset-file' && (method === 'GET' || method === 'HEAD')) {
-        const file = await service.generatedAssets.file({ ...await generatedContext(params.get('version')), id: params.get('id'), revision: params.get('rev') })
+        const file = await service.generatedAssets.file({ ...await generatedContext(params.get('version')), id: params.get('id'), revision: params.get('rev'), variant: params.get('variant') })
         const data = await readFile(file)
-        res.writeHead(200, { 'content-type': 'image/svg+xml', 'content-security-policy': "default-src 'none'; style-src 'none'; sandbox", 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' })
+        res.writeHead(200, { 'content-type': assetMime(file), 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox", 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' })
         res.end(method === 'HEAD' ? undefined : data); return
       }
       if (pathname === '/bohack/api/blueprint-skill' && method === 'GET') { json(res, 200, {ok:true, skill:await service.styles.blueprintSkill()}); return }
-      if (pathname === '/bohack/api/blueprint-skill' && method === 'POST') { json(res, 200, await service.styles.chooseBlueprintSkill(await readBody(req))); return }
+      if (pathname === '/bohack/api/blueprint-skill' && method === 'POST') { json(res, 200, await service.chooseBlueprintSkill(await readBody(req))); return }
       if (pathname === '/bohack/api/models' && method === 'POST') { json(res, 200, await listModels(await readBody(req), await service.settings.load())); return }
       if (pathname === '/bohack/api/settings' && method === 'GET') { json(res, 200, await service.settings.get()); return }
       if (pathname === '/bohack/api/settings' && method === 'POST') { json(res, 200, await service.settings.update(await readBody(req))); return }
@@ -172,15 +183,21 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
 
       if (pathname === '/bohack/api/production-file' && (method === 'GET' || method === 'HEAD')) {
         const kind = params.get('kind')
-        const file = await service.production.file(kind, params.get('section'), params.get('jobId'))
+        const file = await service.production.file(kind, params.get('section'), params.get('jobId'), params.get('assetId'), params.get('variant'))
         const size = (await stat(file)).size
         const type = kind === 'source' ? 'application/zip' : kind === 'video' || kind === 'clip' ? 'video/mp4'
           : kind === 'audio' ? 'audio/mpeg'
+          : kind === 'pixel-candidates' ? 'text/html; charset=utf-8'
+          : kind === 'asset-source' ? 'application/octet-stream'
+          : kind === 'asset-preview' ? assetMime(file)
+          : kind === 'pixel-image' ? 'image/png'
           : kind === 'scene' && file.endsWith('.html') ? 'text/html; charset=utf-8'
           : 'application/json; charset=utf-8'
         const headers = { 'content-type': type, 'cache-control': 'no-store', 'accept-ranges': 'bytes', 'x-content-type-options': 'nosniff' }
+        if (kind === 'asset-preview') headers['content-security-policy'] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+        if (kind === 'asset-source') headers['content-disposition'] = "attachment; filename*=UTF-8''" + encodeURIComponent(path.basename(file))
         if (kind === 'source') headers['content-disposition'] = 'attachment; filename="video-source.zip"'
-        if (kind === 'scene') headers['content-security-policy'] = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
+        if (kind === 'scene' || kind === 'pixel-candidates') headers['content-security-policy'] = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
         let start = 0, end = size - 1, code = 200
         if (req.headers.range) {
           const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range)
@@ -229,7 +246,9 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
 
       // ── read endpoints ──────────────────────────────────────────────────
       if (pathname === '/bohack/api/status' && method === 'GET') {
-        json(res, 200, await service.status()); return
+        const result = await service.status()
+        productionUrls(result.production)
+        json(res, 200, result); return
       }
       if (pathname === '/bohack/api/blueprint' && method === 'GET') {
         const q = new URL(req.url, 'http://localhost').searchParams
@@ -313,8 +332,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       }
       let out
       switch (pathname) {
-        case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.generatedAssets.generate({ ...await generatedContext(body.version), id: body.id })); break
-        case '/bohack/api/generated-assets-approve': out = generatedUrls(await service.filmApprove({ ...await generatedContext(body.version), id: body.id, revisions: body.revisions })); break
+        case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.production.generateAsset({ ...await generatedContext(body.version), id: body.id, feedback: body.feedback })); break
         case '/bohack/api/asset-implement': out = await service.implementAsset(body); break
         case '/bohack/api/preview': {
           const current = await service.status()
@@ -322,7 +340,14 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
           out = { ok: true, scenes: await generatePreview(current.sections, await (membership ? service.settings.forCall() : service.settings.load()), fetch, current.visualStyle?.style) }
           break
         }
-        case '/bohack/api/style-github': out = await readGithubStyle(body); break
+        case '/bohack/api/styles/github/inspect':
+        case '/bohack/api/styles/github/install': {
+          if (!service.skillsInstallEnabled || !service.skillsRoot) throw new Error('此工作台不支持安装可执行 Skill。')
+          let installer = githubInstallers.get(service.skillsRoot)
+          if (!installer) { installer = createGithubInstaller(service.skillsRoot); githubInstallers.set(service.skillsRoot, installer) }
+          out = pathname.endsWith('/inspect') ? await installer.inspect(body) : await installer.install(body)
+          break
+        }
         case '/bohack/api/styles-import': out = await service.styles.importStyle(body); break
         case '/bohack/api/styles-update': out = await service.styles.update(body); break
         case '/bohack/api/styles-select': out = await service.selectVisualStyle(body); break
@@ -340,7 +365,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         case '/bohack/api/finalize': out = await service.finalize(body); break
         case '/bohack/api/production':
           if (body.action === 'abandon') { await service.production.abandon(body.authorizationId); out = { ok:true } }
-          else out = await service.production.start({mode:body.mode,feedback:body.feedback,jobId:body.jobId})
+          else out = await service.production.start({mode:body.mode,feedback:body.feedback,jobId:body.jobId,regenerateAssetId:body.regenerateAssetId,assetFeedback:body.assetFeedback})
           break
         case '/bohack/api/chat':     out = await runTurn(engine, () => service.chat(body, engine, streaming ? emit : undefined)); break
         case '/bohack/api/section':  out = await runTurn(engine, () => service.manualEdit(body, engine)); break
@@ -358,6 +383,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         try { await threads.touch(threadId, pathname === '/bohack/api/chat' ? body.text : null) }
         catch (e) { ctx.logger?.warn?.('[bohack/web] threads.touch', String(e?.message || e)) }
       }
+      if (out?.production) productionUrls(out.production)
       if (streaming) { emit({ type: 'done', result: out }); res.end() }
       else json(res, 200, out)
     } catch (e) {
