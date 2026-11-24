@@ -28,6 +28,38 @@ test('续跑时显示仍在等待的段落及已保存进度', () => {
   assert.match(window.BohackFilm.headline({status:'running', phase:'正在制作视频', sections:sections.map(section=>({...section,scene:true}))}), /各段画面已保存/)
 })
 
+test('运行中的素材和首段画面使用实时活动，等待提示和已保存进度优先', () => {
+  const window = {}
+  vm.runInNewContext(readFileSync(new URL('../web/film.js', import.meta.url), 'utf8'), { window })
+  const headline = window.BohackFilm.headline
+  for (const phase of ['生成素材', '准备编码素材', '正在编码制作素材', '启动视频制作 Agent', '正在制作视频', '编写画面']) {
+    const p = { status:'running', phase, activity:'正在检查素材', sections:[{id:'S01'}] }
+    assert.equal(headline(p), '正在检查素材')
+    assert.equal(headline({...p, waitMessage:'继续等待'}), '继续等待')
+  }
+  assert.match(headline({status:'running', phase:'正在制作视频', activity:'实时活动', sections:[{id:'S01',scene:true},{id:'S02'}]}), /等待 S02.*已保存/)
+  assert.match(headline({status:'running', phase:'配音与渲染', activity:'实时活动'}), /配音与渲染/)
+  assert.match(headline({status:'failed', phase:'生成素材', activity:'实时活动'}), /制作未完成/)
+})
+
+test('中央等待画面随实时活动更新和清除', () => {
+  const make = () => ({dataset:{},classList:{toggle(){}},replaceChildren(){this.innerHTML=''},querySelector(selector){return selector.includes('.film-waiting') && this.innerHTML?.includes('film-waiting') ? {} : null},querySelectorAll(){return []}})
+  const elements = Object.fromEntries(['pane-film','phaseRail','filmHeadline','filmRail','filmPlayer','filmWaitMeta','filmPrep','filmBp','filmState','pixelAssets'].map(id => [id, make()]))
+  elements['pane-film'].querySelector = selector => selector === '#pixelAssets' ? elements.pixelAssets : null
+  const window = {}
+  vm.runInNewContext(readFileSync(new URL('../web/film.js', import.meta.url), 'utf8'), {window,document:{getElementById:id=>elements[id]},location:{origin:'http://localhost'},URL})
+  const production = {id:'p',status:'running',phase:'正在制作视频',activity:'检查 <素材>',sections:[]}
+  const render = () => window.BohackFilm.render({production}, {threadId:'t'})
+  render()
+  assert.match(elements.filmPlayer.innerHTML, /检查 &lt;素材&gt;/)
+  production.activity = '正在设计画面'
+  render()
+  assert.match(elements.filmPlayer.innerHTML, /正在设计画面/)
+  production.activity = ''
+  render()
+  assert.match(elements.filmPlayer.innerHTML, /视频 Agent 正在读取蓝图和素材/)
+})
+
 test('成片素材显示多种预览，单项修改直接启动制作', async () => {
   const render = html.slice(html.indexOf('async function renderFilmAssets('), html.indexOf('function styleSummary('))
   const calls = [], buttons = [], status = {textContent:''}, feedback = {dataset:{assetFeedback:'a'},value:'换红帽子'}

@@ -29,6 +29,7 @@ export function createProduction(workspace, config = {}) {
   let active = false
   let generation = 0
   let waitMessage = ''
+  let activity = ''
   const memberProject = config.memberProject
   const jobIdPattern = /^[0-9a-f-]{36}$/
   async function readState() {
@@ -131,6 +132,7 @@ export function createProduction(workspace, config = {}) {
       ...(state.error && { error: productionErrorMessage(state.error, state.phase) }),
       ...(state.membershipError && { membershipError: receiptMessage }),
       ...(state.status === 'running' && waitMessage && { waitMessage }),
+      ...(state.status === 'running' && activity && { activity }),
       sections,
       pixelAssets: await pixelLibrary(dir),
       assets: (await readAssetManifest(dir))?.assets.map(asset => ({
@@ -432,8 +434,13 @@ export function createProduction(workspace, config = {}) {
         const film = path.join(dir, 'film')
         const onProgress = async event => {
           if (event?.type === 'wait') { waitMessage = event.text; return }
+          if (event?.type === 'activity') { activity = event.text; return }
           const phase = typeof event === 'string' ? event : event?.type === 'status' ? event.text : null
-          if (phase && state.phase !== phase) { state.phase = phase; await save(state) }
+          if (phase && state.phase !== phase) {
+            activity = ''
+            state.phase = phase
+            await save(state)
+          }
         }
         const withProductionSession = async (sessionId, run) => {
           memberProject?.bind(sessionId, config.settings.load, auth?.id, !state.membershipAuthorizationId)
@@ -447,6 +454,7 @@ export function createProduction(workspace, config = {}) {
         }
         await prepareProductionAssets(state, production, dir, saved, previousDir, withProductionSession, onProgress, executable)
         if (mode === 'agent') {
+          await onProgress('启动视频制作 Agent')
           const { runVideoJob } = await import('./video-job.js')
           const agentRoute = await routeFor(saved)
           const filmFeedback = [feedback, state.regenerateAssetId && '本次只返工素材。优先复用上一版已通过自检的场景源码与镜头编排，按新素材清单替换目标主体的变体。保留其他素材、镜头时间和音频安排，再重新渲染、自检并提交。'].filter(Boolean).join('\n')
@@ -454,9 +462,10 @@ export function createProduction(workspace, config = {}) {
             ctx: config.ctx, sessionId: state.sessionId, dir, production, kit, settings: saved, ...agentRoute,
             feedback: filmFeedback, previousDir, onProgress, resume, multiuser: !!config.multiuser, skillsRoot, executable,
           }))
+          activity = ''
           await sourceArchive(dir, kit)
         } else {
-          state.phase = '生成画面'; await save(state)
+          await onProgress('生成画面')
           const scenes = path.join(dir, 'scenes')
           const { sceneMode, endpoint, model, key } = sceneSettings(saved, sceneConfig)
           const sceneArgs = ['--input', path.join(dir, 'production.json'), '--output', scenes]
@@ -479,14 +488,14 @@ export function createProduction(workspace, config = {}) {
             const dshCli = process.env.DSH_CLI || path.join(dshBase, process.platform === 'win32' ? 'dsh.cmd' : 'dsh.sh')
             await run(dir, 'scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', normalizeEndpoint(endpoint, '/chat/completions'), '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir, VIDEO_RESUME: resume ? '1' : '', DSH_CLI: dshCli })
           }
-          state.phase = '配音与渲染'; await save(state)
+          await onProgress('配音与渲染')
           const audio = await reusableAudio(production, prior)
           const args = ['--prepared', path.join(scenes, 'production.json'), '--out', film]
           if (saved.tts?.voice) args.push('--voice', `api:${saved.tts.voice}`)
           else if (process.env.VIDEO_VOICE) args.push('--voice', process.env.VIDEO_VOICE)
           else if (process.env.VOICE_NAME) args.push('--voice', `api:${process.env.VOICE_NAME}`)
           await run(dir, 'WORK/modules/video/pipeline.mjs', args, { ...process.env, VIDEO_RESUME: resume ? '1' : '', VIDEO_TTS_CACHE_DIR: audio?.audio || '', ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: normalizeEndpoint(saved.tts.baseUrl, saved.tts.protocol === 'mimo' ? '/chat/completions' : '/audio/speech') } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
-          state.phase = '自动质检'; await save(state)
+          await onProgress('自动质检')
           await run(dir, 'WORK/modules/video/verify.mjs', [path.join(film, 'mapping.json')])
         }
         await stat(path.join(film, 'final.mp4'))
@@ -496,6 +505,7 @@ export function createProduction(workspace, config = {}) {
       } catch (e) { state.status = 'failed'; state.error = String(e.message || e); state.completedAt = new Date().toISOString() }
       finally {
         waitMessage = ''
+        activity = ''
         if (state.sessionId) config.memberProject?.unbind(state.sessionId)
         try {
           await save(state)

@@ -120,19 +120,37 @@ test('asset submission preserves frozen DSH arguments and requires viewing the c
       python: '/usr/bin/true', ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true',
       edge: '/usr/bin/true', playwright: ${JSON.stringify(playwright)}
     } }`)
-    const [hero] = doc.assets
+    const [hero, bag] = doc.assets
+    const events = []
     const result = await runAssetAgentJob({
-      dir, repo: root, kit: path.join(root, 'kit'), production: { style, sections: [{ id: 'S01', blueprintId: 'B01' }] }, assets: [hero],
-      async runAgent({ tools, preset, submitTool }) {
+      dir, repo: root, kit: path.join(root, 'kit'), production: { style, sections: [{ id: 'S01', blueprintId: 'B01' }] }, assets: [hero, bag],
+      onProgress: event => events.push(event),
+      async runAgent({ tools, preset, submitTool, prompt }) {
         assert.equal(preset, 'bohack-skill-runner')
         assert.equal(submitTool, 'submit_assets')
+        assert.match(prompt, /无需 mkdir 或 glob 空目录/)
+        assert.ok(prompt.includes(JSON.stringify({ id: hero.id, name: hero.name, type: hero.type, sections: hero.sections })))
         const [view, submit] = tools
-        const file = Object.freeze({ variant: 'idle', path: 'assets/hero.svg', width: 32, height: 32, transparent: true })
+        const schema = submit.parameters.properties.manifest.properties.assets.items
+        assert.deepEqual(schema.required, ['id', 'files', 'sourceScript', 'usageHint'])
+        assert.deepEqual(schema.properties.files.items.required, ['variant', 'path'])
+        const file = Object.freeze({ variant: 'idle', path: 'assets/hero.svg' })
+        const bagFile = Object.freeze({ variant: 'idle', path: 'assets/bag.svg', width: 11, height: 22, transparent: false })
         const sourceScript = 'assets/src/hero.mjs'
+        const bagSource = 'assets/src/bag.js'
         const manifest = Object.freeze({ version: 1, producer: 'code-agent', styleId: style.id, assets: Object.freeze([
-          Object.freeze({ id: hero.id, name: hero.name, type: hero.type, sections: Object.freeze(['B01']), files: Object.freeze([file]), sourceScript, usageHint: '放置在地面线上' }),
+          Object.freeze({ id: hero.id, files: Object.freeze([file]), sourceScript, usageHint: '放置在地面线上' }),
+          Object.freeze({ id: bag.id, files: Object.freeze([bagFile]), sourceScript: bagSource, usageHint: '' }),
         ]) })
+        const withBag = changes => ({ manifest: { ...manifest, assets: [manifest.assets[0], { ...manifest.assets[1], ...changes }] } })
         await writeFile(path.join(dir, sourceScript), 'export {}')
+        await assert.rejects(submit.execute(withBag({ name: '错名' })), /bag.*name.*布袋/)
+        await assert.rejects(submit.execute(withBag({ type: 'character' })), /bag.*type.*prop/)
+        await assert.rejects(submit.execute(withBag({ sections: ['S01'] })), /bag.*sections.*B01/)
+        await assert.rejects(submit.execute(withBag({ sourceScript })), /bag 与 hero 共用源码.*assets\/src\/bag.js/)
+        await assert.rejects(submit.execute(withBag({ sourceScript: file.path })), /bag.*assets\/src\/bag.js/)
+        await writeFile(path.join(dir, bagSource), 'export {}')
+        await writeFile(path.join(dir, bagFile.path), '<svg/>')
         await writeFile(path.join(dir, file.path), '<svg/>')
         const args = { file: file.path }
         await view.execute(args)
@@ -140,14 +158,31 @@ test('asset submission preserves frozen DSH arguments and requires viewing the c
         view.onImageProjected(args)
         await writeFile(path.join(dir, file.path), '<svg><!--new--></svg>')
         await assert.rejects(submit.execute({ manifest }), /查看后已修改/)
-        await view.execute(args)
-        view.onImageProjected(args)
+        const stale = { file: file.path }
+        await view.execute(stale)
+        await writeFile(path.join(dir, file.path), '<svg><!--latest--></svg>')
+        const latest = { file: file.path }
+        await view.execute(latest)
+        view.onImageProjected(stale)
+        await assert.rejects(submit.execute({ manifest }), /查看后已修改/)
+        view.onImageProjected(latest)
+        const bagArgs = { file: bagFile.path }
+        await view.execute(bagArgs)
+        view.onImageProjected(bagArgs)
         const submitted = await submit.execute(Object.freeze({ manifest }))
         assert.equal(file.preview, undefined)
         return submitted
       },
     })
     assert.equal(result.assets[0].files[0].preview, 'assets/review/hero_idle.png')
+    for (const [asset, planned] of [[result.assets[0], hero], [result.assets[1], bag]]) {
+      assert.deepEqual([asset.name, asset.type, asset.sections], [planned.name, planned.type, planned.sections])
+      const [{ width, height, transparent }] = asset.files
+      assert.deepEqual({ width, height, transparent }, { width: 32, height: 32, transparent: true })
+    }
+    assert.match(events[1].text, /共 2 件素材/)
+    assert.ok(events.some(event => /已查 1 个变体.*bag.svg/.test(event.text)))
+    assert.equal(events.at(-1).text, '正在校验并提交素材清单…')
     assert.deepEqual(await readAssetManifest(dir), result)
   } finally {
     await rm(root, { recursive: true, force: true })

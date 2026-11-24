@@ -4,6 +4,18 @@ import { isDeepStrictEqual } from 'node:util'
 import { writeFile } from 'node:fs/promises'
 import { registerSkillExecution } from './skill-process.js'
 
+const toolActivities = new Map([
+  ['skill', '正在加载风格规范…'],
+  ['read', '正在读取制作资料…'],
+  ['write', '正在编写源码…'],
+  ['apply_patch', '正在编写源码…'],
+  ['write_scene', '正在编写画面源码…'],
+  ['bash', '正在运行生成或渲染脚本…'],
+  ['preview', '正在生成画面预览…'],
+  ['view_image', '正在检查画面预览…'],
+  ['submit', '正在校验并提交成片…'],
+])
+
 // Each production job gets its own host session and cwd. The caller owns the
 // actual production tools and validates their outputs.
 export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt, tools, onProgress, onTiming, preset = 'bohack-video', continuation, runtime, submitTool = 'submit', statusText = '正在制作视频' }) {
@@ -25,11 +37,14 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
   const submission = new Promise(resolve => { resolveSubmitted = resolve })
   let timer
   let warningTimer
+  let activityTimer
+  let waitingForModel = false
   let warningShown = false
   let rejectTimeout
   let stopped = false
   const toolAbort = new AbortController()
   let activeTools = 0
+  let inheritedTools = 0
   let budgetTimer
   const budgetMs = Number(process.env.BOHACK_VIDEO_BUDGET_MS || 3600000)
   const idleMs = Number(process.env.BOHACK_VIDEO_IDLE_MS || 720000)
@@ -38,7 +53,22 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
     stopped = true
     rejectTimeout(new Error(message))
   }
+  const activity = text => onProgress?.({ type: 'activity', text })
+  const armActivity = () => {
+    clearTimeout(activityTimer)
+    if (!onProgress || stopped || submitted || !rejectTimeout || activeTools || inheritedTools || waitingForModel) return
+    activityTimer = setTimeout(() => {
+      waitingForModel = true
+      activity('正在等待模型生成下一步…')
+    }, 25000)
+  }
+  const toolActivity = (name, ownTool = false) => {
+    const text = ownTool && submitTool === 'submit_assets' ? undefined : toolActivities.get(name)
+    if (text || waitingForModel) activity(text || '正在执行制作工具…')
+    waitingForModel = false
+  }
   const armWatchdog = () => {
+    armActivity()
     clearTimeout(timer)
     clearTimeout(warningTimer)
     if (warningShown) {
@@ -79,6 +109,7 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
           if (stopped) return {ok:false, message:'本次制作已暂停。'}
           if (submitted) return {ok:false, message:'本次成片已提交。'}
           activeTools++
+          toolActivity(tool.name, true)
           armWatchdog()
           const timing = onTiming && stepTiming
           const start = onTiming && Date.now()
@@ -130,12 +161,15 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
       agentCtx.on('tools/execute', async (exec, next) => {
         if (exec.agent?.id !== activeSessionId || names.has(exec.name)) return next()
         const start = Date.now(), timing = stepTiming
+        inheritedTools++
+        toolActivity(exec.name)
         armWatchdog()
         try {
           const value = await next()
           if (!value.isError) toolProgress++
           return value
         } finally {
+          inheritedTools--
           const end = Date.now()
           timing?.intervals.push([start, end])
           timing?.toolNames.add(exec.name)
@@ -147,7 +181,13 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
     agentCtx.on?.('agent/assistant-stream', payload => {
       const chunk = payload?.frame?.type === 'chunk' ? payload.frame.chunk : null
       const streamSessionId = payload?.sessionId ?? payload?.session?.id
-      if (chunk && (streamSessionId == null || streamSessionId === activeSessionId)) armWatchdog()
+      if (chunk && (streamSessionId == null || streamSessionId === activeSessionId)) {
+        if (waitingForModel) {
+          waitingForModel = false
+          activity('模型正在生成下一步…')
+        }
+        armWatchdog()
+      }
       if (stepTiming && (streamSessionId == null || streamSessionId === activeSessionId)) {
         if (chunk?.type === 'reasoning-delta') stepTiming.reasoningChars += chunk.text?.length || 0
         if (chunk?.type === 'text-delta') stepTiming.textChars += chunk.text?.length || 0
@@ -176,6 +216,7 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
         }
       }
       if (session?.id === activeSessionId && event?.type === 'turn/end') {
+        clearTimeout(activityTimer)
         onTiming?.({ type: 'turn', sessionId: activeSessionId, end: event.time, reason: event.data?.reason?.kind })
         if (event.data?.reason?.kind === 'error') modelError = event.data.reason.error
         if (resolveTurnEnd) {
@@ -189,7 +230,7 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
   }
   try {
     handle = await agents.create({ sessionId: activeSessionId, meta: { cwd: path.resolve(cwd) }, agentOptions: { provider, model, ...(reasoningEffort != null ? { reasoningEffort } : {}) }, setup })
-    onProgress?.({ type: 'status', text: statusText })
+    await onProgress?.({ type: 'status', text: statusText })
     const timeout = new Promise((_, reject) => { rejectTimeout = reject })
     armWatchdog()
     budgetTimer = setTimeout(() => expire('制作达到总时间预算，已暂停，可继续制作。'), budgetMs)
@@ -200,6 +241,7 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
         let instruction = prompt
         while (!submitted && !stopped) {
           const ended = new Promise(resolve => { resolveTurnEnd = resolve })
+          armActivity()
           await handle.agent.followup({ role: 'user', content: [{ type: 'text', text: instruction }], source: { kind: 'user' }, id: randomUUID() })
           await ended
           if (modelError) {
@@ -233,6 +275,7 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
     stopped = true
     clearTimeout(timer)
     clearTimeout(warningTimer)
+    clearTimeout(activityTimer)
     clearTimeout(budgetTimer)
     if (runtime) {
       toolAbort.abort()

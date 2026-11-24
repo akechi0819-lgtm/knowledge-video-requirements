@@ -210,6 +210,45 @@ test('warns after two minutes and clears the warning when tool progress resumes'
   assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
 })
 
+test('reports a quiet model at 25 seconds and resumes activity on streaming or tool execution', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const events = []
+  let registered, listeners
+  const { ctx } = host(async (tools, hooks) => {
+    registered = tools
+    listeners = hooks
+    await new Promise(() => {})
+  })
+  const result = runVideoAgent({ ctx, sessionId: 'live', cwd: '/tmp', prompt: 'make', tools, runtime: {}, onProgress: event => events.push(event) })
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(24999)
+  assert.equal(events.some(event => event.type === 'activity'), false)
+  t.mock.timers.tick(1)
+  assert.deepEqual(events.at(-1), { type: 'activity', text: '正在等待模型生成下一步…' })
+  assert.equal(events.some(event => event.type === 'wait'), false)
+  const stream = listeners.get('agent/assistant-stream')
+  const frame = { type: 'chunk', chunk: { type: 'reasoning-delta', text: 'planning' } }
+  stream({ sessionId: 'other', frame })
+  assert.match(events.at(-1).text, /正在等待模型/)
+  stream({ sessionId: 'live', frame })
+  assert.deepEqual(events.at(-1), { type: 'activity', text: '模型正在生成下一步…' })
+  t.mock.timers.tick(25000)
+  assert.match(events.at(-1).text, /正在等待模型/)
+  await listeners.get('tools/execute')({ agent: { id: 'live' }, name: 'bash' }, async () => {
+    assert.deepEqual(events.at(-1), { type: 'activity', text: '正在运行生成或渲染脚本…' })
+    t.mock.timers.tick(25000)
+    assert.match(events.at(-1).text, /正在运行/)
+    return { isError: false }
+  })
+  t.mock.timers.tick(25000)
+  assert.match(events.at(-1).text, /正在等待模型/)
+  await registered.get('submit').execute({})
+  await result
+  const count = events.length
+  t.mock.timers.tick(120000)
+  assert.equal(events.length, count)
+})
+
 test('keeps an active tool alive until the total production budget', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const events = []

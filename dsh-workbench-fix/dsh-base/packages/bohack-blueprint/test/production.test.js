@@ -342,26 +342,67 @@ test('a new production reuses only complete scenes with matching inputs and asse
   }
 })
 
-test('无预设的可执行 Skill 从 structured 切换到 Agent 素材阶段', async () => {
+test('无预设的可执行 Skill 切换到 Agent，活动只在当前制作阶段返回', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-direct-skill-'))
+  const previousWorkspace = process.env.JIANGJIE_DESKTOP_WORKSPACE
+  process.env.JIANGJIE_DESKTOP_WORKSPACE = path.join(root, 'runtime-workspace')
+  t.after(() => {
+    if (previousWorkspace === undefined) delete process.env.JIANGJIE_DESKTOP_WORKSPACE
+    else process.env.JIANGJIE_DESKTOP_WORKSPACE = previousWorkspace
+  })
   try {
     const kit = path.join(root, 'kit'), skill = path.join(root, '.agents/skills/new-skill')
-    await mkdir(kit, { recursive:true })
+    const modules = path.join(kit, 'WORK/modules/video'), playwright = path.join(modules, 'playwright.cjs')
+    await mkdir(modules, { recursive:true })
     await mkdir(skill, { recursive:true })
+    await writeFile(playwright, `module.exports.chromium = { launch: async () => ({
+      close: async () => {}, newContext: async () => ({ route: async () => {}, newPage: async () => ({}) }),
+    }) }`)
+    await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({ paths: {
+      python: '/usr/bin/true', ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true', edge: '/usr/bin/true', playwright,
+    } })}`)
     await writeFile(path.join(skill, 'SKILL.md'), '---\nname: new-skill\ndescription: 测试风格\n---\n原版流程')
-    const service = createService({}, { productionMode:'structured', workspace:root, videoKitDir:kit })
+    const stateFile = path.join(root, 'production/status.json')
+    let assetState, videoState, diskDuringAsset, activeBashState
+    const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async ({ sessionId, setup }) => {
+      const tools = new Map(), listeners = new Map()
+      await setup({ tools: { register: tool => tools.set(tool.name, tool) }, on: (name, listener) => listeners.set(name, listener) })
+      return { agent: { followup: async () => {
+        if (tools.has('submit_assets')) {
+          assetState = await service.production.status()
+          diskDuringAsset = JSON.parse(await readFile(stateFile, 'utf8'))
+          await tools.get('submit_assets').execute({ manifest: { version: 1, producer: 'code-agent', styleId: 'repo-skill:new-skill', assets: [] } })
+        } else {
+          videoState = await service.production.status()
+          await listeners.get('tools/execute')({ agent: { id: sessionId }, name: 'bash' }, async () => {
+            activeBashState = await service.production.status()
+            throw new Error('测试停止制作')
+          })
+        }
+      } } }
+    } } }
+    const service = createService(ctx, { productionMode:'structured', workspace:root, styleLibraryRoot:root, videoKitDir:kit })
     await service._internal.ensureDirs()
     const section = { id:'B01', title:'开头', intent:'介绍', facts:[], visual:'画面', narration:'', notes:'' }
     await writeFile(path.join(root, 'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', userRequirements:[], sections:[section, { ...section, id:'B02', title:'结尾' }], assets:[], meta:{'版本':'v1'} }))
     await service.confirm({ all:true }); await service.finalize()
     await service.selectVisualStyle({ id:'repo-skill:new-skill', version:1 })
     let input
-    service.generatedAssets.prepare = async options => { input = options; throw new Error('测试到达素材阶段') }
+    const prepare = service.generatedAssets.prepare
+    service.generatedAssets.prepare = async options => { input = options; return prepare(options) }
     const started = await service.production.start({ mode:'structured' })
     assert.equal(started.mode, 'agent')
     let state
     for (let i = 0; i < 100; i++) { state = await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
     assert.equal(state.status, 'failed')
+    assert.match(JSON.parse(await readFile(stateFile, 'utf8')).error, /测试停止制作/)
+    assert.equal(assetState.activity, '正在加载风格规范并规划素材…')
+    assert.equal(diskDuringAsset.phase, assetState.phase)
+    assert.equal(Object.hasOwn(diskDuringAsset, 'activity'), false)
+    assert.equal(videoState.phase, '正在制作视频')
+    assert.equal(Object.hasOwn(videoState, 'activity'), false)
+    assert.equal(activeBashState.activity, '正在运行生成或渲染脚本…')
+    assert.equal(Object.hasOwn(state, 'activity'), false)
     assert.equal(input.auto, true)
     assert.deepEqual(input.planned, [])
     assert.equal(typeof input.run, 'function')

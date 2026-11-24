@@ -52,12 +52,12 @@ window.BohackFilm = (() => {
     const withScene = sections.filter(s => s.scene).length
     const withAudio = sections.filter(s => s.audio).length
     const withClip = sections.filter(s => s.clip).length
-    if (p.phase === '正在制作视频' || p.phase === '编写画面') {
+    if (['启动视频制作 Agent', '正在制作视频', '编写画面'].includes(p.phase)) {
       const missing = sections.filter(s => !s.scene)
       if (withScene && missing.length) return `等待 ${missing.map(s => s.id).join('、')} 的画面，已保存 ${withScene} / ${sections.length} 段。`
-      return withScene ? '各段画面已保存，正在准备预览与合成。' : '视频 Agent 正在读取蓝图和素材，设计画面。'
+      return withScene ? '各段画面已保存，正在准备预览与合成。' : (p.status === 'running' && p.activity) || '视频 Agent 正在读取蓝图和素材，设计画面。'
     }
-    if (['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)) return '素材 Agent 正在按蓝图和选定风格制作、检查素材。'
+    if (['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)) return (p.status === 'running' && p.activity) || '素材 Agent 正在按蓝图和选定风格制作、检查素材。'
     if (p.phase === '生成画面') {
       const current = sections.find(s => !s.scene)
       if (current) return withScene ? `${current.id} 正在生成画面，已完成 ${withScene} / ${sections.length} 段。` : '正在根据蓝图生成各段画面。'
@@ -338,7 +338,7 @@ window.BohackFilm = (() => {
     root.classList.toggle('is-producing', p?.status === 'running' || p?.status === 'completed')
     root.classList.toggle('is-completed', p?.status === 'completed')
     const signature = JSON.stringify({
-      id: p?.id, status: p?.status, phase: p?.phase, error: p?.error, waitMessage: p?.waitMessage, thread: env.threadId,
+      id: p?.id, status: p?.status, phase: p?.phase, error: p?.error, waitMessage: p?.waitMessage, activity: stageMedia(env.threadId, p, player._active).kind === 'waiting' ? p?.activity : undefined, thread: env.threadId,
       artifacts: p?.artifacts, mapping:p?.mapping, duration:p?.verify?.duration, sections: (p?.sections || []).map(sec => [sec.id, sec.scene, sec.sceneKind, sec.audio, sec.clip]),
     })
     const ctl = renderPlayer(player, p, env.threadId, player._active, signature)
