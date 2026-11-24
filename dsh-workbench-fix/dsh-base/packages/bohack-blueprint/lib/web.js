@@ -80,7 +80,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         const result = !membership ? { enabled: false } : method === 'GET' ? await membership.view() : await membership.update(await readBody(req))
         json(res, 200, result); return
       }
-      const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
+      const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'qrcode.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
       const asset = pathname.slice('/bohack/'.length)
       if (pathname.startsWith('/bohack/') && Object.hasOwn(assetTypes, asset) && (method === 'GET' || method === 'HEAD')) {
         const data = await readFile(path.join(path.dirname(HTML_FILE), asset))

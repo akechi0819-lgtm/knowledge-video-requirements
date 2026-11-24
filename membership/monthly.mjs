@@ -18,19 +18,38 @@ export function initializeMonthly(db) {
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, tokens INTEGER NOT NULL,
       starts_at TEXT, expires_at TEXT NOT NULL, stopped_at TEXT
     );
-    CREATE INDEX IF NOT EXISTS monthly_pass_user ON monthly_pass(user_id);
-    CREATE TABLE IF NOT EXISTS monthly_test_order (
-      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, tokens INTEGER NOT NULL,
-      created_at TEXT NOT NULL, pass_id TEXT UNIQUE
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS one_pending_test_order ON monthly_test_order(user_id) WHERE pass_id IS NULL;`);
+    CREATE INDEX IF NOT EXISTS monthly_pass_user ON monthly_pass(user_id);`);
+    const columns = (table, additions) => {
+      const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
+      for (const [name, definition] of additions) {
+        if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+      }
+    };
+    const legacyPasses = !db.prepare('PRAGMA table_info(monthly_pass)').all().some(column => column.name === 'used_micro_cny');
+    columns('monthly_pass', [
+      ['plan_code', "TEXT NOT NULL DEFAULT 'weekly_6'"],
+      ['budget_micro_cny', 'INTEGER NOT NULL DEFAULT 51000'],
+      ['used_micro_cny', 'INTEGER NOT NULL DEFAULT 0'],
+      ['circuit_broken_at', 'TEXT'], ['order_id', 'TEXT'],
+    ]);
+    if (legacyPasses) {
+      db.prepare('UPDATE monthly_pass SET used_micro_cny=budget_micro_cny, circuit_broken_at=COALESCE(circuit_broken_at,?) WHERE tokens<=0')
+        .run(new Date().toISOString());
+    }
+    columns('usage', [
+      ['input_tokens', 'INTEGER'], ['cache_read_tokens', 'INTEGER'],
+      ['cache_write_tokens', 'INTEGER'], ['output_tokens', 'INTEGER'],
+      ['cost_micro_cny', 'INTEGER'], ['estimated', 'INTEGER NOT NULL DEFAULT 0'],
+    ]);
     if (!db.prepare('PRAGMA table_info(production)').all().some(column => column.name === 'pass_id')) {
       db.exec('ALTER TABLE production ADD COLUMN pass_id TEXT');
     }
     if (db.prepare('PRAGMA table_info(member)').all().some(column => column.name === 'expires_at')) {
-      db.exec(`INSERT INTO monthly_pass(id,user_id,tokens,expires_at)
-        SELECT lower(hex(randomblob(16))),user_id,tokens,expires_at FROM member WHERE expires_at IS NOT NULL;
-        ALTER TABLE member DROP COLUMN tokens;
+      db.prepare(`INSERT INTO monthly_pass(id,user_id,tokens,expires_at,used_micro_cny,circuit_broken_at)
+        SELECT lower(hex(randomblob(16))),user_id,tokens,expires_at,
+          CASE WHEN tokens<=0 THEN 51000 ELSE 0 END, CASE WHEN tokens<=0 THEN ? ELSE NULL END
+        FROM member WHERE expires_at IS NOT NULL`).run(new Date().toISOString());
+      db.exec(`ALTER TABLE member DROP COLUMN tokens;
         ALTER TABLE member DROP COLUMN expires_at;`);
     }
   });
@@ -43,56 +62,29 @@ export function currentPass(db, userId) {
 export function passStatus(pass, now = Date.now()) {
   if (!pass) return 'none';
   if (pass.stopped_at) return 'stopped';
-  return Date.parse(pass.expires_at) > now ? 'active' : 'expired';
+  if (Date.parse(pass.expires_at) <= now) return 'expired';
+  if (pass.used_micro_cny >= pass.budget_micro_cny || pass.circuit_broken_at) return 'exhausted';
+  return 'active';
 }
 
-function issuePass(db, userId, tokens, now, expiresAt) {
-  if (passStatus(currentPass(db, userId), now) === 'active') throw new Error('已有未到期月卡；暂不叠加或提前更换。');
+export function issuePass(db, userId, now, orderId, terms) {
+  if (!orderId || !terms || !Number.isSafeInteger(terms.budgetMicroCny) || terms.budgetMicroCny <= 0 ||
+      !Number.isSafeInteger(terms.durationDays) || terms.durationDays <= 0) throw new Error('发卡需要有效订单和订单权益。');
+  if (passStatus(currentPass(db, userId), now) === 'active') throw new Error('已有生效中的周卡；暂不叠加或提前更换。');
   const id = randomUUID();
-  db.prepare('INSERT INTO monthly_pass(id,user_id,tokens,starts_at,expires_at) VALUES (?,?,?,?,?)')
-    .run(id, userId, tokens, new Date(now).toISOString(), new Date(expiresAt).toISOString());
+  const { budgetMicroCny, durationDays } = terms;
+  db.prepare(`INSERT INTO monthly_pass(id,user_id,tokens,starts_at,expires_at,plan_code,budget_micro_cny,order_id)
+    VALUES (?,?,?,?,?,'weekly_6',?,?)`)
+    .run(id, userId, 0, new Date(now).toISOString(), new Date(now + durationDays * 86400000).toISOString(), budgetMicroCny, orderId);
   return db.prepare('SELECT * FROM monthly_pass WHERE id=?').get(id);
-}
-
-export function openPass(db, userId, tokens, expiresAt) {
-  const now = Date.now();
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) throw new Error('到期时间必须是未来的有效日期。');
-  return transaction(db, () => issuePass(db, userId, tokens, now, expiresAt));
 }
 
 export function stopPass(db, userId) {
   return transaction(db, () => {
     const pass = currentPass(db, userId);
     if (passStatus(pass) === 'stopped') return pass;
-    if (passStatus(pass) !== 'active') throw new Error('没有可停用的月卡。');
+    if (passStatus(pass) !== 'active') throw new Error('没有可停用的周卡。');
     db.prepare('UPDATE monthly_pass SET stopped_at=? WHERE id=?').run(new Date().toISOString(), pass.id);
     return currentPass(db, userId);
-  });
-}
-
-export function createTestOrder(db, userId, tokens) {
-  return transaction(db, () => {
-    const pending = db.prepare('SELECT * FROM monthly_test_order WHERE user_id=? AND pass_id IS NULL').get(userId);
-    if (pending) {
-      if (pending.tokens !== tokens) throw new Error('该账号已有待履约测试订单，不能变更订单额度。');
-      return pending;
-    }
-    if (passStatus(currentPass(db, userId)) === 'active') throw new Error('已有未到期月卡；暂不接受提前下单。');
-    const id = randomUUID();
-    db.prepare('INSERT INTO monthly_test_order(id,user_id,tokens,created_at) VALUES (?,?,?,?)')
-      .run(id, userId, tokens, new Date().toISOString());
-    return db.prepare('SELECT * FROM monthly_test_order WHERE id=?').get(id);
-  });
-}
-
-export function fulfillTestOrder(db, id) {
-  return transaction(db, () => {
-    const order = db.prepare('SELECT * FROM monthly_test_order WHERE id=?').get(id);
-    if (!order) throw new Error('测试订单不存在。');
-    if (order.pass_id) return order;
-    const now = Date.now();
-    const pass = issuePass(db, order.user_id, order.tokens, now, now + 30 * 86400000);
-    db.prepare('UPDATE monthly_test_order SET pass_id=? WHERE id=?').run(pass.id, id);
-    return db.prepare('SELECT * FROM monthly_test_order WHERE id=?').get(id);
   });
 }

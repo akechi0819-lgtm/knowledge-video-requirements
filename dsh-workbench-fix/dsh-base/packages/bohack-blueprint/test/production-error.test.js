@@ -4,6 +4,7 @@ import { productionErrorMessage } from '../lib/production-error.js'
 
 test('制作报错给出中文原因和下一步，不回显服务响应和本地路径', () => {
   const cases = [
+    ['402: {\"error\":\"quota_circuit_broken\"}', '编写画面', /本周卡额度已用尽.*继续制作/],
     ['400: {"message":"fetch failed"}', '编写画面', /画面模型连接失败.*检查网络/],
     ['HTTP 401: secret', '生成配音', /配音服务.*身份或权限.*检查/],
     ['429: secret', '编写画面', /请求太频繁.*再试/],

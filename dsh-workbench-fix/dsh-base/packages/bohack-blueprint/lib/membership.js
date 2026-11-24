@@ -53,7 +53,7 @@ export function createMembership(ctx, root, options = {}) {
     const data = await response.json()
     if (!response.ok) {
       const code = data.code || data.error
-      const message = code === 'quota_exhausted' ? '制作额度已用完。开新片需要购买月卡。'
+      const message = code === 'quota_exhausted' ? '制作额度已用完，请购买 6 元周卡。'
         : code === 'active_production' ? '这个账号已有一条片在制作中，请先回到原项目完成。'
         : response.status === 401 ? '请先登录讲界账号。' : data.message || '会员服务请求失败。'
       throw Object.assign(new Error(message), { code, status: response.status })
@@ -70,11 +70,11 @@ export function createMembership(ctx, root, options = {}) {
       throw error
     }
     return {
-      enabled: true, mode: state.mode, account: {
+      enabled: true, mode: state.mode, pendingOrderId: state.pendingOrderId, account: {
         email: state.email, gifts: member.giftRemaining,
-        monthly: member.monthlyExpiresAt ? { expiresAt: member.monthlyExpiresAt } : null,
-        monthlyBalance: member.monthlyTokens,
-        monthlyStatus: member.monthlyStatus,
+        plan: member.plan, passStatus: member.passStatus, remainingPercent: member.remainingPercent,
+        expiresAt: member.expiresAt, canPurchase: member.canPurchase, purchaseAvailable: member.purchaseAvailable,
+        activeProductionId: member.activeProductionId,
       },
     }
   }
@@ -82,6 +82,20 @@ export function createMembership(ctx, root, options = {}) {
     const current = accountQueue.catch(() => {}).then(async () => {
       if (held) throw new Error('请等待当前 AI 操作完成再更改账号或模式。')
       const state = await account()
+      if (input.action === 'order-create' || input.action === 'order-check') {
+        if (!state.token) throw new Error('请先登录讲界账号。')
+        const orderId = input.action === 'order-check' ? state.pendingOrderId : null
+        if (input.action === 'order-check' && !orderId) throw new Error('没有待支付的订单。')
+        const result = input.action === 'order-create'
+          ? await api('/api/orders', {token:state.token, body:{plan:'weekly_6'}})
+          : await api('/api/orders/' + encodeURIComponent(orderId), {token:state.token})
+        const order = result.data
+        if (!order.orderId || (orderId && order.orderId !== orderId)) throw new Error('会员服务返回的订单编号无效。')
+        if (['fulfilled', 'expired', 'failed'].includes(order.status)) delete state.pendingOrderId
+        else state.pendingOrderId = order.orderId
+        await write(accountFile, state)
+        return { ...(await view()), order }
+      }
       if (input.action === 'mode') {
         if (!['member', 'byok'].includes(input.mode)) throw new Error('未知的调用模式。')
         if (input.mode !== state.mode && state.mode === 'member' && state.token) {
@@ -127,27 +141,28 @@ export function createMembership(ctx, root, options = {}) {
       const saved = (await read(file, {}))[userId]
       return saved ? { id: saved.id, closing: saved.closing || (saved.finishing ? 'finish' : null), terminal: saved.terminal } : null
     }
-    async function lease({ state, signal, id: expectedId } = {}) {
+    async function lease({ state, signal, id: expectedId, replace = false } = {}) {
       state ||= await account()
       if (state.mode === 'byok' && !expectedId) return null
       if (!state.token || state.mode !== 'member') throw new Error(expectedId ? '请先登录原讲界账号，再继续这条片。' : '请先登录讲界账号，再使用平台 AI。')
       return serialize(async () => {
         const projects = await read(file, {})
         const saved = projects[state.userId]
-        if (expectedId && (saved?.id !== expectedId || saved.terminal)) throw new Error('请登录开片时使用的讲界账号。')
+        if (expectedId && ((saved?.id !== expectedId && saved?.replacesProductionId !== expectedId) || saved.terminal)) throw new Error('请登录开片时使用的讲界账号。')
         const job = await read(path.join(directory, 'production', 'status.json'), null)
         if (saved?.closing === 'abandon') throw new Error('请先在原项目重试放弃本片授权。')
         if (saved?.closing || saved?.finishing || (job?.status === 'completed' && job.membershipAuthorizationId === saved?.id &&
             (job.membershipPending || job.membershipError || (saved && !saved.terminal)))) {
           throw new Error('请先在原项目处理上一条片的授权回执。')
         }
-        const id = saved && !saved.terminal ? saved.id : randomUUID()
+        const replacing = replace || (!!expectedId && saved?.replacesProductionId === expectedId)
+        const id = replacing ? (saved?.replacesProductionId === expectedId ? saved.id : randomUUID()) : saved && !saved.terminal ? saved.id : randomUUID()
         if (id !== saved?.id) {
-          projects[state.userId] = { id }
+          projects[state.userId] = { id, ...(replacing && { replacesProductionId: expectedId }) }
           await write(file, projects)
         }
-        const result = await api('/api/productions/start', { token: state.token, body: { productionId: id }, signal }).catch(async error => {
-          if (['quota_exhausted', 'active_production'].includes(error.code)) {
+        const result = await api('/api/productions/start', { token: state.token, body: { productionId: id, ...(replacing && { replacesProductionId: expectedId }) }, signal }).catch(async error => {
+          if (!replacing && ['quota_exhausted', 'active_production'].includes(error.code)) {
             delete projects[state.userId]
             await write(file, projects)
           }
@@ -163,11 +178,16 @@ export function createMembership(ctx, root, options = {}) {
         if (!token || mode !== 'member') throw new Error('请登录开片时使用的讲界账号。')
         const projects = await read(file, {})
         const saved = projects[userId]
-        if (saved?.id !== id) throw new Error('当前账号在此项目的制作授权已变更。')
+        const replacement = action === 'abandon' && saved?.replacesProductionId === id
+        if (saved?.id !== id && !replacement) throw new Error('当前账号在此项目的制作授权已变更。')
         if (saved.terminal) return saved.terminal
         const closing = saved.closing || (saved.finishing ? 'finish' : action)
-        projects[userId] = { id, closing }
+        projects[userId] = replacement ? { ...saved, closing } : { id, closing }
         await write(file, projects)
+        if (replacement) {
+          const { data: { status } } = await api('/api/productions/abandon', { token, body: { productionId: saved.id } })
+          if (status !== 'abandoned') throw new Error('会员服务未确认替换授权已放弃。')
+        }
         const { data: { status: terminal } } = await api('/api/productions/' + closing, { token, body: { productionId: id } })
         if (!['finished', 'abandoned'].includes(terminal)) throw new Error('会员服务未确认制作结束。')
         projects[userId] = { id, terminal }
@@ -211,10 +231,17 @@ export function createMembership(ctx, root, options = {}) {
         if (!model?.baseUrl || !model.model) throw new Error('请在高级设置中配置通用模型地址和名称。')
         const base = endpoint(model.baseUrl).replace(/\/(?:chat\/completions|responses)$/, '')
         const body = await request.json()
-        return await rawFetch(base + route, {
+        const response = await rawFetch(base + route, {
           method: 'POST', headers: { 'content-type': 'application/json', ...(model.apiKey && { authorization: 'Bearer ' + model.apiKey }) },
           body: JSON.stringify({ ...body, model: model.model }), redirect: 'error', signal: request.signal,
         })
+        if (response.status === 402) {
+          const data = await response.clone().json().catch(() => null)
+          if ((data?.error?.code || data?.error || data?.code) === 'quota_circuit_broken') {
+            binding.error = Object.assign(new Error('本周卡额度已用尽，购买新周卡后点击继续制作。'), { code: 'quota_circuit_broken', status: 402 })
+          }
+        }
+        return response
       } catch (error) {
         if (request.signal.aborted) throw request.signal.reason
         binding.error = error

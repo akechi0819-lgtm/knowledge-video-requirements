@@ -437,7 +437,13 @@ export function createProduction(workspace, config = {}) {
         }
         const withProductionSession = async (sessionId, run) => {
           memberProject?.bind(sessionId, config.settings.load, auth?.id, !state.membershipAuthorizationId)
-          try { return await run() } finally { memberProject?.unbind(sessionId) }
+          try {
+            const result = await run()
+            const providerError = memberProject?.error(sessionId)
+            if (providerError) throw providerError
+            return result
+          } catch (error) { throw memberProject?.error(sessionId) || error }
+          finally { memberProject?.unbind(sessionId) }
         }
         await prepareProductionAssets(state, production, dir, saved, previousDir, withProductionSession, onProgress, executable)
         if (mode === 'agent') {
@@ -539,7 +545,17 @@ export function createProduction(workspace, config = {}) {
         delete state.error
         delete state.completedAt
         if (state.mode === 'agent') state.sessionId = 'bohack-video-' + randomUUID()
-        const auth = state.membershipAuthorizationId ? await memberProject.lease({ id: state.membershipAuthorizationId }) : null
+        let auth = null
+        if (state.membershipAuthorizationId) {
+          const id = state.membershipAuthorizationId
+          const replace = /quota_circuit_broken|本周卡额度已用尽|HTTP\s+402\b|\b402\s*[:：]/i.test(String(prior.error || ''))
+          try { auth = await memberProject.lease({ id, replace }) }
+          catch (error) {
+            if (replace || error.code !== 'quota_circuit_broken' || error.status !== 402) throw error
+            auth = await memberProject.lease({ id, replace: true })
+          }
+        }
+        if (auth) state.membershipAuthorizationId = auth.id
         const saved = auth ? await config.settings.forCall(auth) : await config.settings?.load() || {}
         if (!executable) validateVoice(saved)
         await runJob(state, production, dir, saved, auth, prior, true, release, executable)
