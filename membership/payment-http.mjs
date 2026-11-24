@@ -16,6 +16,15 @@ function amountYuan(cents) {
   return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
 }
 
+function browserPaymentUrl(order) {
+  if (order.pay_url) return order.pay_url;
+  // Some Alipay channels put the HTTPS cashier link only in qrcode.
+  if (!order.qr_code) return null;
+  let qr;
+  try { qr = new URL(order.qr_code); } catch { return null; }
+  return qr.origin === 'https://qr.alipay.com' && !qr.username && !qr.password ? qr.href : null;
+}
+
 async function notificationParams(req, url) {
   let fields = url.searchParams;
   if (req.method === 'POST') {
@@ -54,7 +63,7 @@ export function createPaymentHandlers(db, config, { json, read }) {
     const status=order.status === 'pending' && Date.parse(order.expires_at) <= Date.now() ? 'expired' : order.status;
     return {
       orderId:order.id, plan:order.plan_code, amountYuan:amountYuan(order.amount_cents), status,
-      qrCode:status === 'pending' ? order.qr_code : null, payUrl:status === 'pending' ? order.pay_url : null, expiresAt:order.expires_at,
+      qrCode:status === 'pending' ? order.qr_code : null, payUrl:status === 'pending' ? browserPaymentUrl(order) : null, expiresAt:order.expires_at,
       passStatus:passStatus(order.pass_id ? passById.get(order.pass_id) : null),
     };
   }

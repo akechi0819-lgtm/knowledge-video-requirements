@@ -45,6 +45,7 @@ test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase'
       if (data.pid!==process.env.EPAY_PID || data.sign!==signAsGateway(data) || data.sign_type!=='MD5'
           || data.type!=='alipay' || data.money!=='6.00' || !isIP(data.clientip)) return reply({code:0},400);
       merchantOrders.set(data.out_trade_no,data);
+      if (checkoutCount===1) return reply({code:1,trade_no:'trade-mapi',qrcode:'https://qr.alipay.com/fixture'});
       return reply({code:1,trade_no:'trade-mapi',qrcode:'alipays://mock/pay',payurl:`${gatewayBase}/checkout`});
     }
     if (url.pathname==='/gateway/api.php' && req.method==='GET') {
@@ -133,7 +134,8 @@ test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase'
     assert.equal(first.orderId,two.order.orderId);
     assert.equal(checkoutCount,1);
     assert.equal(first.amountYuan,'6.00');
-    assert.equal(first.qrCode,'alipays://mock/pay');
+    assert.equal(first.qrCode,'https://qr.alipay.com/fixture');
+    assert.equal(first.payUrl,first.qrCode);
     const stored=merchantOrders.get(first.orderId);
     assert.equal(stored.notify_url,origin+'/api/payments/epay/notify');
     assert.equal(stored.return_url,origin+'/payment/return');
@@ -183,6 +185,7 @@ test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase'
     assert.equal((await desktop.view()).account.canPurchase,true);
     const second=(await desktop.update({action:'order-create'})).order;
     assert.notEqual(second.orderId,first.orderId);
+    assert.equal(second.payUrl,gatewayBase+'/checkout');
     assert.deepEqual(await notify(callback(second.orderId,'mock-trade-first')),[400,'fail']);
     assert.equal(cards().length,1);
     assert.deepEqual(await notify(callback(second.orderId,'mock-trade-second'),'POST'),[200,'success']);
