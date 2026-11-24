@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>讲界视频工坊 · 正在准备工作台</title>
+<meta http-equiv="refresh" content="10" id="fallback-refresh">
+<style>
+  :root { color-scheme: dark }
+  * { box-sizing: border-box; margin: 0; padding: 0 }
+  body { min-height: 100vh; display: flex; align-items: center; justify-content: center; display: grid; place-items: center; background: #0a0a0c; color: #f2f2f4;
+    font: 15px/1.7 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif }
+  .card { width: 420px; max-width: calc(100vw - 40px); width: min(420px, calc(100vw - 40px)); padding: 40px 36px; border: 1px solid #26262c;
+    border-radius: 14px; background: #131317; box-shadow: 0 18px 50px rgba(0,0,0,.45) }
+  .brand { font-size: 13px; letter-spacing: .35em; color: #8a8a92; margin-bottom: 26px }
+  .spin { width: 42px; height: 42px; margin-bottom: 22px; border-radius: 50%;
+    border: 3px solid #2b2b33; border-top-color: #7aa2ff; animation: spin 1s linear infinite }
+  .spin.done { animation: none; border-top-color: #58c27d; border-color: #2b2b33 #2b2b33 #58c27d #58c27d }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  h1 { font-size: 19px; font-weight: 600; margin-bottom: 20px }
+  .steps { list-style: none; margin-bottom: 22px }
+  .steps li { display: flex; align-items: center; gap: 10px; padding: 5px 0; color: #63636c; transition: color .3s }
+  .steps li::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #2b2b33; flex: none; transition: background .3s }
+  .steps li.doing { color: #cfcfd6 }
+  .steps li.doing::before { background: #7aa2ff; animation: pulse 1.2s ease-in-out infinite }
+  .steps li.done { color: #8a8a92 }
+  .steps li.done::before { background: #58c27d }
+  @keyframes pulse { 50% { opacity: .35 } }
+  .muted { color: #63636c; font-size: 13px }
+  #error { display: none; margin: 6px 0 14px; padding: 12px 14px; border-radius: 10px;
+    border: 1px solid #5b3030; background: #241416; color: #f0b0b0; font-size: 14px }
+  #retry { display: none; margin-top: 14px; padding: 9px 22px; border: 0; border-radius: 9px;
+    background: #7aa2ff; color: #0a0a0c; font-size: 14px; font-weight: 600; cursor: pointer }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">讲界视频工坊</div>
+  <div class="spin" id="spin"></div>
+  <h1 id="title">正在准备工作台…</h1>
+  <ul class="steps">
+    <li id="s0">分配专属实例</li>
+    <li id="s1">启动工作台引擎</li>
+    <li id="s2">初始化创作会话</li>
+  </ul>
+  <p id="error"></p>
+  <p class="muted" id="elapsed">已等待 0 秒</p>
+  <p class="muted">首次准备约需十几秒。每台浏览器都会分配独立的服务器实例。</p>
+  <button id="retry" type="button">立即重试</button>
+</main>
+<script>
+(function () {
+  // ES5 only: old iOS Safari must never hit a syntax error that kills polling.
+  var hasFetch = typeof window.fetch === 'function'
+  var fallback = document.getElementById('fallback-refresh')
+  if (hasFetch && fallback && fallback.parentNode) fallback.parentNode.removeChild(fallback)
+  var stageIndex = { queued: 0, creating: 0, starting: 1, booting: 2 }
+  var items = [document.getElementById('s0'), document.getElementById('s1'), document.getElementById('s2')]
+  var title = document.getElementById('title')
+  var error = document.getElementById('error')
+  var elapsed = document.getElementById('elapsed')
+  var retry = document.getElementById('retry')
+  var spin = document.getElementById('spin')
+  var start = Date.now()
+  var countdown = 0
+  var timer = null
+  function paint(active) {
+    for (var i = 0; i < items.length; i++) {
+      items[i].className = i < active ? 'done' : i === active ? 'doing' : ''
+    }
+  }
+  function fail(message, seconds) {
+    title.textContent = '工作台暂时不可用'
+    error.textContent = message
+    error.style.display = 'block'
+    retry.style.display = 'inline-block'
+    countdown = seconds
+  }
+  function enter() {
+    paint(3)
+    title.textContent = '工作台已就绪，正在进入…'
+    spin.classList.add('done')
+    location.replace('/bohack/')
+  }
+  function schedule(ms) { timer = setTimeout(poll, ms) }
+  function poll() {
+    if (!hasFetch) return
+    fetch('/bohack/__prepare', { cache: 'no-store' }).then(function (response) {
+      return response.json()
+    }).then(function (info) {
+      if (!info.hasCookie) {
+        fail('浏览器没有保存本站会话 Cookie（可能开启了严格隐私保护）。请在浏览器设置中允许本站 Cookie，然后刷新页面。', 0)
+        return
+      }
+      if (info.stage === 'ready') { enter(); return }
+      if (info.stage === 'failed') { fail(info.message || '工作台启动失败，将自动重试。', 15); schedule(1000); return }
+      if (info.stage === 'full') { fail(info.message || '工作台实例已满，将自动重试。', 30); schedule(1000); return }
+      if (info.stage === 'idle') { location.reload(); return }
+      error.style.display = 'none'
+      paint(stageIndex[info.stage] || 0)
+      schedule(1500)
+    }).catch(function () {
+      title.textContent = '连接中断，正在重试…'
+      schedule(2000)
+    })
+  }
+  setInterval(function () {
+    elapsed.textContent = '已等待 ' + Math.round((Date.now() - start) / 1000) + ' 秒'
+    if (countdown > 0) {
+      countdown -= 1
+      if (countdown === 0) location.reload()
+    }
+  }, 1000)
+  retry.addEventListener('click', function () { location.reload() })
+  poll()
+})()
+</script>
+</body>
+</html>
