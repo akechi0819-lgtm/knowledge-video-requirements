@@ -133,3 +133,17 @@ test('生成与修订均只传递选中 Skill 的有界元数据', async () => {
   assert.match(selectedMediaSummary({skill:{name:'有声',description:'有旁白的讲解短片'}}), /旁白形态：有旁白/)
   engine.reset()
 })
+
+
+test('生成要求为有声形态写逐段口语旁白，并优先遵从创作者的无旁白要求', async () => {
+  const prompts = []
+  const mock = mockContext(['skill'], null, prompts)
+  const engine = createEngine(mock.ctx)
+  const skill = { name: '示例', description: '有旁白的知识短片' }
+  await engine.produce({ action: 'draft', skill, requirementText: '讲火山', version: 1 })
+  const prompt = prompts[0]
+  assert.match(prompt, /旁白形态：有旁白/)
+  assert.match(prompt, /明确要求无旁白时留空/)
+  assert.match(prompt, /每段写一段可直接朗读、适合目标观众的口语旁白，放入 narration/)
+  engine.reset()
+})

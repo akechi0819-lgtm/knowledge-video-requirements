@@ -33,10 +33,12 @@ refresh_blueprint_rule() {
 }
 refresh_blueprint_rule rules/blueprint.md \
   81ac3e016afa941a601326ea4be9c2fb0a9a03011c3ce6af13fdbcc8eb93e83e \
-  f632f9d9e0e40b6a7e9b768222a629526ab454a1afad28d4f1834695f97bff34
+  f632f9d9e0e40b6a7e9b768222a629526ab454a1afad28d4f1834695f97bff34 \
+  8b9a364dd89c7c1c2ece8971926a78c5525194a3c5d846150b56e299b60d799e
 refresh_blueprint_rule .agents/skills/blueprint/SKILL.md \
   16a7ee10d894b058eeed52893f6776eda10eddfe1eea1e7be3902a1842b0efb1 \
-  85bb8f78b875a7669312795c003d4ac6c7eca8027e900cf4fc521ec00131dfcf
+  85bb8f78b875a7669312795c003d4ac6c7eca8027e900cf4fc521ec00131dfcf \
+  de03f06fedc1af6641e41798661f7deb796e4f444395988a99c07942bf4d1e8c
 export JIANGJIE_DESKTOP_WORKSPACE="$workspace"
 export BOHACK_DESKTOP_KEYCHAIN_HELPER="$bin/Jiangjie"
 plist="$resources/../Info.plist"

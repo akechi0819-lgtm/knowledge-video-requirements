@@ -4,7 +4,7 @@
 原件的 macOS Vision OCR 回读在 Windows 不可用：ocr.txt 写占位说明，屏幕文字核对
 改由接触表人工 review 承担（见 docs/vibe-knowledge-integration.md 的替代清单）。
 
-用法: python qa_windows.py <成片.mp4> <ffmpeg> <ffprobe> [--every 3] [--out qa/]
+用法: python qa_windows.py <成片.mp4> <ffmpeg> <ffprobe> [--every 3] [--out qa/] [--freeze-end 秒]
 退出码: 0 检查完成（可带质量警告）；执行错误返回非零。
 """
 from __future__ import annotations
@@ -39,11 +39,28 @@ def bgm_residual_correlation(mixed, voice, bgm):
     return float(np.dot(residual, bgm) / norm) if norm > 1e-9 else 0.0
 
 
+def detect_freezes(src, ffmpeg, ffprobe, freeze_end=None):
+    fz = subprocess.run([ffmpeg, "-nostats", *(["-t", str(freeze_end)] if freeze_end is not None else []), "-i", str(src), "-an",
+                         "-vf", "fps=10,scale=480:-2,freezedetect=n=0.002:d=3", "-f", "null", "-"],
+                        capture_output=True, text=True).stderr
+    starts = [float(x) for x in re.findall(r"freeze_start: ([\d.]+)", fz)]
+    durs = [float(x) for x in re.findall(r"freeze_duration: ([\d.]+)", fz)]
+    if len(durs) < len(starts):
+        end = freeze_end if freeze_end is not None else float(subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(src)],
+            capture_output=True, text=True, check=True).stdout)
+        durs.append(end - starts[-1])
+    return list(zip(starts, durs))
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     src, ffmpeg, ffprobe = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
     every = float(arg("--every", "3"))
+    freeze_end = float(arg("--freeze-end", "0")) if "--freeze-end" in sys.argv else None
+    if freeze_end is not None and freeze_end <= 0:
+        raise ValueError("--freeze-end 必须大于 0")
     out = Path(arg("--out", str(src.parent / "qa")))
     out.mkdir(parents=True, exist_ok=True)
     fr = out / "frames"
@@ -88,16 +105,7 @@ def main() -> int:
                        capture_output=True, text=True).stderr
     I = re.findall(r"I:\s+(-?[\d.]+) LUFS", r)
     P = re.findall(r"Peak:\s+(-?[\d.]+) dBFS", r)
-    fz = subprocess.run([ffmpeg, "-nostats", "-i", str(src), "-an",
-                         "-vf", "fps=10,scale=480:-2,freezedetect=n=0.002:d=3", "-f", "null", "-"],
-                        capture_output=True, text=True).stderr
-    starts = [float(x) for x in re.findall(r"freeze_start: ([\d.]+)", fz)]
-    durs = [float(x) for x in re.findall(r"freeze_duration: ([\d.]+)", fz)]
-    if len(durs) < len(starts):
-        durs.append(float(subprocess.run(
-            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(src)],
-            capture_output=True, text=True, check=True).stdout) - starts[-1])
-    frozen = list(zip(starts, durs))
+    frozen = detect_freezes(src, ffmpeg, ffprobe, freeze_end)
     (out / "freeze.txt").write_text(
         "\n".join(f"{int(a // 60)}:{a % 60:04.1f}  静止 {d:.1f} 秒" for a, d in frozen), encoding="utf-8")
 
@@ -106,7 +114,7 @@ def main() -> int:
     if frozen:
         print(f"⚠ 静止画面 {len(frozen)} 段（>3 秒）→ {out / 'freeze.txt'}")
         if any(d > 10 for _, d in frozen):
-            print("⚠⚠ 有超过 10 秒的冻结，多半是渲染出事，重录后再交付")
+            print("⚠⚠ 存在超过 10 秒的静态画面，请确认是否刻意定格或需补充段内节奏")
     else:
         print("静止检测：没有超过 3 秒的静止画面")
 

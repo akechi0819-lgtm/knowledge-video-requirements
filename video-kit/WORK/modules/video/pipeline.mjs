@@ -292,8 +292,11 @@ async function main() {
   const qa0 = Date.now();
   let qaOut;
   try {
+    const lastBeat = timing?.beats.at(-1);
+    const firstCredit = lastBeat?.credits?.[0];
     qaOut = (await run(STYLE.paths.python, [
       path.join(MODULE_DIR, 'qa_windows.py'), finalPath, STYLE.paths.ffmpeg, STYLE.paths.ffprobe,
+      ...(firstCredit ? ['--freeze-end', String(lastBeat.start + firstCredit.start)] : []),
     ], { maxBuffer: 32 * 1024 * 1024, env: pyEnv })).stdout;
   } catch (e) {
     qaOut = `质检未完成 (exit ${e.code}): ${(e.stdout || '') + (e.stderr || '')}`;
