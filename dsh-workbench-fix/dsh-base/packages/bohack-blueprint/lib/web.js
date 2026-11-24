@@ -97,7 +97,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       }
       // ── static page ─────────────────────────────────────────────────────
       if (pathname.startsWith('/bohack/style-previews/') && (method === 'GET' || method === 'HEAD')) {
-        const types = { '.mp4': 'video/mp4', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' }
+        const types = { '.mp4': 'video/mp4', '.webm': 'video/webm', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' }
         const name = path.basename(pathname)
         const ext = path.extname(name).toLowerCase()
         const dir = path.resolve(path.dirname(HTML_FILE), 'style-previews')
