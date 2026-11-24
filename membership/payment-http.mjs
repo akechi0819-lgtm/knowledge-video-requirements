@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
 import { passStatus } from './monthly.mjs';
-import { createEpayPayment, queryEpayOrder, verifyEpaySign } from './epay.mjs';
+import { createEpayPayment, epayCashierUrl, queryEpayOrder, verifyEpaySign } from './epay.mjs';
 import { claimOrderPoll, createPaymentOrder, fulfillPaymentOrder, getPaymentOrder, setPaymentDetails } from './payment-orders.mjs';
 
 const notifyPath = '/api/payments/epay/notify';
@@ -16,13 +16,8 @@ function amountYuan(cents) {
   return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
 }
 
-function browserPaymentUrl(order) {
-  if (order.pay_url) return order.pay_url;
-  // Some Alipay channels put the HTTPS cashier link only in qrcode.
-  if (!order.qr_code) return null;
-  let qr;
-  try { qr = new URL(order.qr_code); } catch { return null; }
-  return qr.origin === 'https://qr.alipay.com' && !qr.username && !qr.password ? qr.href : null;
+function paymentDetails(order) {
+  return { outTradeNo: order.id, name: '讲界 6 元周卡（7 天）', money: amountYuan(order.amount_cents) };
 }
 
 async function notificationParams(req, url) {
@@ -61,9 +56,13 @@ export function createPaymentHandlers(db, config, { json, read }) {
   const passById = db.prepare('SELECT * FROM monthly_pass WHERE id=?');
   function orderView(order) {
     const status=order.status === 'pending' && Date.parse(order.expires_at) <= Date.now() ? 'expired' : order.status;
+    const pending = status === 'pending';
+    const cashier = config?.mode === 'submit';
     return {
       orderId:order.id, plan:order.plan_code, amountYuan:amountYuan(order.amount_cents), status,
-      qrCode:status === 'pending' ? order.qr_code : null, payUrl:status === 'pending' ? browserPaymentUrl(order) : null, expiresAt:order.expires_at,
+      qrCode:pending && !cashier ? order.qr_code : null,
+      payUrl:pending ? (cashier ? epayCashierUrl(config,paymentDetails(order)) : order.pay_url) : null,
+      expiresAt:order.expires_at,
       passStatus:passStatus(order.pass_id ? passById.get(order.pass_id) : null),
     };
   }
@@ -95,13 +94,13 @@ export function createPaymentHandlers(db, config, { json, read }) {
     if (body?.plan !== 'weekly_6') return json(res,400,{error:'invalid_plan',message:'请选择 6 元周卡。'});
     let order=createPaymentOrder(db,id);
     if (!order) return json(res,409,{error:'pass_active',message:'当前周卡仍有效，暂不能重复购买。'});
-    if (order.status==='pending' && !order.pay_url && !order.qr_code) {
+    if (config.mode==='mapi' && order.status==='pending' && !order.pay_url && !order.qr_code) {
       if (!opening.has(order.id)) {
         const forwarded=req.headers['x-real-ip'];
         const peer=req.socket.remoteAddress;
         const ip=['127.0.0.1','::1','::ffff:127.0.0.1'].includes(peer) && typeof forwarded==='string' && isIP(forwarded) ? forwarded : peer;
         const payment=createEpayPayment(config,{
-          outTradeNo:order.id, name:'讲界 6 元周卡（7 天）', money:amountYuan(order.amount_cents), clientIp:ip,
+          ...paymentDetails(order), clientIp:ip,
         }).then(details => setPaymentDetails(db,order.id,details)).finally(() => opening.delete(order.id));
         opening.set(order.id,payment);
       }

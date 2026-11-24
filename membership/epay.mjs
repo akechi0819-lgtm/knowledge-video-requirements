@@ -58,18 +58,23 @@ async function fetchJson(url, options) {
   }
 }
 
-export async function createEpayPayment(config, { outTradeNo, name, money, clientIp }) {
+function signedOrder(config, { outTradeNo, name, money, clientIp }) {
   const params = { pid: config.pid, type: config.payType, out_trade_no: outTradeNo, notify_url: config.notifyUrl,
-    return_url: config.returnUrl, name, money };
-  if (config.mode === 'mapi') params.clientip = clientIp;
+    return_url: config.returnUrl, name, money, clientip: clientIp };
   params.sign = signEpay(params, config.key);
   params.sign_type = 'MD5';
-  const body = new URLSearchParams(Object.entries(params).filter(([, value]) => value != null && value !== ''));
-  if (config.mode === 'submit') {
-    const url = endpoint(config.apiUrl, 'submit.php');
-    url.search = body.toString();
-    return { payUrl: url.href, qrCode: null, tradeNo: null };
-  }
+  return new URLSearchParams(Object.entries(params).filter(([, value]) => value != null && value !== ''));
+}
+
+export function epayCashierUrl(config, order) {
+  const url = endpoint(config.apiUrl, 'submit.php');
+  url.search = signedOrder(config, { ...order, clientIp: undefined }).toString();
+  return url.href;
+}
+
+export async function createEpayPayment(config, order) {
+  if (config.mode === 'submit') return { payUrl: epayCashierUrl(config, order), qrCode: null, tradeNo: null };
+  const body = signedOrder(config, order);
   const result = await fetchJson(endpoint(config.apiUrl, 'mapi.php'), {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body,
   });

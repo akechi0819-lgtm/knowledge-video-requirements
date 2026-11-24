@@ -11,6 +11,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createMembership } from '../dsh-workbench-fix/dsh-base/packages/bohack-blueprint/lib/membership.js';
 import { createProduction } from '../dsh-workbench-fix/dsh-base/packages/bohack-blueprint/lib/production.js';
 import { createMembershipService } from './server.mjs';
+import { createPaymentHandlers } from './payment-http.mjs';
+import { readEpayConfig } from './epay.mjs';
 
 function signAsGateway(data) {
   const canonical = Object.entries(data).filter(([key,value]) => !['sign','sign_type'].includes(key) && value !== '')
@@ -135,7 +137,7 @@ test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase'
     assert.equal(checkoutCount,1);
     assert.equal(first.amountYuan,'6.00');
     assert.equal(first.qrCode,'https://qr.alipay.com/fixture');
-    assert.equal(first.payUrl,first.qrCode);
+    assert.equal(first.payUrl,null);
     const stored=merchantOrders.get(first.orderId);
     assert.equal(stored.notify_url,origin+'/api/payments/epay/notify');
     assert.equal(stored.return_url,origin+'/payment/return');
@@ -143,6 +145,22 @@ test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase'
     assert.equal((await request('/api/orders/'+first.orderId,undefined,other.token)).status,404);
     assert.equal(queryCount,0);
     assert.equal(statSync(join(directory,'desktop','membership','account.json')).mode & 0o777,0o600);
+  });
+  await t.test('switching to the Ouyun cashier keeps an existing QR order and signs the redirect',async () => {
+    const config=readEpayConfig({...process.env,EPAY_MODE:'submit'},{baseUrl:base,pathPrefix:prefix});
+    const handlers=createPaymentHandlers(svc.db,config,{
+      json:(_,status,data)=>({status,data}),read:async()=>({plan:'weekly_6'}),
+    });
+    const resumed=await handlers.privateRoute({method:'POST'},{setHeader(){}},'/api/orders',bought.user.id);
+    assert.equal(resumed.status,200);
+    assert.equal(resumed.data.orderId,first.orderId);
+    const url=new URL(resumed.data.payUrl);
+    assert.equal(url.pathname,'/gateway/submit.php');
+    assert.equal(url.searchParams.get('out_trade_no'),first.orderId);
+    assert.equal(url.searchParams.get('money'),'6.00');
+    assert.ok(url.searchParams.get('sign')===signAsGateway(Object.fromEntries(url.searchParams)));
+    assert.equal(resumed.data.qrCode,null);
+    assert.equal(checkoutCount,1);
   });
   await t.test('four notify checks, inert return, valid GET/POST notify and replay protection',async () => {
     assert.ok(first);
