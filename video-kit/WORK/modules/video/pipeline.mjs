@@ -2,7 +2,7 @@
 //   node WORK/modules/video/pipeline.mjs <blueprint.json> [--out <dir>] [--voice <voice>] [--force-tts] [--allow-unconfirmed]
 //
 // Every segment is rendered to its own clip, then concatenated. mapping.json
-// boundaries are accumulated from measured clip durations, never estimated.
+// boundaries use the managed host's frame timeline or measured legacy clip durations.
 // Any segment failure aborts before final.mp4 is written.
 
 import fs from 'node:fs';
@@ -24,6 +24,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--prepared') args.prepared = true;
     else if (a === '--out') args.out = argv[++i];
+    else if (a === '--timings') args.timings = argv[++i];
     else if (a === '--voice') {
       args.voice = argv[++i];
       if (!args.voice || args.voice.startsWith('--')) throw new Error('--voice requires a voice name or sapi');
@@ -122,6 +123,9 @@ async function main() {
   const bpPath = path.resolve(args.blueprint);
   if (!fs.existsSync(bpPath)) throw new Error(`blueprint not found: ${bpPath}`);
   const input = JSON.parse(fs.readFileSync(bpPath, 'utf8'));
+  if (args.timings && !args.prepared) throw new Error('--timings requires --prepared');
+  const timing = args.timings && JSON.parse(fs.readFileSync(args.timings, 'utf8'));
+  if (timing && (timing.fps !== STYLE.video.fps || timing.beats?.length !== input.sections?.length)) throw new Error('宿主时间轴与制作单不一致');
   let bp = input;
   let gate;
   if (args.prepared) {
@@ -182,6 +186,15 @@ async function main() {
     const t = byId.get(seg.id);
     if (!t) throw new Error(`[${seg.id}] missing TTS result`);
     if (!args.prepared) return buildPlan(seg, t);
+    if (timing) {
+      const plan = timing.beats[i];
+      const creditFrames = Math.ceil((plan.credits?.at(-1)?.end ?? 0) * STYLE.video.fps);
+      const expectedFrames = Math.max(creditFrames, frameCounts[i]);
+      if (plan.id !== seg.id || plan.beatId !== seg.blueprintId || plan.frames !== expectedFrames || plan.audioDuration !== t.duration) {
+        throw new Error(`[${seg.id}] 配音时长或段号与宿主时间轴不一致`);
+      }
+      return { ...plan, scenePath: seg.scenePath };
+    }
     const audioStart = STYLE.timing.leadIn;
     const frames = frameCounts[i];
     return { id: seg.id, role: 'prepared_html', scenePath: seg.scenePath, duration: frames / STYLE.video.fps,
@@ -214,25 +227,26 @@ async function main() {
   // ---- concat ----
   const finalPath = path.join(outDir, 'final.mp4');
   const concat0 = Date.now();
-  const finalDuration = await concatClips(rendered.map((r) => r.clip), finalPath);
+  const finalDuration = await concatClips(rendered.map((r) => r.clip), finalPath, timing ? plans.map(plan => plan.duration) : undefined);
   const concatMs = Date.now() - concat0;
   console.log(`[concat] ${finalPath} ${finalDuration}s in ${concatMs}ms`);
 
-  // ---- mapping from MEASURED durations, accumulated after concat ----
+  // ---- map compiled intervals and renderer observations after concat ----
   let cursor = 0;
   const segments = rendered.map((r) => {
-    const start = cursor;
-    const end = cursor + r.measuredDuration;
+    const start = timing ? r.plan.start : cursor;
+    const end = timing ? r.plan.end : cursor + r.measuredDuration;
     cursor = end;
     return {
       id: r.plan.id,
       ...(args.prepared ? { blueprint_id: bp.segments.find((s) => s.id === r.plan.id).blueprintId } : {}),
       title: bp.segments.find((s) => s.id === r.plan.id).title,
       clip: path.relative(outDir, r.clip).replace(/\\/g, '/'),
-      clip_absolute: r.clip,
+      ...(!timing && { clip_absolute: r.clip }),
       start_sec: fmtSec(start),
       end_sec: fmtSec(end),
-      duration_sec: fmtSec(r.measuredDuration),
+      duration_sec: fmtSec(end - start),
+      ...(timing && { samples: r.samples }),
       narration: bp.segments.find((s) => s.id === r.plan.id).narration,
       narration_audio: path.relative(outDir, byId.get(r.plan.id).audio).replace(/\\/g, '/'),
       narration_audio_seconds: byId.get(r.plan.id).duration,
@@ -240,10 +254,10 @@ async function main() {
       frames: r.frames,
     };
   });
-  const measuredSum = cursor;
-  const residual = Math.abs(measuredSum - finalDuration);
+  const measuredSum = rendered.reduce((sum, clip) => sum + clip.measuredDuration, 0);
+  const residual = Math.abs(cursor - finalDuration);
   if (residual > 0.25) {
-    console.warn(`[WARN] concat duration mismatch: clips sum ${measuredSum.toFixed(3)}s vs final ${finalDuration.toFixed(3)}s; mapping needs review`);
+    console.warn(`[WARN] concat duration mismatch: timeline end ${cursor.toFixed(3)}s vs final ${finalDuration.toFixed(3)}s; mapping needs review`);
   }
 
   const mapping = {
@@ -252,10 +266,10 @@ async function main() {
     blueprint_id: bp.blueprint_id,
     blueprint_file: path.relative(WORK_DIR, bpPath).replace(/\\/g, '/'),
     final_video: path.relative(outDir, finalPath).replace(/\\/g, '/'),
-    final_video_absolute: finalPath,
+    ...(!timing && { final_video_absolute: finalPath }),
     final_duration_sec: fmtSec(finalDuration),
     ...(args.prepared && bp.targetDurationSeconds != null ? { target_duration_sec: bp.targetDurationSeconds, target_exceeded: finalDuration > bp.targetDurationSeconds + 1 / STYLE.video.fps } : {}),
-    duration_source: 'ffprobe measured clip durations accumulated after concat',
+    duration_source: timing ? 'host timings and rendered shot observations' : 'ffprobe measured clip durations accumulated after concat',
     clip_sum_sec: fmtSec(measuredSum),
     concat_residual_sec: fmtSec(residual),
     fps: STYLE.video.fps,
@@ -264,6 +278,7 @@ async function main() {
     segments,
   };
   fs.writeFileSync(path.join(outDir, 'mapping.json'), JSON.stringify(mapping, null, 2), 'utf8');
+  if (timing) writeStillPreview(outDir, segments);
 
   // ---- vibe-knowledge 基础档：强制 BGM 混音 + 成片质检 ----
   const pyEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' };
@@ -292,6 +307,15 @@ async function main() {
   writeRunLog(outDir, { bp, mapping, rendered, tts, concatMs, totalMs, gate, finalDuration, bgmInfo, qaOut });
   console.log(`[done] ${segments.length} segments, ${fmtSec(finalDuration)}s, total ${(totalMs / 1000).toFixed(1)}s`);
   console.log(`[map ] ${path.join(outDir, 'mapping.json')}`);
+}
+
+function writeStillPreview(outDir, segments) {
+  const escape = text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const figures = segments.flatMap(segment => segment.samples.map(sample =>
+    `<figure><img src="${sample.still}" alt=""><figcaption><strong>${escape(segment.blueprint_id)} · ${sample.time.toFixed(2)}s</strong> · 实拍镜头 ${escape(sample.shotId ?? '缺失或重叠')}<br>${escape(sample.caption || '（该时点无字幕）')}</figcaption></figure>`));
+  fs.writeFileSync(path.join(outDir, 'stills', 'index.html'), `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>画面与旁白对照</title>
+<style>body{font:16px system-ui;margin:24px}main{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}figure{margin:0}img{width:100%}figcaption{line-height:1.5}@media(max-width:650px){main{grid-template-columns:1fr}}</style>
+<h1>画面与旁白对照</h1><main>${figures.join('\n')}</main></html>`, 'utf8');
 }
 
 function writeRunLog(outDir, d) {

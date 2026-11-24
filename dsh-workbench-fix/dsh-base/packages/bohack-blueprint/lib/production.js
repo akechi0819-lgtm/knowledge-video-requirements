@@ -20,6 +20,17 @@ function normalizeEndpoint(baseUrl, suffix) {
   return trimmed.endsWith(suffix) ? trimmed : trimmed + suffix
 }
 
+function fillNarration(production) {
+  let changed = false
+  for (const section of production.sections) {
+    if (section.narration?.trim()) continue
+    section.narration = section.intent
+    section.gaps = (section.gaps || []).filter(gap => gap !== '旁白未提供')
+    changed = true
+  }
+  return changed
+}
+
 export function createProduction(workspace, config = {}) {
   const root = path.join(workspace, 'production')
   const stateFile = path.join(root, 'status.json')
@@ -191,7 +202,7 @@ export function createProduction(workspace, config = {}) {
         clearTimeout(watchdog)
         if (killTimer) clearTimeout(killTimer)
         if (timedOut) return reject(new Error(`${script} 制作超时（${Math.round(timeoutMs / 60000)} 分钟），已终止子进程。`))
-        code === 0 ? resolve() : reject(new Error(`${script} 退出码 ${code}：${errors.trim()}`))
+        code === 0 ? resolve() : reject(Object.assign(new Error(`${script} 退出码 ${code}：${stderrHead}`), { code }))
       })
     })
   }
@@ -356,13 +367,16 @@ export function createProduction(workspace, config = {}) {
     await save(state)
     return state
   }
-  async function restoreFilm(film, production, executable) {
+  async function restoreFilm(film, mode) {
     const mapping = path.join(film, 'mapping.json')
     if (!await exists(path.join(film, 'final.mp4'))) return false
-    if (executable) {
-      const { verifyOriginalFilm } = await import('./original-video-job.js')
-      try { await verifyOriginalFilm(film, production, kit); return true }
-      catch (error) { if (error.code === 'INVALID_FILM') return false; throw error }
+    if (mode === 'agent') {
+      const dir = path.dirname(film), timings = path.join(dir, 'timings.json')
+      if (!await exists(timings)) return false
+      try { await run(dir, 'WORK/modules/video/verify.mjs', [mapping, timings]) }
+      catch (error) { if (error.code === 1) return false; throw error }
+      const report = JSON.parse(await readFile(path.join(film, 'verify-report.json'), 'utf8'))
+      return report.pass === true && Array.isArray(report.hardErrors) && !report.hardErrors.length
     }
     if (!await exists(mapping)) return false
     const report = path.join(film, 'verify-report.json')
@@ -389,7 +403,7 @@ export function createProduction(workspace, config = {}) {
     let manifest = await readAssetManifest(dir)
     if (!manifest) {
       const planned = production.assetPlan || []
-      const auto = state.mode === 'agent' && Boolean(selectedPackage) && !production.assets?.length
+      const auto = state.mode === 'agent' && !config.multiuser && Boolean(selectedPackage) && !production.assets?.length
       const previousInput = previousDir && JSON.parse(await readFile(path.join(previousDir, 'production.json'), 'utf8'))
       const previousManifest = previousInput?.version === production.version && await readAssetManifest(previousDir)
       const previous = previousManifest?.styleId === (production.style?.id || 'general')
@@ -460,7 +474,7 @@ export function createProduction(workspace, config = {}) {
           const filmFeedback = [feedback, state.regenerateAssetId && '本次只返工素材。优先复用上一版已通过自检的场景源码与镜头编排，按新素材清单替换目标主体的变体。保留其他素材、镜头时间和音频安排，再重新渲染、自检并提交。'].filter(Boolean).join('\n')
           await withProductionSession(state.sessionId, () => runVideoJob({
             ctx: config.ctx, sessionId: state.sessionId, dir, production, kit, settings: saved, ...agentRoute,
-            feedback: filmFeedback, previousDir, onProgress, resume, multiuser: !!config.multiuser, skillsRoot, executable,
+            feedback: filmFeedback, previousDir, onProgress, resume, skillsRoot, executable,
           }))
           activity = ''
           await sourceArchive(dir, kit)
@@ -499,7 +513,7 @@ export function createProduction(workspace, config = {}) {
           await run(dir, 'WORK/modules/video/verify.mjs', [path.join(film, 'mapping.json')])
         }
         await stat(path.join(film, 'final.mp4'))
-        if (!executable) await readFile(path.join(film, 'mapping.json'), 'utf8').then(JSON.parse)
+        await readFile(path.join(film, 'mapping.json'), 'utf8').then(JSON.parse)
         state.status = 'completed'; state.phase = '制作完成'; state.completedAt = new Date().toISOString()
         if (auth) state.membershipPending = true
       } catch (e) { state.status = 'failed'; state.error = String(e.message || e); state.completedAt = new Date().toISOString() }
@@ -542,7 +556,7 @@ export function createProduction(workspace, config = {}) {
         const dir = path.join(root, prior.id)
         const production = JSON.parse(await readFile(path.join(dir, 'production.json'), 'utf8'))
         const executable = prior.mode === 'agent' ? await executableFor(production.style) : null
-        if (await restoreFilm(path.join(dir, 'film'), production, executable)) {
+        if (await restoreFilm(path.join(dir, 'film'), prior.mode)) {
           if (prior.mode === 'agent') await sourceArchive(dir, kit)
           const state = { ...prior, status: 'completed', phase: '制作完成', completedAt: new Date().toISOString(), ...(prior.membershipAuthorizationId && { membershipPending: true }) }
           delete state.error
@@ -567,7 +581,10 @@ export function createProduction(workspace, config = {}) {
         }
         if (auth) state.membershipAuthorizationId = auth.id
         const saved = auth ? await config.settings.forCall(auth) : await config.settings?.load() || {}
-        if (!executable) validateVoice(saved)
+        validateVoice(saved)
+        if (state.mode === 'agent' && fillNarration(production)) {
+          await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
+        }
         await runJob(state, production, dir, saved, auth, prior, true, release, executable)
         return state
       }
@@ -580,16 +597,8 @@ export function createProduction(workspace, config = {}) {
       const production = await exportProduction(workspace)
       const original = await executableFor(production.style)
       if (original) mode = 'agent'
-      if (original && config.multiuser) throw new Error('多人工作台尚未配置单任务进程沙箱，无法运行原版制作脚本。')
-      if (!original) {
-        for (const section of production.sections) {
-          if (!section.narration?.trim()) {
-            section.narration = section.intent
-            section.gaps = section.gaps.filter(gap => gap !== '旁白未提供')
-          }
-        }
-        if (!config.memberProject) validateVoice(saved)
-      }
+      fillNarration(production)
+      if (!config.memberProject) validateVoice(saved)
       const previousJobId = prior?.status === 'completed' ? prior.id : prior?.previousJobId || null
       if (feedback.trim() && !previousJobId) throw new Error('尚无已完成的成片可以返工。')
       if (regenerateAssetId !== undefined) {
@@ -605,7 +614,7 @@ export function createProduction(workspace, config = {}) {
       const auth = await memberProject?.lease()
       if (config.memberProject) {
         saved = await config.settings.forCall(auth)
-        if (!original) validateVoice(saved)
+        validateVoice(saved)
       }
       let sceneConfig = null
       try { sceneConfig = JSON.parse(await readFile(path.join(workspace, 'hotpot-demo-scene.json'), 'utf8')) }
@@ -741,7 +750,7 @@ async function sourceArchive(dir, kit) {
     'import pathlib, sys, zipfile',
     'root = pathlib.Path(sys.argv[1])',
     "with zipfile.ZipFile(sys.argv[2], 'w', compression=zipfile.ZIP_DEFLATED) as archive:",
-    "    for relative in ('production.json', 'brief.json', 'decisions.json', 'scenes', 'scenes/assets', 'assets', 'images', '现成素材', 'audio-cache', 'film/audio', 'film/mapping.json'):",
+    "    for relative in ('production.json', 'brief.json', 'decisions.json', 'scenes', 'scenes/assets', 'assets', 'images', '现成素材', 'audio-cache', 'film/audio', 'timings.json', 'film/mapping.json'):",
     '        source = root / relative',
     '        for file in (source.rglob("*") if source.is_dir() else [source]):',
     '            if file.is_file() and file.resolve().is_relative_to(root.resolve()): archive.write(file, file.relative_to(root))',

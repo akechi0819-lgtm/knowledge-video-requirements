@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, readFile, rm, access, readdir, realpath, chmod } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, access, readdir, realpath } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -359,14 +359,17 @@ test('无预设的可执行 Skill 切换到 Agent，活动只在当前制作阶�
       close: async () => {}, newContext: async () => ({ route: async () => {}, newPage: async () => ({}) }),
     }) }`)
     await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({ paths: {
-      python: '/usr/bin/true', ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true', edge: '/usr/bin/true', playwright,
-    } })}`)
+      python: process.execPath, ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true', edge: '/usr/bin/true', playwright,
+    }, tts: { voice: 'fake', rate: '+0%' }, video: { fps: 30 }, timing: { leadIn: 0, tailPad: 0 } })}`)
+    await writeFile(path.join(modules, 'pipeline.mjs'), 'export const preparedFrames = ds => ds.map(d => d * 30); export function seedTtsCache() {}')
+    await writeFile(path.join(modules, 'isolated-page.mjs'), 'export function installSceneRoutes() {}')
+    await writeFile(path.join(modules, 'tts_driver.py'), `const fs = require('node:fs'); const input = JSON.parse(fs.readFileSync(process.argv[2])); fs.writeFileSync(process.argv[7], JSON.stringify({ segments: input.segments.map(s => ({ id: s.id, duration: 1 })) }));`)
     await writeFile(path.join(skill, 'SKILL.md'), '---\nname: new-skill\ndescription: 测试风格\n---\n原版流程')
     const stateFile = path.join(root, 'production/status.json')
-    let assetState, videoState, diskDuringAsset, activeBashState
-    const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async ({ sessionId, setup }) => {
+    let assetState, videoState, diskDuringAsset, videoGuard
+    const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async ({ setup }) => {
       const tools = new Map(), listeners = new Map()
-      await setup({ tools: { register: tool => tools.set(tool.name, tool) }, on: (name, listener) => listeners.set(name, listener) })
+      await setup({ tools: { register: tool => tools.set(tool.name, tool), guard: guard => { videoGuard = guard }, view: () => ({ restrictableNames: [] }), restrict() {} }, on: (name, listener) => listeners.set(name, listener) })
       return { agent: { followup: async () => {
         if (tools.has('submit_assets')) {
           assetState = await service.production.status()
@@ -374,10 +377,7 @@ test('无预设的可执行 Skill 切换到 Agent，活动只在当前制作阶�
           await tools.get('submit_assets').execute({ manifest: { version: 1, producer: 'code-agent', styleId: 'repo-skill:new-skill', assets: [] } })
         } else {
           videoState = await service.production.status()
-          await listeners.get('tools/execute')({ agent: { id: sessionId }, name: 'bash' }, async () => {
-            activeBashState = await service.production.status()
-            throw new Error('测试停止制作')
-          })
+          throw new Error('测试停止制作')
         }
       } } }
     } } }
@@ -401,7 +401,7 @@ test('无预设的可执行 Skill 切换到 Agent，活动只在当前制作阶�
     assert.equal(Object.hasOwn(diskDuringAsset, 'activity'), false)
     assert.equal(videoState.phase, '正在制作视频')
     assert.equal(Object.hasOwn(videoState, 'activity'), false)
-    assert.equal(activeBashState.activity, '正在运行生成或渲染脚本…')
+    assert.match(videoGuard({ name: 'bash' }), /未允许使用/)
     assert.equal(Object.hasOwn(state, 'activity'), false)
     assert.equal(input.auto, true)
     assert.deepEqual(input.planned, [])
@@ -416,6 +416,7 @@ test('restyle asks when unspecified and applies the next named choice without re
   delete process.env.SCENE_API_KEY
   try {
     const service = createService({}, {productionMode:"structured", multiuser:true, workspace: root })
+    service.production.start = async () => ({ status: 'running' })
     await service._internal.ensureDirs()
     const section = id => ({ id, title:id, intent:'讲什么', facts:[], visual:'画面', narration:'旁白', notes:'' })
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], notes:'', meta:{'版本':'v1'} }))
@@ -888,7 +889,7 @@ for (const styleId of ['general', 'editorial']) {
   })
 }
 
-test('原版静音成片可在无 TTS、无映射的情况下恢复并交付完整视频', async () => {
+test('继续制作不能把旧 Skill 的无映射成片标为已完成', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'silent-original-resume-'))
   try {
     const kit = path.join(root, 'kit')
@@ -898,34 +899,17 @@ test('原版静音成片可在无 TTS、无映射的情况下恢复并交付完�
     const film = path.join(job, 'film')
     const skill = path.join(root, '.agents/skills/silent-local')
     await Promise.all([modules, film, skill].map(dir => mkdir(dir, { recursive: true })))
-    await writeFile(path.join(skill, 'SKILL.md'), '---\nname: silent-local\ndescription: 无旁白短片\n---\n正文')
-    const ffprobe = path.join(kit, 'ffprobe')
-    const ffmpeg = path.join(kit, 'ffmpeg')
-    await writeFile(ffprobe, '#!/bin/sh\nprintf \'%s\\n\' \'{"format":{"duration":"4"},"streams":[{"codec_type":"video","width":1280,"height":720}]}\'\n')
-    await writeFile(ffmpeg, '#!/bin/sh\nprintf \'frame=120\\nprogress=end\\n\'\n')
-    await Promise.all([ffprobe, ffmpeg].map(file => chmod(file, 0o755)))
-    await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({paths:{ffprobe,ffmpeg}})}`)
+    await writeFile(path.join(skill, 'SKILL.md'), '---\nname: silent-local\n---\n正文')
     await writeFile(path.join(root, 'production/status.json'), JSON.stringify({
       id: jobId, mode: 'agent', status: 'interrupted', version: 'v1', phase: '正在制作视频',
     }))
-    const narration = [1, 2, 3].map(i => ({ id: `S0${i}`, blueprintId: `B0${i}`, intent: '保留内容要点', narration: null }))
     await writeFile(path.join(job, 'production.json'), JSON.stringify({
-      version: 'v1', style: { id: 'repo-skill:silent-local', kind: 'skill' }, sections: narration,
+      version: 'v1', style: { id: 'repo-skill:silent-local', kind: 'skill' },
+      sections: [{ id: 'S01', blueprintId: 'B01', intent: '保留内容要点', narration: null }],
     }))
-    await writeFile(path.join(film, 'final.mp4'), 'unit media fixture')
-    await writeFile(path.join(job, 'decisions.json'), '{}')
+    await writeFile(path.join(film, 'final.mp4'), 'old film without host timing evidence')
     const production = createProduction(root, { desktop:true, skillsRoot:root, videoKitDir:kit, settings:{ load:async () => ({tts:{}}) } })
-    assert.equal((await production.start({ jobId })).status, 'completed')
-    const status = await production.status()
-    assert.equal(status.artifacts.video, true)
-    assert.equal(status.artifacts.mapping, false)
-    assert.equal(status.mapping, null)
-    assert.equal(status.verify.pass, true)
-    assert.equal(status.verify.duration, 4)
-    assert.equal(status.verify.mappingMode, 'full')
-    assert.ok(status.sections.every(section => !section.narration))
-    assert.equal(await production.file('video'), await realpath(path.join(film, 'final.mp4')))
-    await assert.rejects(production.file('mapping'), /不存在|尚不可用|ENOENT/)
-    assert.equal(await production.file('source'), await realpath(path.join(job, 'source.zip')))
+    await assert.rejects(production.start({ jobId }), /配置当前配音服务/)
+    assert.equal((await production.status()).status, 'interrupted')
   } finally { await rm(root, { recursive:true, force:true }) }
 })

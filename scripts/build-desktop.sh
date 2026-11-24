@@ -65,8 +65,8 @@ cp -R "$source_base/workspace/.agents" "$source_base/workspace/rules" "$base/wor
 cp -R "$source_base"/{package.json,package-lock.json,dsh-workbench.sh} "$base/"
 plugin_archive="$(node "$npm_cli" pack --silent --pack-destination "$stage" "$source_plugin")"
 tar -xzf "$stage/$plugin_archive" --strip-components=1 -C "$plugin"
-node --input-type=module -e 'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.argv[1]));' "$plugin/index.js"
 cp -R video-kit/{README.md,package.json,package-lock.json,WORK,scripts,skill-packages,vendor} "$kit/"
+node --input-type=module -e 'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.argv[1]));' "$plugin/index.js"
 for skill_path in .agents/skills/*; do
   [[ -f "$skill_path/SKILL.md" ]] || continue
   skill="$(basename "$skill_path")"

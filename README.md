@@ -39,9 +39,11 @@ app="$(./scripts/build-desktop.sh)"
 
 服务端入口为 `scripts/cloud-gateway.mjs`，每个实例运行 `scripts/cloud-worker.mjs`。运行镜像由 `preview.Dockerfile` 和 `preview-worker.Dockerfile` 构建。网关只暴露工作台路由，容器内 DSH 管理入口通过内部端口访问。
 
-视频制作接收定稿的内容蓝图和选定风格。可执行 Skill 和七个快捷预设都由 DSH 制作 Agent 加载原版正文、引用资料和脚本，自动处理编码素材与成片。已安装的独立 Skill 无需讲界专用清单即可在工作台选择。简洁知识图解和杂志式图文继续使用工作台内置流程。每次制作在任务目录记录 `timings.jsonl`（阶段和工具用时）与 `commands.jsonl`（命令、工作目录、退出码、耗时和错误摘要）。审计时可用退出码核对上游原生脚本的执行结果。
+视频制作接收定稿蓝图与选定风格。内置风格、快捷预设及独立安装的 Skill 共用讲界宿主。制作 Agent 读取选中风格的正文与资料，按蓝图段落提交局部 HTML。宿主统一负责配音、真实时长、段落顺序、字幕、可选顶栏与片尾、逐帧渲染、BGM 混音和交片验收。模型画面裁切在独立主舞台，几何检查覆盖宿主槽位和登记的关键文本。配置的配音接口失败时，宿主尝试平台备用音色，并在任务进度和运行记录中标明。
 
-原版 Skill 任务使用 DSH 原生文件工具、本地 Bash 和后台作业。文件工具检查任务与资料路径；本地 Bash 沿用宿主进程权限。受管 HOME 位于开发态 `.runtime/skill-runtime` 或桌面数据目录下的 `skill-runtime`，会按目录名和 Skill 声明的名称建立链接，并复用浏览器缓存。需要额外 Python 包时，可在受管 HOME 建立 `venv` 并在其中安装 Skill 声明的依赖。原版任务默认总预算 60 分钟、空闲预算 12 分钟，可分别用 `BOHACK_VIDEO_BUDGET_MS` 和 `BOHACK_VIDEO_IDLE_MS` 调整。暂停后从当前任务文件继续制作。
+任务目录的 `timings.json` 记录段落时间轴、旁白起止及配音后端提供的逐字边界。宿主在各段 25% 和 75% 的画面中读取可见镜头标识，生成 `film/mapping.json`，并写出 `film/verify-report.json` 与 `film/stills/index.html`。映射缺失、段落错位、视频解码失败或出现全黑帧时，成片停留在验收目录。运行用时和命令错误摘要分别见 `timings.jsonl` 和 `commands.jsonl`。
+
+编码素材阶段仍使用 DSH 原生文件工具与后台作业。受管 HOME 位于开发态 `.runtime/skill-runtime` 或桌面数据目录下的 `skill-runtime`。制作 Agent 默认总预算 60 分钟、空闲预算 12 分钟，可分别用 `BOHACK_VIDEO_BUDGET_MS` 和 `BOHACK_VIDEO_IDLE_MS` 调整。暂停后复用当前任务已保存的局部场景与配音缓存。
 
 首次安装风格 Skill 时，在仓库根目录运行 `git submodule update --init`。
 

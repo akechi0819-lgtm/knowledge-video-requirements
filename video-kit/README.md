@@ -176,4 +176,10 @@ scene.html 通过注入的 `window.STYLE` 读同一份，渲染与编排不会�
 制作 JSON 的每段可通过 `assets` 传入本段需要的已确认素材，格式为 `{ "id": "traveler", "name": "旅行者", "type": "character", "image": "assets/traveler.svg" }`；类型为 `character`、`prop` 或 `background`。路径相对制作 JSON，素材应为已清理、可信的生成 SVG。同一 ID 可在不同段复用。画面模型必须安排该段列出的全部素材，并可逐段设置位置、大小、出现时间与移动目标；无法满足时会报错。原有 `image` 图片入口仍可使用。
 
 
-讲界通过 `skill-packages/<包>/讲界.manifest.json` 将风格入口对应到安装的原版 Skill 和所选模式。蓝图交付内容、事实、顺序及用户明确要求。制作 Agent 读取原版正文和模式资料，按原版选用模板、素材和脚本。简洁知识图解和杂志式图文沿用内置制作方式。
+讲界通过 `skill-packages/<包>/讲界.manifest.json` 将风格入口对应到已安装的 Skill 和所选模式。内置、预设和独立安装的 Skill 使用同一套逐段制作协议。Agent 读取风格正文及相关文本资料，用 `write_scene` 为每个蓝图段落提交局部 HTML。每个页面包含 `#stage` 和 `window.seek(t)`，`t` 为段内秒数。实际可见的镜头容器通过 `data-shot-id` 标记对应蓝图 B 段号。
+
+宿主以实测配音时长生成 `timings.json`，据此编译和合成时间轴。在每段 25% 和 75% 对应的视频帧，渲染器读取页面内唯一可见的镜头标识，并保留截帧。技术验收可用 `node WORK/modules/video/verify.mjs <mapping.json> <timings.json>` 复查。字幕文本与两张截帧见同一次成片的 `stills/index.html`。
+
+宿主将局部 HTML 放进与宿主页面隔离的主舞台，画面尺寸由 `window.__PLAN__.stage` 提供。任何超出主舞台的像素（包括固定定位元素）都被裁切。Agent 给必须可读的文本节点标记 `data-protected-text`；预览与逐帧渲染检查登记文字的边界和重叠，以及宿主槽位边界。字幕优先使用配音后端的词边界；没有可用边界时，分页时间按实测旁白区间估算。
+
+Skill 可在自身目录的 `jiangjie.stage.json` 声明 `{ "topBar": true, "tailCard": true }`，预设可在 `讲界.manifest.json` 的 `stage` 字段覆盖。默认关闭顶栏，有明确出处时在旁白结束后静默呈现出处；配置 `tailCard: false` 可以关闭片尾，出处仍留在蓝图对应的关键事实。

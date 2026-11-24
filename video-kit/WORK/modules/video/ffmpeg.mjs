@@ -64,10 +64,10 @@ export async function assertClipPlayable(file) {
   return { duration: await probeDuration(file), streams: kinds.size };
 }
 
-export async function concatClips(clips, outFile) {
+export async function concatClips(clips, outFile, durations) {
   const listFile = path.join(path.dirname(outFile), 'concat-list.txt');
   // concat demuxer needs forward slashes and escaped single quotes.
-  const body = clips.map((c) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
+  const body = clips.map((c, i) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'` + (durations ? `\nduration ${durations[i].toFixed(6)}` : '')).join('\n');
   fs.writeFileSync(listFile, body + '\n', 'utf8');
   const e = STYLE.encode;
   await runRetry(FF, [

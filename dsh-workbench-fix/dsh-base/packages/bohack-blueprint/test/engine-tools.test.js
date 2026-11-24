@@ -118,6 +118,9 @@ test('生成与修订均只传递选中 Skill 的有界元数据', async () => {
   for (const action of ['draft', 'revise']) await engine.produce({ action, skill, requirementText: '讲火山', previousDoc: { raw: '旧蓝图' }, version: 2 })
   assert.equal(prompts.length, 2)
   for (const prompt of prompts) {
+    assert.match(prompt, /可见的具体对象及本段中对象发生什么变化/)
+    assert.match(prompt, /出处紧跟对应的关键事实，核查过程留在备注/)
+    assert.match(prompt, /必要的不确定性、准确性限定和用户要求的表述边界仍须保留/)
     assert.match(prompt, /旁白形态：无旁白/)
     assert.match(prompt, /互动形态：包含互动内容/)
     assert.match(prompt, /Skill 自有结构规划时由 Skill 决定成片结构/)
