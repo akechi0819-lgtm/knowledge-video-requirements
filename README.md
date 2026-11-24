@@ -2,7 +2,7 @@
 
 ## Mac 桌面工作台（邀请码内测）
 
-[下载 macOS 内测 DMG](https://github.com/akechi0819-lgtm/knowledge-video-requirements/releases/tag/v0.2.0-beta.2)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。真实支付尚未开放。
+[下载 macOS 内测 DMG](https://github.com/akechi0819-lgtm/knowledge-video-requirements/releases/tag/v0.2.0-beta.2)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。新版桌面端已支持通过欧云收银台扫码购买 6 元周卡。上方历史内测包发布早于支付功能。
 
 在 macOS 14 或更高版本的 Apple Silicon Mac 上挂载 DMG，把「讲界」拖到「应用程序」后打开。App 内置 DSH、Node.js、Python、Chromium、FFmpeg 和 ffprobe，中文渲染沿用 macOS 自带字体。关闭窗口或退出时，本次启动的 DSH 会一并停止。本次内测包使用临时签名，正式分发需要 Developer ID 和 Apple 公证。
 
@@ -10,11 +10,11 @@
 
 ### 会员账号与自配 API
 
-桌面版默认使用会员模式。新账号使用一次性邀请码注册后获赠 3 条。创建或打开项目时不扣额度，第一次调用平台 AI 时开片。同一条片的后续对话、素材、配音和制作共用授权，成片成功后结算。月卡按文本供应商返回的 token 记账，配音单独记录。月卡额度用尽后，已开片可继续制作。普通用户无需供应商密钥。切到高级模式后，通用模型和配音请求直接发往自配地址，密钥保存在 macOS 钥匙串。
+桌面版默认使用会员模式。新账号使用一次性邀请码注册后获赠 3 条。创建或打开项目时不扣额度，第一次调用平台 AI 时开片。同一条片的后续对话、素材、配音和制作共用授权，成片成功后结算。周卡有效期 7 天。会员服务按文本用量计费，配音单独记录。周卡额度用尽后会暂停平台制作，买新周卡后可继续原任务。普通用户无需供应商密钥。切到高级模式后，通用模型和配音请求直接发往自配地址，密钥保存在 macOS 钥匙串。
 
 画面 Agent 等待模型 2 分钟没有新的工具进展时会提示仍在等待，5 分钟时暂停；正在执行的制作工具仍使用 10 分钟上限。明确的上游报错无需等到超时，成片工作台会用中文解释并提示下一步。会员模式可在成片页点「继续制作」，也可在创作对话中说「继续制作」，继续原任务并尽量复用已保存的画面和配音。
 
-公网内测的会员地址为 `https://jiangjie.gingers.cloud/desktop-membership`，邮箱用于登录，内测暂不发送验证邮件。部署、发码和测试月卡见[会员服务说明](membership/README.md)。联调时可用 `JIANGJIE_MEMBER_URL` 指定测试地址，分发包在构建时内置公网地址。桌面 Agent 默认使用 Chat Completions，也可通过 `JIANGJIE_MEMBER_AGENT_API=openai-responses` 走 Responses。场景和视觉分析仍要求平台文本供应商支持 Chat Completions。
+公网内测的会员地址为 `https://jiangjie.gingers.cloud/desktop-membership`，邮箱用于登录，内测暂不发送验证邮件。部署、发码和周卡支付见[会员服务说明](membership/README.md)。联调时可用 `JIANGJIE_MEMBER_URL` 指定测试地址，分发包在构建时内置公网地址。桌面 Agent 默认使用 Chat Completions，也可通过 `JIANGJIE_MEMBER_AGENT_API=openai-responses` 走 Responses。场景和视觉分析仍要求平台文本供应商支持 Chat Completions。
 
 ### 构建和分发
 
