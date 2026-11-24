@@ -1,4 +1,4 @@
-import { mkdir, readFile, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -60,6 +60,21 @@ export async function verifyOriginalFilm(film, production, kit) {
     mappingMode: mapping ? 'mapped' : 'full', segments: mapping ? mapping.segments.map(segment => ({ id: segment.id, start: segment.start_sec, end: segment.end_sec, issues: [] })) : [] }
   await writeFile(path.join(film, 'verify-report.json'), JSON.stringify(report, null, 2))
   return report
+}
+
+async function resumeInventory(dir) {
+  async function directories(relative) {
+    try { return (await readdir(path.join(dir, relative), { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => path.join(relative, entry.name)) }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error }
+  }
+  const roots = ['', 'scenes', ...(await directories('scenes/examples'))]
+  const lessons = (await Promise.all(roots.map(root => directories(path.join(root, 'lessons'))))).flat()
+  const candidates = ['film.js', 'scenes/film.js', 'film/final.mp4', ...lessons.flatMap(lesson => ['film.js', 'build/picture.mp4', 'build/narration.wav', 'narration.wav'].map(file => path.join(lesson, file)))]
+  const found = await Promise.all(candidates.map(async file => {
+    try { return (await stat(path.join(dir, file))).isFile() ? file : null }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error }
+  }))
+  return found.filter(Boolean)
 }
 
 // The original skill owns the production process. The host only supplies a
@@ -133,7 +148,8 @@ export async function runOriginalVideoJob({ ctx, sessionId, dir, production, kit
         return { ok: true, report }
       } },
     ]
-    const prompt = `你是视频制作 Agent。先调用 skill 工具加载「${runtime.name}」，再用 read 按需读取其引用的资料。按该原版 Skill 完整制作，并调用其原生脚本。原版目录：${runtime.selected}；任务工作目录：${dir}；工程放在：${scenes}；最终交付目录：${film}。不得修改原版文件；需要改模板时复制到当前任务目录。${assetInstructions} 先读取 decisions.json 和蓝图：创作者已确认的内容主线、事实及来源、硬要求和表述边界必须完整保留，无需再次提问。若 Skill 自带结构、分镜、节奏或有无旁白的规划，遵循 Skill，可合并、拆分或调整蓝图段落；若没有规划方法，则按蓝图段落及顺序兜底。流程中的分支按 Skill 推荐方案自主决定并记录在 scenes/decisions-log.md。用 jobs 处理长渲染；按 Skill 要求预览、自检并修片，用 view_image 检查画面，发现问题后修改重看。必要的外部服务或依赖不可用时报告真实错误。完成后提供 film/final.mp4；可选提供 film/mapping.json，包含 final_video: "final.mp4" 和 segments（每项 id、start_sec、end_sec），无需强行对应蓝图段落。调用 submit 进行技术检查。修改意见：${feedback || '无'}。${previousDir ? `上一版：${previousDir}。` : ''}${resume ? '这是中断后的续作，沿用已完成的文件。' : ''}
+    const existingFiles = resume ? await resumeInventory(dir) : []
+    const prompt = `你是视频制作 Agent。先调用 skill 工具加载「${runtime.name}」，再用 read 按需读取其引用的资料。按该原版 Skill 完整制作，并调用其原生脚本。原版目录：${runtime.selected}；任务工作目录：${dir}；工程放在：${scenes}；最终交付目录：${film}。不得修改原版文件；需要改模板时复制到当前任务目录。${assetInstructions} 先读取 decisions.json 和蓝图：创作者已确认的内容主线、事实及来源、硬要求和表述边界必须完整保留，无需再次提问。若 Skill 自带结构、分镜、节奏或有无旁白的规划，遵循 Skill，可合并、拆分或调整蓝图段落；若没有规划方法，则按蓝图段落及顺序兜底。流程中的分支按 Skill 推荐方案自主决定并记录在 scenes/decisions-log.md。用 jobs 处理长渲染；按 Skill 要求预览、自检并修片，用 view_image 检查画面，发现问题后修改重看。必要的外部服务或依赖不可用时报告真实错误。完成后提供 film/final.mp4；可选提供 film/mapping.json，包含 final_video: "final.mp4" 和 segments（每项 id、start_sec、end_sec），无需强行对应蓝图段落。调用 submit 进行技术检查。修改意见：${feedback || '无'}。${previousDir ? `上一版：${previousDir}。` : ''}${resume ? `这是中断后的续作。以下相对任务目录的文件已存在（仅确认存在，未确认质量）：${existingFiles.length ? existingFiles.join('、') : '未发现已知产物'}。请检查并尽可能复用可用产物，按同一 Skill 流程继续完成工作。` : ''}
   风格：${manifest.name}${manifest.mode ? `；选定原版模式：${manifest.mode}，按原文该模式制作` : ''}
   ${references.length ? '按需读取的资料：' + references.join('、') : ''}
   蓝图：scenes/blueprint.json`

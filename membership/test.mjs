@@ -42,6 +42,7 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
   const largeAudio=Buffer.alloc(300*1024,1);
   const delayed = Promise.withResolvers(), release = Promise.withResolvers();
   const lateStarted = Promise.withResolvers(), lateRelease = Promise.withResolvers();
+  const cancelledUpstream = Promise.withResolvers();
   const mock=createServer(async(req,res)=>{
     const body=JSON.parse(await new Response(req).text()); seen.push({url:req.url,authorization:req.headers.authorization,body});
     if(body.delay_test) { delayed.resolve(); await release.promise; }
@@ -59,6 +60,12 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
     }
     const usage=body.break_test ? {input_tokens:0,output_tokens:3517240}
       : {input_tokens:5,output_tokens:2,input_tokens_details:{cached_tokens:3}};
+    if(body.cancel_test) {
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.write('data: {"type":"response.output_text.delta","delta":"部分响应"}\n\n');
+      res.on('close',()=>cancelledUpstream.resolve());
+      return;
+    }
     if(body.interrupt_test) {
       res.writeHead(200,{'content-type':'text/event-stream'});
       res.write('data: {"type":"response.output_text.delta","delta":"部分响应"}\n\n');
@@ -190,6 +197,20 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
     assert.equal(pass(newPass).used_micro_cny,2);
     await assert.rejects(request('/api/proxy/replacement/responses',{interrupt_test:true,stream:true},token));
     assert.equal(pass(newPass).used_micro_cny,3);
+    await t.test('disconnecting a streamed response aborts upstream and releases the pass queue', async () => {
+      const controller=new AbortController();
+      const response=await fetch(baseURL+'/api/proxy/replacement/responses',{
+        method:'POST',headers:{origin:baseURL,'content-type':'application/json',authorization:`Bearer ${token}`},
+        body:JSON.stringify({cancel_test:true,stream:true}),signal:controller.signal,
+      });
+      const reader=response.body.getReader();
+      assert.equal((await reader.read()).done,false);
+      const next=request('/api/proxy/replacement/responses',{stream:true},token);
+      controller.abort();
+      await Promise.race([cancelledUpstream.promise, new Promise((_,reject)=>setTimeout(()=>reject(new Error('upstream was not cancelled')),2000))]);
+      assert.equal((await Promise.race([next,new Promise((_,reject)=>setTimeout(()=>reject(new Error('pass queue remained blocked')),2000))])).status,200);
+      assert.equal(pass(newPass).used_micro_cny,5);
+    });
     const ttsLedger = svc.db.prepare(`SELECT kind,amount,cost_micro_cny,estimated,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens
       FROM usage WHERE production_id='replacement' AND kind='tts'`);
     await t.test('300 KiB speech on an active pass records characters without debiting it', async () => {
@@ -201,7 +222,7 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
         kind:'tts',amount:'large audio'.length,cost_micro_cny:0,estimated:0,
         input_tokens:null,cache_read_tokens:null,cache_write_tokens:null,output_tokens:null,
       }]);
-      assert.equal(pass(newPass).used_micro_cny,3);
+      assert.equal(pass(newPass).used_micro_cny,5);
     });
     await t.test('invalid MiMo audio returns 502 without recording usage or debiting the pass', async () => {
       config.tts.protocol='mimo';
@@ -210,7 +231,7 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
       assert.equal(audio.status,502);
       assert.equal(audio.value.error,'invalid_tts_response');
       assert.equal(svc.db.prepare("SELECT COUNT(*) AS count FROM usage").get().count,count);
-      assert.equal(pass(newPass).used_micro_cny,3);
+      assert.equal(pass(newPass).used_micro_cny,5);
     });
     assert.equal((await memberView()).remainingPercent,99);
     assert.equal(run('stop',email).id,newPass);
@@ -256,7 +277,7 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
     assert.ok(exhaustedAudit.circuitBroken);
     assert.deepEqual(exhaustedAudit.tokenTotals,{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:3517240});
     assert.ok(audit.usage.some(row=>row.production_id==='replacement' && row.pass_id===newPass && row.estimated===1 && row.cost_micro_cny>0));
-    assert.equal(audit.usage.filter(row=>row.production_id==='replacement' && row.estimated===1).length,2);
+    assert.equal(audit.usage.filter(row=>row.production_id==='replacement' && row.estimated===1).length,3);
     assert.ok(audit.usage.some(row=>row.funding==='unlimited' && !row.pass_id && row.cost_micro_cny>0));
     const giftUsage=audit.usage.filter(row=>row.funding==='gift');
     assert.equal(giftUsage.length,3);

@@ -16,7 +16,7 @@ function host(run, whenIdle = () => new Promise(() => {})) {
     create: async options => {
       state.options = options
       await options.setup(agentCtx)
-      return { agent: { followup: async message => { state.message = message; await run(registered, listeners); listeners.get('session/event')?.({id:options.sessionId},{type:'turn/end',data:{reason:{kind:'completed'}}}) }, whenIdle, cancel() {} } }
+      return { agent: { session: { id:options.sessionId }, followup: async message => { state.message = message; await run(registered, listeners); listeners.get('session/event')?.({id:options.sessionId},{type:'turn/end',data:{reason:{kind:'completed'}}}) }, whenIdle, cancel() {} } }
     },
   } }
   return { ctx, state }
@@ -62,6 +62,16 @@ test('mounts video preset, isolates tools and returns a successful submit', asyn
   assert.deepEqual(state.restriction, { deny: ['bash', 'skill'] })
   assert.equal(state.message.role, 'user')
   assert.equal(result.args.file, 'film.mp4')
+})
+
+test('pins the production session title before sending the first prompt', async () => {
+  let title
+  const { ctx } = host(async registered => {
+    assert.deepEqual(title, [{ id:'production-title-fixture' }, '正在制作视频'])
+    await registered.get('submit').execute({})
+  })
+  ctx.sessionTitle = { rename(...args) { title = args } }
+  await runVideoAgent({ ctx, sessionId:'production-title-fixture', cwd:'/tmp', prompt:'make', tools })
 })
 
 test('passes an explicit reasoning effort to the host', async () => {

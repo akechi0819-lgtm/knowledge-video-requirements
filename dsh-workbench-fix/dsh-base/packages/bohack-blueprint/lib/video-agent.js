@@ -230,6 +230,9 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
   }
   try {
     handle = await agents.create({ sessionId: activeSessionId, meta: { cwd: path.resolve(cwd) }, agentOptions: { provider, model, ...(reasoningEffort != null ? { reasoningEffort } : {}) }, setup })
+    // Pin the internal session title before its first prompt to avoid a second model request.
+    const sessionTitle = ctx.get?.('sessionTitle') || ctx.sessionTitle
+    if (sessionTitle && handle.agent.session) sessionTitle.rename(handle.agent.session, statusText)
     await onProgress?.({ type: 'status', text: statusText })
     const timeout = new Promise((_, reject) => { rejectTimeout = reject })
     armWatchdog()

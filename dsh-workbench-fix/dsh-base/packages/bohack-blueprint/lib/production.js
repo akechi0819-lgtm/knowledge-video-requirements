@@ -443,7 +443,7 @@ export function createProduction(workspace, config = {}) {
           }
         }
         const withProductionSession = async (sessionId, run) => {
-          memberProject?.bind(sessionId, config.settings.load, auth?.id, !state.membershipAuthorizationId)
+          memberProject?.bind(sessionId, config.settings.load, auth, !state.membershipAuthorizationId)
           try {
             const result = await run()
             const providerError = memberProject?.error(sessionId)
@@ -712,20 +712,24 @@ export function createProduction(workspace, config = {}) {
     if (active || config.multiuser) throw new Error('当前创作无法单独编码素材，请等待制作完成。')
     const target = doc.assets.find(item => item.id === id)
     if (!target) throw new Error('要制作的素材不存在。')
-    const saved = await config.settings.load()
-    const auth = await memberProject?.lease()
-    const settings = auth ? await config.settings.forCall(auth) : saved
-    const route = await routeFor(settings)
+    const release = memberProject?.hold()
     const sessionId = 'bohack-assets-' + randomUUID()
-    memberProject?.bind(sessionId, config.settings.load, auth?.id, !auth)
     try {
+      const saved = await config.settings.load()
+      const auth = await memberProject?.lease()
+      const settings = auth ? await config.settings.forCall(auth) : saved
+      const route = await routeFor(settings)
+      memberProject?.bind(sessionId, config.settings.load, auth, !auth)
       const selectedPackage = await executableFor(style)
       await config.generatedAssets.prepare({ version, doc, style, planned: [target], regenerateAssetId: id, assetFeedback: feedback,
         run: options => runAssetAgentJob({ ctx: config.ctx, sessionId, kit, repo, workspace: skillsRoot,
           selectedPackage, settings, ...route, production: doc, ...options }),
       })
       return config.generatedAssets.status({ version, doc, style })
-    } finally { memberProject?.unbind(sessionId) }
+    } finally {
+      memberProject?.unbind(sessionId)
+      release?.()
+    }
   }
   return { start, abandon, status, file, generateAsset, isActive: () => active }
 }

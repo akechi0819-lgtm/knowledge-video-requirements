@@ -1,11 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 import path from 'node:path'
 
 export const desktopAgentOrigin = 'https://jiangjie-agent.invalid'
 const agentProvider = 'jiangjie-desktop'
 const responsesProvider = 'jiangjie-desktop-responses'
 const alias = 'jiangjie'
+const transientCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ETIMEDOUT', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'])
+const transportCode = error => error?.name === 'TimeoutError' ? 'TimeoutError' : error?.cause?.code ?? error?.code
+const fetchFailure = error => error?.name === 'TimeoutError' || (error instanceof TypeError && error.message === 'fetch failed') || transientCodes.has(transportCode(error))
+
+function atTransportStage(stage, error) {
+  if (!fetchFailure(error)) return error
+  const code = transportCode(error)
+  const detail = typeof code === 'string' && /^[A-Za-z0-9_]+$/.test(code) ? ` (${code})` : ''
+  return new Error(`${stage}: ${error.message}${detail}`, { cause: error })
+}
 
 function endpoint(value) {
   if (!value) return null
@@ -43,13 +54,31 @@ export function createMembership(ctx, root, options = {}) {
   }
   async function api(route, { body, token, signal, inviteCode } = {}) {
     if (!origin) throw new Error('平台服务地址尚未配置。')
-    const response = await rawFetch(origin + route, {
+    const request = {
       method: body === undefined ? 'GET' : 'POST',
       headers: { ...(body !== undefined && { 'content-type': 'application/json', origin: new URL(origin).origin }), ...(token && { authorization: 'Bearer ' + token }), ...(inviteCode && { 'x-invite-code': inviteCode }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       redirect: 'error',
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
-    })
+    }
+    const send = () => {
+      const timeout = AbortSignal.timeout(15000)
+      return rawFetch(origin + route, { ...request, signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
+    }
+    let response
+    if (route === '/api/productions/start') {
+      try {
+        response = await send().catch(async error => {
+          const code = transportCode(error)
+          const retryable = code ? code === 'TimeoutError' || transientCodes.has(code) : !error.cause && fetchFailure(error)
+          if (!retryable) throw error
+          await delay(300, undefined, { signal })
+          return send()
+        })
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason
+        throw atTransportStage('会员开片请求', error)
+      }
+    } else response = await send()
     const data = await response.json()
     if (!response.ok) {
       const code = data.code || data.error
@@ -195,8 +224,8 @@ export function createMembership(ctx, root, options = {}) {
         return terminal
       })
     }
-    function bind(sessionId, load, id, byok = false) {
-      sessions.set(String(sessionId), { lease: byok ? async () => null : options => lease({ ...options, id }), load })
+    function bind(sessionId, load, auth, byok = false) {
+      sessions.set(String(sessionId), { authorize: auth || byok ? () => auth : lease, load })
     }
     function unbind(sessionId) { sessions.delete(String(sessionId)) }
     async function route(loadSettings) {
@@ -226,7 +255,7 @@ export function createMembership(ctx, root, options = {}) {
       if (!['/chat/completions', '/responses'].includes(route)) return new Response(null, { status: 404 })
       const release = hold()
       try {
-        const auth = await binding.lease({ signal: request.signal })
+        const auth = await binding.authorize({ signal: request.signal })
         const model = auth ? { baseUrl: auth.baseUrl, model: alias, apiKey: auth.token } : (await binding.load()).model
         if (!model?.baseUrl || !model.model) throw new Error('请在高级设置中配置通用模型地址和名称。')
         const base = endpoint(model.baseUrl).replace(/\/(?:chat\/completions|responses)$/, '')
@@ -234,7 +263,7 @@ export function createMembership(ctx, root, options = {}) {
         const response = await rawFetch(base + route, {
           method: 'POST', headers: { 'content-type': 'application/json', ...(model.apiKey && { authorization: 'Bearer ' + model.apiKey }) },
           body: JSON.stringify({ ...body, model: model.model }), redirect: 'error', signal: request.signal,
-        })
+        }).catch(error => { throw atTransportStage(auth ? '会员模型代理请求' : '自配模型请求', error) })
         if (response.status === 402) {
           const data = await response.clone().json().catch(() => null)
           if ((data?.error?.code || data?.error || data?.code) === 'quota_circuit_broken') {
@@ -245,6 +274,7 @@ export function createMembership(ctx, root, options = {}) {
       } catch (error) {
         if (request.signal.aborted) throw request.signal.reason
         binding.error = error
+        if (fetchFailure(error.cause)) throw error
         return Response.json({ error: { message: error.message, code: error.code } }, { status: error.status || 400 })
       } finally { release() }
     }

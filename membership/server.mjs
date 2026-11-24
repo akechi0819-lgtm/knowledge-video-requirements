@@ -247,12 +247,15 @@ export async function createMembershipService(config) {
         const inputChars=typeof body.input==='string'?body.input.length:null;
         if(mimo) body={model:provider.model,messages:[{role:'assistant',content:body.input}],audio:{voice:provider.voice,format:'mp3'},stream:false};
         const requestBody=JSON.stringify(body);
-        await withPassRequest(p, async () => {
+        const controller=new AbortController();
+        const abortUpstream=()=>{ if (!res.writableFinished) controller.abort(); };
+        res.on('close',abortUpstream);
+        try { await withPassRequest(p, async () => {
           if (res.destroyed) return;
           if (production(id,pid)?.status !== 'active') return inactive();
           if (passBlocked(p)) return blocked();
           const upstream=await fetch(`${provider.baseURL.replace(/\/$/,'')}/${mimo?'chat/completions':suffix}`,{
-            method:'POST',redirect:'error',headers:{'content-type':'application/json',authorization:`Bearer ${provider.key}`},body:requestBody,
+            method:'POST',redirect:'error',headers:{'content-type':'application/json',authorization:`Bearer ${provider.key}`},body:requestBody,signal:controller.signal,
           });
           const contentType=upstream.headers.get('content-type') || 'application/octet-stream';
           const headers={'content-type':contentType};
@@ -304,7 +307,7 @@ export async function createMembershipService(config) {
           }
           if (!streamed) res.writeHead(upstream.status,headers);
           return res.end(streamed?undefined:Buffer.concat(chunks));
-        });
+        }); } finally { res.off('close',abortUpstream); }
         return;
       }
       return json(res,404,{error:'not_found',message:'接口不存在。'});

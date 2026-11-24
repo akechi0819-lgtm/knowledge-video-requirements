@@ -21,11 +21,21 @@ test('original job mirrors installed skills and mounts only the two host tools',
     await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({ paths: {
       python: '/usr/bin/true', ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true', edge: '/usr/bin/true', playwright: path.join(modules, 'playwright.cjs'),
     } })}`)
+    await mkdir(path.join(dir, 'scenes/lessons/01/build'), { recursive: true })
+    await writeFile(path.join(dir, 'scenes/lessons/01/build/picture.mp4'), 'partial')
+    await writeFile(path.join(dir, 'scenes/lessons/01/film.js'), 'source')
+    await mkdir(path.join(dir, 'lessons/previous-job/build'), { recursive: true })
+    await writeFile(path.join(dir, 'lessons/previous-job/build/narration.wav'), 'prior audio')
     const fakeKey = 'test-mimo-key'
-    await assert.rejects(runOriginalVideoJob({ dir, repo: root, kit, production: { sections: [] },
+    await assert.rejects(runOriginalVideoJob({ dir, repo: root, kit, resume: true, production: { sections: [] },
       settings: { tts: { protocol: 'mimo', baseUrl: 'https://example.invalid/chat/completions', apiKey: fakeKey } },
       manifest: { name: 'Original', skill: 'example', references: ['template.txt'] },
       runVideoAgent: async ({ prompt, tools, preset, runtime, onTiming }) => {
+        assert.match(prompt, /scenes\/lessons\/01\/build\/picture.mp4/)
+        assert.match(prompt, /scenes\/lessons\/01\/film.js/)
+        assert.match(prompt, /lessons\/previous-job\/build\/narration.wav/)
+        assert.match(prompt, /仅确认存在，未确认质量/)
+        assert.doesNotMatch(prompt, /scenes\/lessons\/01\/build\/narration.wav/)
         assert.equal(preset, 'bohack-skill-runner')
         assert.deepEqual(tools.map(tool => tool.name), ['view_image', 'submit'])
         assert.match(prompt, /skill 工具加载「example」/)

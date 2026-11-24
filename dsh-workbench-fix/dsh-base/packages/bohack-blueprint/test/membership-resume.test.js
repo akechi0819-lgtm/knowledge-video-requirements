@@ -6,9 +6,64 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
-import { createMembership } from '../lib/membership.js'
+import { createMembership, desktopAgentOrigin } from '../lib/membership.js'
 import { createProduction } from '../lib/production.js'
 import { createWebHandler } from '../lib/web.js'
+
+test('desktop retries the same lease once and reuses it while preserving model transport failures', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-agent-transport-'))
+  t.after(() => rm(home, { recursive:true, force:true }))
+  const root = path.join(home, 'workspace')
+  const starts = []
+  let proxyRequests = 0, startFailures = 1, proxyStatus = 200
+  const connectionError = () => new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code:'UND_ERR_SOCKET' }) })
+  const client = createMembership({ on() {} }, root, {
+    url:'http://127.0.0.1:8765',
+    request: async (url, options) => {
+      const route = new URL(url).pathname
+      if (route === '/api/auth/sign-in/email') return Response.json({ user:{id:'owner',email:'owner@example.test'} }, {headers:{'set-auth-token':'fixture'}})
+      if (route === '/api/member') return Response.json({})
+      if (route === '/api/productions/start') {
+        starts.push(JSON.parse(options.body))
+        if (startFailures > 0) { startFailures--; throw connectionError() }
+        return Response.json({ status:'active' })
+      }
+      assert.equal(options.headers.authorization, 'Bearer fixture')
+      assert.equal(route, '/api/proxy/' + starts[0].productionId + '/chat/completions')
+      proxyRequests++
+      if (proxyStatus === 0) throw connectionError()
+      return Response.json(proxyStatus === 402 ? {error:'quota_circuit_broken'} : {}, {status:proxyStatus})
+    },
+  })
+  await client.update({action:'login',email:'owner@example.test',password:'fixture'})
+  const project = client.project(path.join(root, 'film'))
+  const auth = await project.lease()
+  assert.deepEqual(starts, [{productionId:auth.id}, {productionId:auth.id}])
+  project.bind('film', () => assert.fail('member requests should use the acquired authorization'), auth)
+  const uninstall = client.install()
+  const call = () => fetch(desktopAgentOrigin + '/chat/completions', {
+    method:'POST',headers:{'x-jiangjie-session':'film'},body:'{}',
+  })
+  try {
+    assert.equal((await call()).status, 200)
+    assert.equal((await call()).status, 200)
+    proxyStatus = 0
+    await assert.rejects(call, error => /会员模型代理请求.*UND_ERR_SOCKET/.test(error.message) && error.cause.cause.code === 'UND_ERR_SOCKET')
+    assert.equal(proxyRequests, 3)
+    assert.equal(starts.length, 2)
+    proxyStatus = 402
+    assert.equal((await call()).status, 402)
+    assert.equal(project.error('film').code, 'quota_circuit_broken')
+    proxyStatus = 403
+    assert.equal((await call()).status, 403)
+
+    project.bind('film', () => assert.fail('member leases should not load BYOK'))
+    startFailures = 2
+    await assert.rejects(call, /会员开片请求.*UND_ERR_SOCKET/)
+    assert.equal(starts.length, 4)
+    assert.equal(proxyRequests, 5)
+  } finally { uninstall() }
+})
 
 test('desktop restart resumes the same authorization and recovers a lost finish receipt without rerendering', async t => {
   const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-resume-'))
