@@ -815,31 +815,44 @@ bindDrop($('#entryForm'),stageFiles)
 bindDrop($('#dropzone'),uploadToStudio)
 
 /* ── 资产 ── */
-function trustTag(a){
+function trustTag(a, generated){
+  if(generated) return '<span class="tag vetted">已生成</span>'
   if(!a.path) return '<span class="tag declared">待补</span>'
   if(a.trust!=='vetted') return '<span class="tag unvetted">待确认</span>'
   return '<span class="tag vetted">可用</span>' }
+function generatedLedgerIds(s){
+  const p=s?.production
+  if(p?.status!=='completed' || p.version!=='v'+s.currentVersion || (p.styleId||null)!==(s.visualStyle?.style?.id||null)) return []
+  const produced=new Set((p.assets||[]).filter(a=>a.files?.length).map(a=>a.id))
+  return (s.blueprintAssets||[]).filter(a=>produced.has(a.id)).map(a=>a.ledgerId)
+}
 function t2tag(t){ return t==='vetted'?'<span class="tag vetted">已把关</span>'
   : t==='candidate'?'<span class="tag candidate">候选</span>'
   : '<span class="tag unvetted">未核</span>' }
 function renderAssets(list){
   const box=$('#assetList')
   if(!list?.length){ box.innerHTML='<div class="empty">还没有资料。可以将文件拖到对话区上传。</div>'; return }
-  box.innerHTML=list.map(a=>`
+  const generatedIds=new Set(generatedLedgerIds(state.status))
+  box.innerHTML=list.map(a=>{
+    const generated=a.declared&&!a.path&&generatedIds.has(a.id)
+    const needsFile=a.declared&&!a.path&&!generated
+    const location=needsFile?'（声明待实现）':a.path
+    return `
     <div class="asset" data-asset-id="${esc(a.id)}">
       <span class="ic"><svg class="icon" aria-hidden="true"><use href="#icon-${({image:'image',link:'link',index:'folder'})[a.type] || 'file'}"/></svg></span>
       <div style="min-width:0">
-        <div class="name">${esc(a.name)} ${trustTag(a)}${a.side==='blueprint'?' <span class="tag candidate">供蓝图参考</span>':a.side==='videomake'?' <span class="tag candidate">用于成片</span>':''}</div>
+        <div class="name">${esc(a.name)} ${trustTag(a,generated)}${a.side==='blueprint'?' <span class="tag candidate">供蓝图参考</span>':a.side==='videomake'?' <span class="tag candidate">用于成片</span>':''}</div>
         ${(a.side==='videomake' || (!a.side && a.type!=='text')) && state.status?.currentVersion && (a.declared || /\.(png|jpe?g|svg)$/i.test(a.path||'') || (state.status.blueprintAssets||[]).some(item=>item.ledgerId===a.id)) ? `<details><summary>关联蓝图段落</summary><div class="hint">${state.status.sections.map(sec=>`<label style="margin-right:10px"><input type="checkbox" data-section="${esc(sec.id)}" ${(state.status.blueprintAssets||[]).find(item=>item.ledgerId===a.id)?.sections.includes(sec.id)?'checked':''}> ${esc(sec.id)}</label>`).join('')}</div><button class="sm" data-assign="${esc(a.id)}">保存关联</button></details>` : ''}
-        <div class="desc">${esc(a.declared&&!a.path?'（声明待实现）':a.path)}${a.note?' · '+esc(a.type==='text'?a.note.slice(0,160):a.note):''}${a.addedBy?' · 来自'+esc(a.addedBy):''}</div>
+        <div class="desc">${esc(location||'')}${a.note?(location?' · ':'')+esc(a.type==='text'?a.note.slice(0,160):a.note):''}${a.addedBy?' · 来自'+esc(a.addedBy):''}</div>
       </div>
       <div class="ops">
         ${a.path&&a.path.startsWith('sources/')?`<button class="sm" data-open="${esc(a.id)}">打开</button><button class="sm" data-reveal="${esc(a.id)}">所在文件夹</button>`:''}
-        ${a.declared&&!a.path?`<button class="sm" data-upload-declaration="${esc(a.id)}">上传图片</button>${state.status?.finalized?.version===state.status?.currentVersion && state.status?.stage==='finalized' && (state.status.blueprintAssets||[]).some(item=>item.ledgerId===a.id)?'':`<button class="sm" data-implement-declaration="${esc(a.id)}">用小工具生成素材图</button>`}`:''}
+        ${needsFile?`<button class="sm" data-upload-declaration="${esc(a.id)}">上传图片</button>${state.status?.finalized?.version===state.status?.currentVersion && state.status?.stage==='finalized' && (state.status.blueprintAssets||[]).some(item=>item.ledgerId===a.id)?'':`<button class="sm" data-implement-declaration="${esc(a.id)}">用小工具生成素材图</button>`}`:''}
         ${a.path&&a.trust!=='vetted'?`<button class="sm" data-approve="${esc(a.id)}">确认可用</button>`:''}
         <button class="sm" data-del="${esc(a.id)}">删除</button>
       </div>
-    </div>`).join('')
+    </div>`
+  }).join('')
   box.querySelectorAll('[data-assign]').forEach(b=>b.addEventListener('click',async()=>{
     const thread=state.threadId, version=state.status.currentVersion
     const sections=[...b.closest('details').querySelectorAll('[data-section]:checked')].map(input=>input.dataset.section)
@@ -1091,6 +1104,7 @@ async function refresh(){
   try{
     const s=await api('/bohack/api/status')
     if(id!==state.threadId) return
+    const generatedChanged=generatedLedgerIds(state.status).join()!==generatedLedgerIds(s).join()
     state.status=s
     syncStudioChoice(s)
     $('#wsName').textContent=s.requirement?.title||s.requirement?.topic||state.threads.find(t=>t.id===id)?.title||'当前创作'
@@ -1103,7 +1117,9 @@ async function refresh(){
       badge.style.color=prod?.status==='running'?'var(--warn)':fin?'var(--success)':''
     }
     const blueprintKey=JSON.stringify([id,s.currentVersion,s.sections,s.locked,s.blueprintSkill,s.hasFeedback,s.lastRun,s.stage,s.blueprintAssets])
-    if(state.blueprintKey!==blueprintKey && !$('#edTitle') && !$('#noteText')?.value){ state.blueprintKey=blueprintKey; renderBlueprint(); if(state.assets) renderAssets(state.assets) }
+    const blueprintChanged=state.blueprintKey!==blueprintKey && !$('#edTitle') && !$('#noteText')?.value
+    if(blueprintChanged){ state.blueprintKey=blueprintKey; renderBlueprint() }
+    if(state.assets && (blueprintChanged || generatedChanged)) renderAssets(state.assets)
 
     $('#filmBp').textContent=s.currentVersion?`蓝图 v${s.currentVersion}（${s.sections.length} 个内容要点）`:'—'
     $('#filmState').textContent=s.finalized?.version===s.currentVersion && s.stage==='finalized'?'已定稿 ✓':'未定稿'
