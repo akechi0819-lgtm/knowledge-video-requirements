@@ -31,21 +31,38 @@ jobs:
           install: >-
             make diffutils tar
             mingw-w64-x86_64-gcc mingw-w64-x86_64-nasm mingw-w64-x86_64-pkgconf
-      - name: 安装 Inno Setup
-        run: choco install innosetup --no-progress -y
+      - name: 安装 NSIS
+        run: choco install nsis --no-progress -y
+      - uses: actions/cache/restore@v4
+        id: codecs
+        with:
+          path: ${{ runner.temp }}/jiangjie/cache/codecs/compiled
+          key: windows-x64-codecs-${{ hashFiles('desktop/windows/build.ps1') }}
       - name: 构建桌面安装包
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           $msysBash = Join-Path $env:MSYS2_LOCATION 'usr/bin/bash.exe'
-          $innoCompiler = (Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" | Select-Object -First 1).FullName
-          ./desktop/windows/build.ps1 -OutputDirectory "$env:RUNNER_TEMP\jiangjie" -MsysBash $msysBash -InnoCompiler $innoCompiler
+          $nsisCompiler = Join-Path "${env:ProgramFiles(x86)}" 'NSIS/makensis.exe'
+          ./desktop/windows/build.ps1 -OutputDirectory "$env:RUNNER_TEMP\jiangjie" -MsysBash $msysBash -NsisCompiler $nsisCompiler
+      - name: 检查编译缓存
+        id: compiled
+        if: always() && steps.codecs.outputs.cache-hit != 'true'
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\jiangjie\cache\codecs\compiled\SHA256SUMS.txt") {
+            'ready=true' >> $env:GITHUB_OUTPUT
+          }
+      - uses: actions/cache/save@v4
+        if: always() && steps.compiled.outputs.ready == 'true'
+        with:
+          path: ${{ runner.temp }}/jiangjie/cache/codecs/compiled
+          key: ${{ steps.codecs.outputs.cache-primary-key }}
       - name: 安装并验收会员登录与成片导出
         run: |
           $output = "$env:RUNNER_TEMP\jiangjie"
           $installed = "$env:RUNNER_TEMP\讲界 验收"
           $setup = Join-Path $output 'Jiangjie-Windows-x64-0.2.1-setup.exe'
-          $install = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installed`"" -Wait -PassThru
+          $install = Start-Process $setup -ArgumentList "/S /D=$installed" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "安装失败：$($install.ExitCode)" }
           $env:JIANGJIE_DESKTOP_DATA = Join-Path $output 'webview-smoke-data'
           $launcher = Join-Path $installed 'Jiangjie.exe'

@@ -1,11 +1,11 @@
-# Build on Windows x64 with .NET 8, Inno Setup 6, and MSYS2 MINGW64
+# Build on Windows x64 with .NET 8, NSIS 3, and MSYS2 MINGW64
 # (gcc, make, nasm, pkgconf, diffutils, tar and curl). Run from any directory:
 # pwsh -File desktop/windows/build.ps1 -OutputDirectory C:\jiangjie-build
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [string]$MsysBash = 'C:\msys64\usr\bin\bash.exe',
-    [string]$InnoCompiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+    [string]$NsisCompiler = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -47,7 +47,7 @@ if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -
     throw '此构建脚本需要 Windows x64 构建机。'
 }
 if (-not (Test-Path $MsysBash)) { throw "MSYS2 bash 未找到：$MsysBash" }
-if (-not (Test-Path $InnoCompiler)) { throw "Inno Setup 未找到：$InnoCompiler" }
+if (-not (Test-Path $NsisCompiler)) { throw "NSIS 未找到：$NsisCompiler" }
 New-Item -ItemType Directory -Force $output, $cache | Out-Null
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage, $runtime, $base, $kit, $plugin, $codecDir | Out-Null
@@ -136,7 +136,7 @@ export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
 cd "$root/build"
 tar xf "$root/sources/zlib-1.3.1.tar.gz"
 cd zlib-1.3.1
-make -f win32/Makefile.gcc -j2 libz.a
+make -f win32/Makefile.gcc -j"$(nproc)" libz.a
 mkdir -p "$prefix/include" "$prefix/lib"
 cp zlib.h zconf.h "$prefix/include/"
 cp libz.a "$prefix/lib/"
@@ -145,21 +145,21 @@ cd "$root/build"
 tar xf "$root/sources/x264-snapshot-20191217-2245.tar.bz2"
 cd x264-snapshot-20191217-2245
 ./configure --host=x86_64-w64-mingw32 --prefix="$prefix" --enable-static --disable-cli --disable-opencl
-make -j2
+make -j"$(nproc)"
 make install
 cp COPYING "$root/licenses/x264-COPYING"
 cd "$root/build"
 tar xf "$root/sources/lame-3.100.tar.gz"
 cd lame-3.100
 ./configure --prefix="$prefix" --disable-shared --enable-static --disable-frontend
-make -j2
+make -j"$(nproc)"
 make install
 cp COPYING "$root/licenses/lame-COPYING"
 cd "$root/build"
 tar xf "$root/sources/ffmpeg-9.0.2.tar.xz"
 cd ffmpeg-9.0.2
 ./configure --prefix="$prefix" --enable-gpl --enable-libx264 --enable-libmp3lame --enable-zlib --disable-shared --enable-static --disable-ffplay --disable-autodetect --extra-cflags="-I$prefix/include" --extra-ldflags="-L$prefix/lib -static"
-make -j2 ffmpeg.exe ffprobe.exe
+make -j"$(nproc)" ffmpeg.exe ffprobe.exe
 cp ffmpeg.exe ffprobe.exe "$out/"
 cp COPYING.GPLv2 "$root/licenses/ffmpeg-COPYING.GPLv2"
 "$out/ffmpeg.exe" -v error -f lavfi -i color=black:s=64x64:r=10 -f lavfi -i sine=frequency=440 -t 0.2 -c:v libx264 -c:a aac -y "$root/build/smoke.mp4"
@@ -174,16 +174,51 @@ done
 '@
 [IO.File]::WriteAllText($codecScript, ($codecSource -replace "`r`n", "`n"), [Text.UTF8Encoding]::new($false))
 $env:JIANGJIE_CODEC_DIR = $codecDir
-$env:JIANGJIE_CODEC_OUT = Join-Path $runtime 'ffmpeg'
-Invoke-Checked $MsysBash @('-lc', 'bash "$(cygpath -u "$JIANGJIE_CODEC_DIR")/build-codecs.sh"')
+$compiled = Join-Path $codecDir 'compiled'
+$env:JIANGJIE_CODEC_OUT = $compiled
+$codecFiles = @('ffmpeg.exe', 'ffprobe.exe', 'licenses/zlib-LICENSE', 'licenses/x264-COPYING',
+    'licenses/lame-COPYING', 'licenses/ffmpeg-COPYING.GPLv2')
+$codecStamp = Join-Path $compiled 'SHA256SUMS.txt'
+function Get-CodecChecksums {
+    (Get-FileHash $codecScript -Algorithm SHA256).Hash
+    foreach ($file in $codecFiles) {
+        (Get-FileHash (Join-Path $compiled $file) -Algorithm SHA256).Hash
+    }
+}
+if (Test-Path $codecStamp) {
+    if ((Get-Content $codecStamp -Raw).Trim() -ne ((Get-CodecChecksums) -join "`n")) {
+        throw '缓存的 Windows 编解码器校验失败，请用新的输出目录重新构建。'
+    }
+} else {
+    Invoke-Checked $MsysBash @('-lc', 'bash "$(cygpath -u "$JIANGJIE_CODEC_DIR")/build-codecs.sh"')
+    Copy-Item -Recurse (Join-Path $codecDir 'licenses') $compiled
+    (Get-CodecChecksums) -join "`n" | Set-Content -NoNewline $codecStamp
+}
+$ffmpegDirectory = Join-Path $runtime 'ffmpeg'
+New-Item -ItemType Directory -Force $ffmpegDirectory | Out-Null
+Copy-Item (Join-Path $compiled 'ffmpeg.exe'), (Join-Path $compiled 'ffprobe.exe') $ffmpegDirectory
 $codecSources = Join-Path $resources 'codec-source'
 New-Item -ItemType Directory -Force $codecSources | Out-Null
-Copy-Item -Recurse $sources, (Join-Path $codecDir 'licenses') $codecSources
+Copy-Item -Recurse $sources, (Join-Path $compiled 'licenses') $codecSources
 Copy-Item $codecScript $codecSources
 Copy-Item (Join-Path $PSScriptRoot 'build.ps1') $codecSources
 
 # A second copy dispatches the local DSH CLI for structured scene generation.
 Invoke-Checked 'dotnet' @('publish', (Join-Path $PSScriptRoot 'Launcher/Launcher.csproj'), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $stage)
 Copy-Item (Join-Path $stage 'Jiangjie.exe') (Join-Path $stage 'dsh.exe')
-Invoke-Checked $InnoCompiler @("/DSourceDir=$stage", "/DOutputDir=$output", (Join-Path $PSScriptRoot 'installer.iss'))
+# Uninstall only files shipped by this build. User-created files and settings remain.
+$manifest = Join-Path $output 'uninstall-files.nsh'
+$manifestLines = [Collections.Generic.List[string]]::new()
+$files = @(Get-ChildItem -LiteralPath $stage -File -Recurse -Force)
+foreach ($file in $files) {
+    $relative = [IO.Path]::GetRelativePath($stage, $file.FullName).Replace('$', '$$')
+    $manifestLines.Add('Delete "$INSTDIR\' + $relative + '"')
+}
+$directories = @(Get-ChildItem -LiteralPath $stage -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending)
+foreach ($directory in $directories) {
+    $relative = [IO.Path]::GetRelativePath($stage, $directory.FullName).Replace('$', '$$')
+    $manifestLines.Add('RMDir "$INSTDIR\' + $relative + '"')
+}
+[IO.File]::WriteAllLines($manifest, $manifestLines, [Text.UTF8Encoding]::new($true))
+Invoke-Checked $NsisCompiler @('/INPUTCHARSET', 'UTF8', "/DSourceDir=$stage", "/DOutputDir=$output", "/DUninstallManifest=$manifest", (Join-Path $PSScriptRoot 'installer.nsi'))
 Write-Host "Windows installer: $(Join-Path $output 'Jiangjie-Windows-x64-0.2.1-setup.exe')"
