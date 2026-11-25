@@ -8,7 +8,7 @@
  *
  * Manual file drops, the terminal, and the Web UI are therefore equivalent.
  */
-import { readFile, writeFile, readdir, mkdir, stat, appendFile, realpath, copyFile, rename } from 'node:fs/promises'
+import { readFile, writeFile, readdir, mkdir, stat, appendFile, realpath, rename } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { createProduction } from './production.js'
 import { productionErrorMessage } from './production-error.js'
@@ -106,7 +106,7 @@ export function createService(ctx, config = {}) {
   const skillsRoot = path.resolve(config.styleLibraryRoot || process.env.JIANGJIE_DESKTOP_WORKSPACE || root)
   const settings = createSettings(root, config)
   const generatedAssets = createGeneratedAssets(root)
-  const productionService = createProduction(root, { ...config, ctx, settings, skillsRoot, generatedAssets, ensureVisual: async () => {
+  const productionService = createProduction(root, { ...config, ctx, settings, skillsRoot, ensureVisual: async () => {
     const n = await latestVersion()
     if ((await visualStyle(n))?.status === 'pending') {
       const versionSkill = await readJson(path.join(dirs.outbox, `蓝图_v${n}.技能.json`), null)
@@ -727,23 +727,8 @@ export function createService(ctx, config = {}) {
     })
   }
 
-  async function implementAsset({ id } = {}) {
-    await ensureDirs()
-    const target = (await readAssetLines()).find(asset => asset.id === id)
-    if (!target || target.side !== 'videomake' || !target.declared || target.path) {
-      throw new ServiceError(`资产 ${id} 不是待实现的声明态素材`, 'BAD_INPUT')
-    }
-    const version = await latestVersion() || 1
-    const visual = await visualStyle(version)
-    const style = visual?.status === 'selected' ? visual.style : null
-    const doc = { assets: [{ id, name: target.name, type: 'prop', description: target.note || target.name, sections: [] }], sections: [] }
-    await productionService.generateAsset({ version, doc, style, id })
-    const { approved: [entry] } = await generatedAssets.availableFiles({ version, doc, style })
-    const rel = `sources/${randomUUID()}${path.extname(entry.path)}`
-    await copyFile(entry.path, path.join(root, rel))
-    const result = await realizeAsset({ id, path: rel })
-    await writeRun({ action: 'asset-implement', id, path: rel })
-    return result
+  async function implementAsset() {
+    throw new ServiceError('当前版本已取消独立编码素材阶段，请在资料库上传素材。', 'BAD_INPUT')
   }
 
   /** 蓝图素材授权读取通道：仅限参考分身且 vetted。文本/代码返回原文，图片返回宿主读图路径。 */

@@ -137,6 +137,8 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   const prepared = { ...production, sections: production.sections.map(s => ({ ...s, scene: `${s.id}.html` })) }
   await writeFile(path.join(scenes, 'production.json'), JSON.stringify(prepared, null, 2))
   const pendingFilm = path.join(dir, '.film-render')
+  // Only submissions in this job run share partial renders.
+  await rm(pendingFilm, { recursive: true, force: true })
 
   const { installSceneRoutes } = await import(pathToFileURL(path.join(kit, 'WORK/modules/video/isolated-page.mjs')).href)
   const { chromium } = require(style.paths.playwright)
@@ -161,19 +163,25 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   let submission
   let composed = false
   const revised = new Set()
-  const savedScenes = []
-  if (resume) for (const id of ids) {
-    let html
-    try { html = await readFile(path.join(scenes, `${id}.html`), 'utf8') }
-    catch (e) { if (e.code === 'ENOENT') continue; throw e }
-    if (!html.trim()) continue
-    savedScenes.push(id)
-    if (previousDir && feedback) {
-      let baseline
-      try { baseline = await readFile(path.join(previousDir, 'scenes', `${id}.html`), 'utf8') }
-      catch (e) { if (e.code !== 'ENOENT') throw e }
-      if (html !== baseline) revised.add(id)
+  async function listSavedScenes() {
+    const saved = []
+    for (const id of ids) {
+      try {
+        if ((await readFile(path.join(scenes, `${id}.html`), 'utf8')).trim()) saved.push(id)
+      } catch (e) { if (e.code !== 'ENOENT') throw e }
     }
+    return saved
+  }
+  function resumeInstructions(saved) {
+    return `本次从中断处继续。已保存的段落：${JSON.stringify(saved)}；尚未保存的段落：${JSON.stringify([...ids].filter(id => !saved.includes(id)))}。先补写缺失的段落，默认复用已保存段落，不逐段读回 HTML；只有为了衔接缺失段落或修正已发现的问题才调用 read_saved_scene。`
+  }
+  const savedScenes = resume ? await listSavedScenes() : []
+  if (previousDir && feedback) for (const id of savedScenes) {
+    const html = await readFile(path.join(scenes, `${id}.html`), 'utf8')
+    let baseline
+    try { baseline = await readFile(path.join(previousDir, 'scenes', `${id}.html`), 'utf8') }
+    catch (e) { if (e.code !== 'ENOENT') throw e }
+    if (html !== baseline) revised.add(id)
   }
   async function writeScene({ id, html }) {
     if (submission || composed) throw new Error('正在合成或已完成成片，不能继续修改画面')
@@ -197,12 +205,12 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
     if (previousDir && feedback && revised.size === 0) throw new Error('本次要求返工。请先按意见修改对应段落，再合成。')
     for (const id of ids) await stat(path.join(scenes, `${id}.html`))
     await onProgress?.('配音与渲染')
-    await rm(pendingFilm, { recursive: true, force: true })
-    await measure('render-compose', () => auditedExec(process.execPath, [path.join(kit, 'WORK/modules/video/pipeline.mjs'), '--prepared', path.join(scenes, 'production.json'), '--out', pendingFilm, '--voice', voice, '--timings', timings], { signal, env: { ...env, VIDEO_TTS_CACHE_DIR: audio }, maxBuffer: 32 * 1024 * 1024 }))
+    await measure('render-compose', () => auditedExec(process.execPath, [path.join(kit, 'WORK/modules/video/pipeline.mjs'), '--prepared', path.join(scenes, 'production.json'), '--out', pendingFilm, '--voice', voice, '--timings', timings], { signal, env: { ...env, VIDEO_TTS_CACHE_DIR: audio, VIDEO_RESUME: '1' }, maxBuffer: 32 * 1024 * 1024 }))
     await onProgress?.('自动质检')
     await measure('verify', () => auditedExec(process.execPath, [path.join(kit, 'WORK/modules/video/verify.mjs'), path.join(pendingFilm, 'mapping.json'), timings], { signal, env, maxBuffer: 32 * 1024 * 1024 }))
     const report = JSON.parse(await readFile(path.join(pendingFilm, 'verify-report.json'), 'utf8'))
     if (!report.pass || report.hardErrors?.length) throw new Error('成片未通过宿主校验')
+    await rm(path.join(pendingFilm, '.clip-cache'), { recursive: true, force: true })
     await rm(film, { recursive: true, force: true })
     await rename(pendingFilm, film)
     composed = true
@@ -223,13 +231,14 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
     name: 'read_skill_file', description: '读取选中 Skill 目录内的相关文本参考，使用相对于 SKILL.md 的路径',
     parameters: schema({ file: str }), execute: async ({ file }) => ({ file, text: await skillPackage.readSkillFile(file) }),
   })
-  if (resume) tools.push({ name: 'read_saved_scene', description: '读取本次任务已经保存的段落 HTML，继续编辑或预览', parameters: schema({ id: str }), execute: async ({ id }) => { if (!ids.has(id)) throw new Error('段号不存在'); return { id, html: await readFile(path.join(scenes, `${id}.html`), 'utf8') } } })
+  tools.push({ name: 'read_saved_scene', description: '读取本次任务已经保存的段落 HTML，继续编辑或预览', parameters: schema({ id: str }), execute: async ({ id }) => { if (!ids.has(id)) throw new Error('段号不存在'); return { id, html: await readFile(path.join(scenes, `${id}.html`), 'utf8') } } })
   if (previousDir) tools.push({ name: 'read_previous_scene', description: '读取上一版对应段落的 HTML，供按意见修改', parameters: schema({ id: str }), execute: async ({ id }) => { if (!ids.has(id)) throw new Error('段号不存在'); return { id, html: await readFile(path.join(previousDir, 'scenes', `${id}.html`), 'utf8') } } })
   const { skill: _skill, style: _style, ...blueprint } = production
-  const prompt = `你是视频制作 Agent。制作方法 ${selectedPackage?.name || skillName} 已载入下文，不必重复调用 skill。保留方法中的讲述、设计与旁白对位标准；执行流程以本次网页制作契约为准：需求、蓝图和风格已确认，配音已生成；不重新选题、改旁白、提问或请求逐项确认，不执行本机脚本、不使用其他引擎。Skill 的历史个人偏好不代表本次用户要求。用工具为每个蓝图 beat 创作独立 HTML/CSS/JS，只定义局部画面和动效。write_scene 的 id 取该段工具编号，主舞台 #stage 使用 window.__PLAN__.stage.width 和 height。宿主提供字幕区与所选风格声明的顶部栏／片尾；模型只在 Main Stage 内创作，保留解释内容所需的标注，避免把字幕、章节栏或出处栏再画进场景。用 data-protected-text 注册必须可读的关键文字块，确保可见时完全位于舞台内且彼此不重叠。给该 beat 实际可见的镜头容器（可以是 #stage 本身）标记 data-shot-id，值是 window.__PLAN__.beatId 对应的蓝图 B 段号；标记应跟随实际画面，不能用隐藏占位元素。window.seek(t) 接收本段局部秒数，用 window.__PLAN__.words（配音后端有逐字时间时提供，offset 相对旁白起点）或 window.__PLAN__.subtitle 对齐局部动作。把旁白说到的关键变化当成动作的时序锚点；演示两轮结果时，标清各自的条件和结果，切到新一轮时同步更新对应标记与结果。旁白、段落顺序、时长、总时间轴、混音与交付由宿主控制。用 tts_durations 取实际配音时间，先 preview 检查画面和中途状态，必要时修正，再调用 submit 完成渲染、质检和提交；技术质检不代表已经完成事实核验或 OCR。图片通过 ../assets/文件名 或 ../现成素材/文件名引用；优先复用已交付素材；识别度不足、自带冲突 HUD 或无法演示动作时，按统一画风替换或重画。每个 beat 让观众看见蓝图中的具体对象发生什么变化，服从事实和已确认旁白。把出处保留在蓝图 facts 和宿主片尾，镜头内避免反复排免责声明、道德说教、逐屏学术脚注与「画面为示意」牌。准确性所需的限定照常保留。\n完整制作方法：\n${skillPackage?.prompt || skillText}\n蓝图：${JSON.stringify(blueprint)}\n可用图片：${JSON.stringify(assets)}\n视觉风格：${JSON.stringify(production.style || null)}\n修改意见：${feedback || '无'}${previousDir ? '\n本次为根据意见重新制作，可用 read_previous_scene 查看上一版对应段落。' : ''}`
-  const resumeInstructions = resume ? `\n本次从中断处继续。已保存的段落：${JSON.stringify(savedScenes)}；尚未保存的段落：${JSON.stringify([...ids].filter(id => !savedScenes.includes(id)))}。先补写缺失的段落，默认复用已保存段落，不逐段读回 HTML；只有为了衔接缺失段落或修正已发现的问题才调用 read_saved_scene。` : ''
-  const taskPrompt = `${prompt}${resumeInstructions}\n按蓝图与视觉规则创作 HTML/CSS/JS。\n本次执行顺序：tts_durations → ${resume ? '检查并补齐所有段落' : 'write_scene 写完全部段落'} → 每段只 preview 一张代表性画面 → submit 渲染、基础检查并提交。默认只审一轮；仅自动修复脚本或播放错误、主体缺失、严重遮挡，修复后只复查受影响段。实际脚本错误继续修到可运行，不因已经改过一轮就停止；静帧、装饰、排版偏好和审美建议只作提示，不拦交片、不自动返工。上述方法用于创作指导，不增加额外审稿轮次或用户确认。`
-  await measure('agent', () => runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt: taskPrompt, tools, onProgress, onTiming: timing }))
+  const prompt = `你是视频制作 Agent。制作方法 ${selectedPackage?.name || skillName} 已载入下文，不必重复调用 skill。保留方法中的讲述、设计与旁白对位标准；执行流程以本次网页制作契约为准：需求、蓝图和风格已确认，配音已生成；不重新选题、改旁白、提问或请求逐项确认，不执行本机脚本、不使用其他引擎。Skill 的历史个人偏好不代表本次用户要求。用工具为每个蓝图 beat 创作独立 HTML/CSS/JS，只定义局部画面和动效。write_scene 的 id 取该段工具编号，主舞台 #stage 使用 window.__PLAN__.stage.width 和 height。宿主提供字幕区与所选风格声明的顶部栏／片尾；模型只在 Main Stage 内创作，保留解释内容所需的标注，避免把字幕、章节栏或出处栏再画进场景。用 data-protected-text 注册必须可读的关键文字块，确保可见时完全位于舞台内且彼此不重叠。给该 beat 实际可见的镜头容器（可以是 #stage 本身）标记 data-shot-id，值是 window.__PLAN__.beatId 对应的蓝图 B 段号；标记应跟随实际画面，不能用隐藏占位元素。window.seek(t) 接收本段局部秒数，用 window.__PLAN__.words（配音后端有逐字时间时提供，offset 相对旁白起点）或 window.__PLAN__.subtitle 对齐局部动作。把旁白说到的关键变化当成动作的时序锚点；演示两轮结果时，标清各自的条件和结果，切到新一轮时同步更新对应标记与结果。旁白、段落顺序、时长、总时间轴、混音与交付由宿主控制。用 tts_durations 取实际配音时间，先 preview 检查画面和中途状态，必要时修正，再调用 submit 完成渲染、质检和提交；技术质检不代表已经完成事实核验或 OCR。图片通过 ../assets/文件名 或 ../现成素材/文件名引用；可用图片非空时优先复用；识别度不足、自带冲突 HUD 或无法演示动作时，按统一画风替换或重画。可用图片为空时直接用 HTML/SVG/CSS 创作画面。每个 beat 让观众看见蓝图中的具体对象发生什么变化，服从事实和已确认旁白。把出处保留在蓝图 facts 和宿主片尾，镜头内避免反复排免责声明、道德说教、逐屏学术脚注与「画面为示意」牌。准确性所需的限定照常保留。\n完整制作方法：\n${skillPackage?.prompt || skillText}\n蓝图：${JSON.stringify(blueprint)}\n可用图片：${JSON.stringify(assets)}\n视觉风格：${JSON.stringify(production.style || null)}\n修改意见：${feedback || '无'}${previousDir ? '\n本次为根据意见重新制作，可用 read_previous_scene 查看上一版对应段落。' : ''}`
+  const taskPrompt = `${prompt}${resume ? `\n${resumeInstructions(savedScenes)}` : ''}\n按蓝图与视觉规则创作 HTML/CSS/JS。\n本次执行顺序：tts_durations → ${resume ? '检查并补齐所有段落' : 'write_scene 写完全部段落'} → 每段只 preview 一张代表性画面 → submit 渲染、基础检查并提交。默认只审一轮；仅自动修复脚本或播放错误、主体缺失、严重遮挡，修复后只复查受影响段。实际脚本错误继续修到可运行，不因已经改过一轮就停止；静帧、装饰、排版偏好和审美建议只作提示，不拦交片、不自动返工。上述方法用于创作指导，不增加额外审稿轮次或用户确认。`
+  await measure('agent', () => runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt: taskPrompt, tools, onProgress, onTiming: timing,
+    retryInstruction: async () => `${resumeInstructions(await listSavedScenes())} 完成尚未做的画面预览检查后调用 submit；沿用已生成的配音。`,
+  }))
   if (!composed) throw new Error('视频 Agent 未完成成片')
   return { scenes, film }
 }

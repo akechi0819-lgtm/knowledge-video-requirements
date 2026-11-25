@@ -1,3 +1,4 @@
+// 已退役：生产流程与公开入口均不再调用独立素材 Agent。
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'

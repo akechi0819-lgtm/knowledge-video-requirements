@@ -1,6 +1,6 @@
 /* 讲界成片台：播放完整视频，并在有映射时提供时间跳转。 */
 window.BohackFilm = (() => {
-  const PHASES = ['编码素材', '生成画面', '配音与渲染', '自动质检', '制作完成']
+  const PHASES = ['生成画面', '配音与渲染', '自动质检', '制作完成']
 
   function qs(root, sel) { return root.querySelector(sel) }
 
@@ -48,6 +48,7 @@ window.BohackFilm = (() => {
       return mappedSections(p).length ? '成片已做好，可点击时间点跳转观看。' : '成片已做好，可以播放和下载。'
     }
     if (p.waitMessage) return p.waitMessage
+    if (p.status === 'running' && p.activity === '连接意外中断，正在自动重试续跑…') return p.activity
     const sections = p.sections || []
     const withScene = sections.filter(s => s.scene).length
     const withAudio = sections.filter(s => s.audio).length
@@ -75,9 +76,8 @@ window.BohackFilm = (() => {
 
   function renderPhases(rail, p) {
     if (!p || p.status === 'completed') { rail.hidden = true; rail.replaceChildren(); return }
-    const phases = p.mode === 'agent' ? ['编码素材', '启动视频制作 Agent', '生成配音', '编写画面', '预览画面', '配音与渲染', '自动质检', '制作完成'] : PHASES
-    const isAssetPhase = ['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)
-    const phase = isAssetPhase ? '编码素材' : p.phase === '正在制作视频' ? '编写画面' : p.phase
+    const phases = p.mode === 'agent' ? ['启动视频制作 Agent', '生成配音', '编写画面', '预览画面', '配音与渲染', '自动质检', '制作完成'] : PHASES
+    const phase = p.phase === '正在制作视频' ? '编写画面' : p.phase
     const idx = Math.max(0, phases.indexOf(phase))
     const failed = p.status === 'failed' || p.status === 'interrupted'
     rail.hidden = false

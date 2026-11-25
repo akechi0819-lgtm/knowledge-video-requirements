@@ -6,6 +6,7 @@ test('制作报错给出中文原因和下一步，不回显服务响应和本�
   const cases = [
     ['402: {\"error\":\"quota_circuit_broken\"}', '编写画面', /本周卡额度已用尽.*继续制作/],
     ['400: {"message":"fetch failed"}', '编写画面', /画面模型连接失败.*检查网络/],
+    ['画面模型连接中断，已自动重试 2 次。可点击「继续原制作」。原因：UND_ERR_SOCKET', '编写画面', /自动重试 2 次.*继续原制作.*UND_ERR_SOCKET/],
     ['terminated: other side closed (UND_ERR_SOCKET)', '编写画面', /画面模型连接失败.*检查网络/],
     ['会员开片请求: fetch failed (UND_ERR_CONNECT_TIMEOUT)', '编写画面', /画面模型响应超时.*重试/],
     ['HTTP 401: secret', '生成配音', /配音服务.*身份或权限.*检查/],

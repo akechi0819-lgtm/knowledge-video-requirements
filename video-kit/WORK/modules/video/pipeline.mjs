@@ -6,6 +6,7 @@
 // Any segment failure aborts before final.mp4 is written.
 
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -98,6 +99,30 @@ async function synthesizeNarration(bpPath, audioDir, voice, force) {
   return { payload, ms: Date.now() - t0, info };
 }
 
+// A failed submit leaves the successfully encoded clips and their observed
+// shot samples in staging. Publish metadata only after the renderer returns.
+async function renderManagedClip(plan, audioFile, outDir, cacheDir) {
+  const key = createHash('sha256')
+    .update(JSON.stringify(plan))
+    .update(fs.readFileSync(plan.scenePath))
+    .update(fs.readFileSync(audioFile))
+    .digest('hex');
+  const receipt = path.join(cacheDir, `${plan.id}.json`);
+  if (fs.existsSync(receipt)) {
+    const { key: savedKey, result } = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+    if (savedKey === key && fs.existsSync(result.clip) &&
+        result.samples.every(sample => fs.existsSync(path.join(outDir, 'stills', sample.still)))) {
+      return { ...result, reused: true, captureMs: 0, encodeMs: 0 };
+    }
+    fs.rmSync(receipt);
+  }
+  const result = await renderSegment(plan, audioFile, outDir);
+  const pending = receipt + '.tmp';
+  fs.writeFileSync(pending, JSON.stringify({ key, result }));
+  fs.renameSync(pending, receipt);
+  return result;
+}
+
 function fmtSec(x) { return Number(x.toFixed(3)); }
 
 // Preserve every measured narration and distribute extra frames before the
@@ -161,6 +186,11 @@ async function main() {
   const resume = args.prepared && process.env.VIDEO_RESUME === '1';
   if (args.prepared && !resume && fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`output directory is not empty: ${outDir}`);
   fs.mkdirSync(outDir, { recursive: true });
+  const cacheDir = timing && resume ? path.join(outDir, '.clip-cache') : null;
+  if (cacheDir) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.rmSync(path.join(outDir, 'final.mp4'), { force: true });
+  }
   const audioDir = path.join(outDir, 'audio');
   if (args.prepared && process.env.VIDEO_TTS_CACHE_DIR) seedTtsCache(bp.segments, process.env.VIDEO_TTS_CACHE_DIR, audioDir, { skipMissing: resume, preserveExisting: resume });
 
@@ -212,7 +242,8 @@ async function main() {
     const audioFile = byId.get(plan.id).audio;
     let r;
     try {
-      r = await renderSegment(plan, audioFile, outDir);
+      r = cacheDir ? await renderManagedClip(plan, audioFile, outDir, cacheDir)
+        : await renderSegment(plan, audioFile, outDir);
     } catch (e) {
       throw new Error(`segment ${plan.id} failed: ${e.message}\nABORTED before concat; no final.mp4 produced.`);
     }
@@ -221,7 +252,8 @@ async function main() {
       console.warn(`[WARN] segment ${plan.id} duration drift ${drift.toFixed(3)}s (measured ${r.measuredDuration} vs planned ${plan.duration})`);
     }
     rendered.push({ plan, ...r, totalMs: Date.now() - t0 });
-    console.log(`[ok  ] ${plan.id} measured=${r.measuredDuration}s capture=${r.captureMs}ms encode=${r.encodeMs}ms`);
+    console.log(r.reused ? `[reuse] ${plan.id} measured=${r.measuredDuration}s`
+      : `[ok  ] ${plan.id} measured=${r.measuredDuration}s capture=${r.captureMs}ms encode=${r.encodeMs}ms`);
   }
 
   // ---- concat ----
@@ -335,6 +367,11 @@ function writeRunLog(outDir, d) {
   lines.push(bp.targetDurationSeconds != null ? `- 目标时长：${bp.targetDurationSeconds}s；实际 ${mapping.final_duration_sec}s${mapping.target_exceeded ? '，完整旁白及必要留白超过目标，未截断音频' : ''}` : '- 时长来源：旁白 TTS 实测音频 + 段首/段尾留白');
   lines.push('');
   lines.push('## 各段耗时');
+  const reused = rendered.filter(r => r.reused).map(r => r.plan.id);
+  if (reused.length) {
+    const renderedIds = rendered.filter(r => !r.reused).map(r => r.plan.id);
+    lines.push('', `- 复用片段：${reused.join('、')}`, `- 本次渲染：${renderedIds.join('、') || '无'}`, '');
+  }
   lines.push('');
   lines.push('| 段落 | 场景 | 旁白音频(s) | 成片时长(s) | 帧数 | 截帧(ms) | 编码(ms) | 合计(ms) |');
   lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');

@@ -64,6 +64,28 @@ test('mounts video preset, isolates tools and returns a successful submit', asyn
   assert.equal(result.args.file, 'film.mp4')
 })
 
+test('concludes only a successful submit so the driver does not request another model step', async () => {
+  let attempts = 0, conclusions = 0, extraModelRequests = 0
+  const submit = {
+    name: 'submit', parameters: {},
+    execute: async () => ++attempts === 1 ? { ok: false, message: '画面需要修复' } : { ok: true },
+  }
+  const { ctx } = host(async registered => {
+    const tool = registered.get('submit')
+    let concluded = false
+    const exec = { concludeTurn() { concluded = true; conclusions++ } }
+    assert.equal((await tool.execute({}, exec)).ok, false)
+    assert.equal(concluded, false)
+    assert.equal((await tool.execute({}, exec)).ok, true)
+    if (!concluded) extraModelRequests++
+  })
+  const result = await runVideoAgent({ ctx, sessionId: 'submit-end', cwd: '/tmp', prompt: 'make', tools: [submit] })
+  assert.equal(result.ok, true)
+  assert.equal(attempts, 2)
+  assert.equal(conclusions, 1)
+  assert.equal(extraModelRequests, 0)
+})
+
 test('pins the production session title before sending the first prompt', async () => {
   let title
   const { ctx } = host(async registered => {
@@ -156,6 +178,105 @@ test('localizes a temporary upstream model failure without exposing the response
   await assert.rejects(runVideoAgent({ ctx, sessionId: 'test', cwd: '/tmp', prompt: 'make', tools }), {
     message: '画面模型服务暂时不可用（503），制作已暂停。',
   })
+})
+
+function emitStreamError(listeners, error) {
+  listeners.get('session/event')({ id: 'retry-job' }, { type: 'turn/end', data: { reason: { kind: 'error', error } } })
+}
+
+for (const error of [
+  { code: 'UND_ERR_SOCKET', message: 'terminated: other side closed' },
+  { code: 'PI_AI_ERROR', message: 'pi-ai stream idle timeout after 300000ms' },
+]) {
+  test(`retries ${error.message} on the same video session after idle`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const timing = [], progress = []
+    let turns = 0, ready = false
+    const { ctx, state } = host(async (registered, listeners) => {
+      if (++turns === 1) emitStreamError(listeners, error)
+      else {
+        assert.equal(ready, true)
+        await registered.get('submit').execute({ file: 'finished.mp4' })
+      }
+    }, async () => { ready = true })
+    const result = runVideoAgent({
+      ctx, sessionId: 'retry-job', cwd: '/tmp/film', prompt: 'make', tools,
+      retryInstruction: async () => 'resume saved scenes',
+      onTiming: event => timing.push(event), onProgress: event => progress.push(event),
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    t.mock.timers.tick(1999)
+    assert.equal(turns, 1)
+    t.mock.timers.tick(1)
+    assert.equal((await result).args.file, 'finished.mp4')
+    assert.equal(turns, 2)
+    assert.equal(state.options.sessionId, 'retry-job')
+    assert.equal(state.message.content[0].text, 'resume saved scenes')
+    const retries = timing.filter(event => event.type === 'transient-retry')
+    assert.equal(retries.length, 1)
+    assert.equal(retries[0].attempt, 1)
+    assert.ok(error.message.endsWith(retries[0].error) || retries[0].error.includes(error.code))
+    assert.ok(progress.some(event => event.type === 'activity' && /自动重试续跑/.test(event.text)))
+  })
+}
+
+for (const error of [
+  { message: 'HTTP 401: terminated' },
+  { message: 'HTTP 402: fetch failed' },
+  { code: 'quota_circuit_broken', message: 'fetch failed' },
+  { code: 'TOOL_VALIDATION_FAILED', message: 'invalid tool argument: terminated' },
+]) {
+  test(`fails immediately without a retry for ${error.code || error.message}`, async () => {
+    const { ctx } = host(async (_registered, listeners) => emitStreamError(listeners, error), () => assert.fail('must not await idle to retry'))
+    await assert.rejects(runVideoAgent({
+      ctx, sessionId: 'retry-job', cwd: '/tmp', prompt: 'make', tools,
+      onTiming: event => assert.notEqual(event.type, 'transient-retry'),
+    }), { message: error.message })
+  })
+}
+
+test('stops after two transient retries and surfaces the disconnect summary', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let turns = 0
+  const retries = []
+  const { ctx } = host(async (_registered, listeners) => {
+    turns++
+    emitStreamError(listeners, { code: 'ECONNRESET', message: 'socket hang up' })
+  }, async () => {})
+  const result = runVideoAgent({
+    ctx, sessionId: 'retry-job', cwd: '/tmp', prompt: 'make', tools,
+    onTiming: event => { if (event.type === 'transient-retry') retries.push(event.attempt) },
+  })
+  const rejected = assert.rejects(result, /已自动重试 2 次.*继续原制作.*socket hang up.*ECONNRESET/)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(2000)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(5000)
+  await rejected
+  assert.equal(turns, 3)
+  assert.deepEqual(retries, [1, 2])
+})
+
+test('does not start a retry after the total production budget expires during backoff', async t => {
+  const prior = process.env.BOHACK_VIDEO_BUDGET_MS
+  process.env.BOHACK_VIDEO_BUDGET_MS = '1000'
+  t.after(() => {
+    if (prior === undefined) delete process.env.BOHACK_VIDEO_BUDGET_MS
+    else process.env.BOHACK_VIDEO_BUDGET_MS = prior
+  })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let turns = 0
+  const { ctx } = host(async (_registered, listeners) => {
+    turns++
+    emitStreamError(listeners, { message: 'fetch failed' })
+  }, async () => {})
+  const result = runVideoAgent({ ctx, sessionId: 'retry-job', cwd: '/tmp', prompt: 'make', tools })
+  const rejected = assert.rejects(result, /达到总时间预算/)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(1000)
+  await rejected
+  t.mock.timers.tick(5000)
+  assert.equal(turns, 1)
 })
 
 test('keeps a session alive beyond ten minutes while tools make progress', async t => {

@@ -314,9 +314,10 @@ test('a new production reuses only complete scenes with matching inputs and asse
     const markdown = renderBlueprint({topic:'潮汐',userRequirements:[],sections,assets,meta:{}})
     await service.generate({}, {produce:async () => ({markdown,engine:'test'})})
     await service.confirm({all:true}); await service.finalize()
-    const source = path.join(root,'asset.svg')
-    await writeFile(source,'first')
-    service.generatedAssets.prepare = async ({ planned }) => ({ pool: planned.map(asset => ({...asset, path:source})) })
+    const source = path.join(workspace,'sources/boat.svg')
+    await writeFile(source,'<svg>first</svg>')
+    await writeFile(path.join(workspace, 'assets.jsonl'), JSON.stringify({ id:'boat', name:'船', type:'image', path:'sources/boat.svg', side:'videomake', trust:'vetted' }) + '\n')
+    await assignAssetPlan(workspace, 1, parseBlueprint(await readFile(path.join(workspace, 'outbox/蓝图_v1.md'), 'utf8')), 'boat', ['B01'])
     async function complete() {
       let state = await service.production.start()
       for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
@@ -325,7 +326,7 @@ test('a new production reuses only complete scenes with matching inputs and asse
     const first = await complete(), second = await complete()
     assert.notEqual(first.id,second.id); assert.equal(second.reusedScenesFrom,first.id)
     assert.equal(await readFile(path.join(root,'calls'),'utf8'),'x')
-    await writeFile(source,'changed')
+    await writeFile(source,'<svg>changed</svg>')
     const changed = await complete()
     assert.equal(changed.reusedScenesFrom,undefined)
     assert.equal(await readFile(path.join(root,'calls'),'utf8'),'xx')
@@ -342,7 +343,7 @@ test('a new production reuses only complete scenes with matching inputs and asse
   }
 })
 
-test('无预设的可执行 Skill 切换到 Agent，活动只在当前制作阶段返回', async t => {
+test('无上传素材的已安装 Skill 跳过编码素材并提交成片', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-direct-skill-'))
   const previousWorkspace = process.env.JIANGJIE_DESKTOP_WORKSPACE
   process.env.JIANGJIE_DESKTOP_WORKSPACE = path.join(root, 'runtime-workspace')
@@ -361,24 +362,42 @@ test('无预设的可执行 Skill 切换到 Agent，活动只在当前制作阶�
     await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({ paths: {
       python: process.execPath, ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true', edge: '/usr/bin/true', playwright,
     }, tts: { voice: 'fake', rate: '+0%' }, video: { fps: 30 }, timing: { leadIn: 0, tailPad: 0 } })}`)
-    await writeFile(path.join(modules, 'pipeline.mjs'), 'export const preparedFrames = ds => ds.map(d => d * 30); export function seedTtsCache() {}')
+    await writeFile(path.join(modules, 'pipeline.mjs'), `
+      import { mkdir, writeFile } from 'node:fs/promises'
+      export const preparedFrames = ds => ds.map(d => d * 30)
+      export function seedTtsCache() {}
+      const index = process.argv.indexOf('--out')
+      if (index > 0) {
+        const out = process.argv[index + 1]
+        await mkdir(out)
+        await writeFile(out + '/final.mp4', 'fixture film')
+        await writeFile(out + '/mapping.json', '{}')
+      }
+    `)
+    await writeFile(path.join(modules, 'verify.mjs'), `
+      import { writeFile } from 'node:fs/promises'
+      import path from 'node:path'
+      await writeFile(path.join(path.dirname(process.argv[2]), 'verify-report.json'), '{"pass":true,"hardErrors":[]}')
+    `)
     await writeFile(path.join(modules, 'isolated-page.mjs'), 'export function installSceneRoutes() {}')
     await writeFile(path.join(modules, 'tts_driver.py'), `const fs = require('node:fs'); const input = JSON.parse(fs.readFileSync(process.argv[2])); fs.writeFileSync(process.argv[7], JSON.stringify({ segments: input.segments.map(s => ({ id: s.id, duration: 1 })) }));`)
     await writeFile(path.join(skill, 'SKILL.md'), '---\nname: new-skill\ndescription: 测试风格\n---\n原版流程')
     const stateFile = path.join(root, 'production/status.json')
-    let assetState, videoState, diskDuringAsset, videoGuard
-    const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async ({ setup }) => {
+    let videoState, videoGuard, afterWrite, prepareCalls = 0
+    const sessions = []
+    const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async ({ setup, sessionId }) => {
+      sessions.push(sessionId)
       const tools = new Map(), listeners = new Map()
       await setup({ tools: { register: tool => tools.set(tool.name, tool), guard: guard => { videoGuard = guard }, view: () => ({ restrictableNames: [] }), restrict() {} }, on: (name, listener) => listeners.set(name, listener) })
-      return { agent: { followup: async () => {
-        if (tools.has('submit_assets')) {
-          assetState = await service.production.status()
-          diskDuringAsset = JSON.parse(await readFile(stateFile, 'utf8'))
-          await tools.get('submit_assets').execute({ manifest: { version: 1, producer: 'code-agent', styleId: 'repo-skill:new-skill', assets: [] } })
-        } else {
-          videoState = await service.production.status()
-          throw new Error('测试停止制作')
+      return { agent: { followup: async ({ content }) => {
+        videoState = await service.production.status()
+        assert.match(content[0].text, /可用图片：\[\]/)
+        assert.match(content[0].text, /直接用 HTML\/SVG\/CSS 创作画面/)
+        for (const { id } of videoState.sections) {
+          await tools.get('write_scene').execute({ id, html: '<div id="stage"></div>' })
         }
+        afterWrite = await service.production.status()
+        assert.equal((await tools.get('submit').execute({})).ok, true)
       } } }
     } } }
     const service = createService(ctx, { productionMode:'structured', workspace:root, styleLibraryRoot:root, videoKitDir:kit })
@@ -387,26 +406,24 @@ test('无预设的可执行 Skill 切换到 Agent，活动只在当前制作阶�
     await writeFile(path.join(root, 'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', userRequirements:[], sections:[section, { ...section, id:'B02', title:'结尾' }], assets:[], meta:{'版本':'v1'} }))
     await service.confirm({ all:true }); await service.finalize()
     await service.selectVisualStyle({ id:'repo-skill:new-skill', version:1 })
-    let input
-    const prepare = service.generatedAssets.prepare
-    service.generatedAssets.prepare = async options => { input = options; return prepare(options) }
-    const started = await service.production.start({ mode:'structured' })
+    service.generatedAssets.prepare = async () => { prepareCalls++; throw new Error('不应生成编码素材') }
+    const started = await service.production.start({ mode:'agent' })
     assert.equal(started.mode, 'agent')
     let state
     for (let i = 0; i < 100; i++) { state = await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
-    assert.equal(state.status, 'failed')
-    assert.match(JSON.parse(await readFile(stateFile, 'utf8')).error, /测试停止制作/)
-    assert.equal(assetState.activity, '正在加载风格规范并规划素材…')
-    assert.equal(diskDuringAsset.phase, assetState.phase)
-    assert.equal(Object.hasOwn(diskDuringAsset, 'activity'), false)
+    assert.equal(state.status, 'completed', JSON.parse(await readFile(stateFile, 'utf8')).error)
+    assert.equal(state.phase, '制作完成')
+    assert.equal(state.artifacts.video, true)
+    assert.equal(afterWrite.phase, '编写画面')
     assert.equal(videoState.phase, '正在制作视频')
     assert.equal(Object.hasOwn(videoState, 'activity'), false)
     assert.match(videoGuard({ name: 'bash' }), /未允许使用/)
     assert.equal(Object.hasOwn(state, 'activity'), false)
-    assert.equal(input.auto, true)
-    assert.deepEqual(input.planned, [])
-    assert.equal(typeof input.run, 'function')
-    assert.equal(input.doc.style.id, 'repo-skill:new-skill')
+    assert.equal(prepareCalls, 0)
+    assert.equal(sessions.length, 1)
+    assert.match(sessions[0], /^bohack-video-/)
+    await assert.rejects(access(path.join(root, 'outbox/素材_v1')), { code:'ENOENT' })
+    assert.equal(state.assetBuild, undefined)
   } finally { await rm(root, { recursive:true, force:true }) }
 })
 
@@ -686,7 +703,7 @@ test('chat diagnoses and resumes failed work without rerunning completed work', 
   }
 })
 
-test('chat regenerates only the named asset and rejects uncertain requests', async () => {
+test('chat reports named asset regeneration is retired and rejects uncertain requests', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-asset-retry-'))
   try {
     const service = createService({}, {productionMode:"structured", workspace:root})
@@ -696,28 +713,30 @@ test('chat regenerates only the named asset and rejects uncertain requests', asy
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({topic:'测试',userRequirements:[],sections,assets,meta:{}}))
     await service.finalize({all:true,version:1})
     const engine = { chatTurn: async () => { throw new Error('不应调用模型') } }
-    const calls = []
-    service.production.start = async args => { calls.push(args); return {status:'running'} }
     const result = await service.chat({text:'重新生成硝石晶体，然后继续制作'},engine)
-    assert.equal(result.production.status,'running')
-    assert.deepEqual(calls,[{regenerateAssetId:'A01'}])
+    assert.equal(result.production, null)
+    assert.match(result.reply, /素材重做未启动：当前版本已取消独立编码素材阶段.*成片返工意见.*资料库替换上传素材/)
+    assert.equal(await service.production.status(), null)
     for (const text of ['重新生成不存在素材，然后继续制作','重新生成硝石晶体吗？','不要重新生成硝石晶体']) {
       const denied = await service.chat({text},engine)
       assert.equal(denied.production,null,text)
-      assert.equal(calls.length,1,text)
+      assert.equal(denied.productionError, null, text)
     }
     for (const text of ['重新生成蓝图', '重新生成需求单', '重做这一段']) {
       const normal = await service.chat({text}, {chatTurn: async () => ({reply:'交给对话处理'})})
       assert.equal(normal.reply, '交给对话处理', text)
-      assert.equal(calls.length, 1)
+      assert.equal(await service.production.status(), null)
     }
+    const calls = []
+    service.production.start = async args => { calls.push(args); return {status:'running'} }
     const missing = await service.chat({text:'素材丢了，重新生成'},engine)
     assert.equal(missing.production.status,'running')
-    assert.equal(calls.length,2)
+    assert.equal(calls.length,1)
+    assert.equal(calls[0].regenerateAssetId, undefined)
   } finally { await rm(root,{recursive:true,force:true}) }
 })
 
-test('声明素材先经素材阶段制作并交接给成片', async () => {
+test('未绑定的声明素材直接进入制作，不生成编码素材', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'production-declared-'))
   const old = { ...process.env }
   try {
@@ -734,22 +753,19 @@ test('声明素材先经素材阶段制作并交接给成片', async () => {
     const assets = [{ id:'box', name:'字符串盒子', type:'prop', description:'std::string 对象的横向盒子示意', sections:['B01'] }]
     await writeFile(path.join(root,'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', core:'', audience:'', order:'', userRequirements:[], sections:[section('B01'),section('B02')], assets, notes:'', meta:{'版本':'v1'} }))
     await service.confirm({all:true}); await service.finalize()
-    const source = path.join(root, 'fixture.svg')
-    await writeFile(source, '<svg/>')
-    let plannedAssets
-    service.generatedAssets.prepare = async ({ planned }) => { plannedAssets = planned; return { pool: planned.map(asset => ({ ...asset, path: source })) } }
-    // 素材阶段完成后自动继续成片。
+    let calls = 0
+    service.generatedAssets.prepare = async () => { calls++; throw new Error('不应生成素材') }
     assert.equal((await service.production.start()).status, 'running')
     let state
     for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
     assert.equal(state.status, 'completed', state.error)
     const bundle = path.join(root, 'production', state.id)
     const exported = JSON.parse(await readFile(path.join(bundle, 'production.json')))
-    assert.deepEqual(plannedAssets.map(a => a.id), ['box'])
-    const manifest = JSON.parse(await readFile(path.join(bundle, 'assets/manifest.json'), 'utf8'))
-    assert.deepEqual(manifest.assets.map(a => a.id), ['box'])
-    assert.equal(exported.assetManifest, 'assets/manifest.json')
-    assert.equal(exported.sections[0].assets[0].image, manifest.assets[0].files[0].path)
+    assert.equal(calls, 0)
+    assert.equal(exported.sections[0].assets, undefined)
+    await assert.rejects(access(path.join(bundle, 'assets/manifest.json')), { code:'ENOENT' })
+    await assert.rejects(access(path.join(root, 'outbox/素材_v1')), { code:'ENOENT' })
+    await assert.rejects(service.production.start({ regenerateAssetId:'box' }), /已取消独立编码素材阶段/)
   } finally {
     for (const key of ['SCENE_API_KEY','SCENE_ENDPOINT','SCENE_MODEL','VIDEO_VOICE']) { if (old[key] === undefined) delete process.env[key]; else process.env[key] = old[key] }
     await rm(root, { recursive:true, force:true })
@@ -784,8 +800,8 @@ test('only vetted production images bind and fulfilled declarations target their
     const blueprint = parseBlueprint(await readFile(path.join(root,'outbox/蓝图_v1.md'),'utf8'))
     await assignAssetPlan(root,1,blueprint,'old',['B01'])
     await assignAssetPlan(root,1,blueprint,'moon',['B02'])
-    let plannedAssets
-    service.generatedAssets.prepare = async ({ planned }) => { plannedAssets = planned; return { pool: planned.map(asset => ({ ...asset, path: path.join(root, 'sources/star.png') })) } }
+    let calls = 0
+    service.generatedAssets.prepare = async () => { calls++; throw new Error('不应生成素材') }
     let state=await service.production.start(); for(let i=0;i<100;i++){state=await service.production.status();if(state.status!=='running')break;await sleep(20)}
     assert.equal(state.status,'completed',state.error)
     const dir=path.join(root,'production',state.id), doc=JSON.parse(await readFile(path.join(dir,'production.json')))
@@ -797,11 +813,65 @@ test('only vetted production images bind and fulfilled declarations target their
     assert.equal(doc.sections[2].image,undefined)
     const manifest=await readFile(path.join(dir,'现成素材','素材清单.md'),'utf8')
     assert.doesNotMatch(manifest,/星星/)
-    assert.deepEqual(plannedAssets.map(a => a.id), ['A02'])
-    const generated = JSON.parse(await readFile(path.join(dir, 'assets/manifest.json'), 'utf8'))
-    assert.deepEqual(generated.assets.map(a => a.id), ['A02'])
-    assert.equal(doc.sections[2].assets[0].image, generated.assets[0].files[0].path)
+    assert.equal(calls, 0)
+    assert.equal(doc.sections[2].assets, undefined)
+    await assert.rejects(access(path.join(dir, 'assets/manifest.json')), { code:'ENOENT' })
+    assert.deepEqual(await readFile(path.join(dir, '现成素材/月亮.png')), png)
+    assert.deepEqual(await readFile(path.join(dir, '现成素材/旧图.png')), png)
   } finally { for(const key of ['SCENE_ENDPOINT','SCENE_MODEL','SCENE_MODE']) {if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key]} await rm(root,{recursive:true,force:true}) }
+})
+
+test('用户上传素材由生产流程传入视频 Agent 的可用图片清单', async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'production-agent-upload-'))
+  try {
+    const kit = path.join(workspace, 'kit'), modules = path.join(kit, 'WORK/modules/video')
+    await mkdir(modules, { recursive:true })
+    await writeFile(path.join(modules, 'playwright.cjs'), 'module.exports = { chromium: {} }')
+    await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({ paths: {
+      python: process.execPath, ffprobe:'fake', playwright:path.join(modules, 'playwright.cjs'),
+    }, tts:{ voice:'fake', rate:'1' }, video:{ fps:30 }, timing:{ leadIn:0, tailPad:0 } })}`)
+    await writeFile(path.join(modules, 'pipeline.mjs'), 'export const preparedFrames = ds => ds.map(d => d * 30); export function seedTtsCache() {}')
+    await writeFile(path.join(modules, 'isolated-page.mjs'), 'export function installSceneRoutes() {}')
+    await writeFile(path.join(modules, 'tts_driver.py'), `const fs = require('node:fs'); const input = JSON.parse(fs.readFileSync(process.argv[2])); fs.writeFileSync(process.argv[7], JSON.stringify({segments:input.segments.map(s => ({id:s.id,duration:1}))}));`)
+    let prompt, sessions = []
+    const ctx = { agentPresets:{ mount:async () => {} }, agents:{ create:async ({ setup, sessionId }) => {
+      sessions.push(sessionId)
+      await setup({ tools:{register(){}, guard(){}, view:() => ({restrictableNames:[]}), restrict(){}}, on(){} })
+      return { agent:{ followup:async message => { prompt = message.content[0].text; throw new Error('测试停止制作') }, cancel(){} } }
+    } } }
+    const service = createService(ctx, { workspace, videoKitDir:kit })
+    await service._internal.ensureDirs()
+    const sections = ['B01', 'B02'].map(id => ({id,title:id,intent:'讲解',facts:[],visual:'画面',narration:'旁白'}))
+    const assets = [{id:'A01',name:'人物',type:'character',description:'人物图片',sections:['B01']}]
+    await writeFile(path.join(workspace, 'outbox/蓝图_v1.md'), renderBlueprint({topic:'测试',userRequirements:[],sections,assets,meta:{'版本':'v1'}}))
+    await service.confirm({all:true}); await service.finalize()
+    const image = Buffer.from('89504e470d0a1a0a00000000', 'hex')
+    await writeFile(path.join(workspace, 'sources/portrait.png'), image)
+    await writeFile(path.join(workspace, 'assets.jsonl'), JSON.stringify({id:'portrait',name:'人物.png',type:'image',path:'sources/portrait.png',side:'videomake',trust:'vetted'}) + '\n')
+    const blueprint = parseBlueprint(await readFile(path.join(workspace, 'outbox/蓝图_v1.md'), 'utf8'))
+    await assignAssetPlan(workspace, 1, blueprint, 'portrait', ['B01'])
+    let generatedCalls = 0
+    service.generatedAssets.prepare = async () => { generatedCalls++; throw new Error('不应生成素材') }
+    let state = await service.production.start({mode:'agent'})
+    for (let i=0; i<100; i++) { state=await service.production.status(); if (state.status !== 'running') break; await sleep(20) }
+    assert.equal(state.status, 'failed')
+    assert.ok(prompt)
+    const dir = path.join(workspace, 'production', state.id)
+    const production = JSON.parse(await readFile(path.join(dir, 'production.json')))
+    const bound = production.sections[0].assets[0].image
+    assert.match(bound, /^assets\/.*\.png$/)
+    assert.deepEqual(await readFile(path.join(dir, bound)), image)
+    assert.deepEqual(await readFile(path.join(dir, '现成素材/人物.png')), image)
+    assert.match(await readFile(path.join(dir, '现成素材/素材清单.md'), 'utf8'), /人物.png/)
+    const manifest = JSON.parse(await readFile(path.join(dir, 'asset-manifest.json')))
+    assert.ok(manifest.assets.includes(bound))
+    assert.ok(manifest.assets.includes('现成素材/人物.png'))
+    assert.ok(prompt.includes('可用图片：' + JSON.stringify(manifest.assets)))
+    assert.equal(generatedCalls, 0)
+    assert.equal(sessions.length, 1)
+    assert.match(sessions[0], /^bohack-video-/)
+    await assert.rejects(access(path.join(workspace, 'outbox/素材_v1')), {code:'ENOENT'})
+  } finally { await rm(workspace, {recursive:true, force:true}) }
 })
 
 test('completed jobs regenerate missing source archive atomically without changing status', async () => {

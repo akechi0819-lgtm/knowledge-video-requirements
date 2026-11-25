@@ -1,9 +1,13 @@
 export const receiptMessage = '成片已保存，平台授权回执待处理，请稍后点「补交完成回执」。'
 
+export const assetStageRetired = '当前版本已取消独立编码素材阶段，请直接提出成片返工意见，或在资料库替换上传素材。'
+
 export function productionErrorMessage(error, phase) {
   if (!error) return '制作遇到未识别的问题，请稍后重试。若反复出现，请联系支持。'
   const raw = String(error.message || error)
   if (error.code === 'quota_circuit_broken' || /quota_circuit_broken|本周卡额度已用尽|HTTP\s+402\b|\b402\s*[:：]/i.test(raw)) return '本周卡额度已用尽，购买新周卡后点击继续制作。'
+  if (/^画面模型连接中断，已自动重试 \d+ 次。可点击「继续原制作」。原因：/.test(raw)) return raw
+  if (raw === assetStageRetired) return raw
   if (raw.startsWith('成片已保存，平台授权回执待处理')) return receiptMessage
   if (['成片文件不存在。', '成片文件为空或无效。', '成片不是有效视频', '成片没有可解码的视频帧。', '成片画面全黑。'].includes(raw)) return raw
   if (raw.startsWith('成片无法解码或检查：')) return '成片无法解码，请继续制作以重新渲染。'

@@ -332,7 +332,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       }
       let out
       switch (pathname) {
-        case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.production.generateAsset({ ...await generatedContext(body.version), id: body.id, feedback: body.feedback })); break
+        case '/bohack/api/generated-assets-generate': throw new Error('当前版本已取消独立编码素材阶段，请在资料库上传素材。')
         case '/bohack/api/asset-implement': out = await service.implementAsset(body); break
         case '/bohack/api/preview': {
           const current = await service.status()

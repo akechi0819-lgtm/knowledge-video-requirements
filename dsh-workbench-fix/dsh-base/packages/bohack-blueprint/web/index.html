@@ -848,7 +848,7 @@ function renderAssets(list){
       </div>
       <div class="ops">
         ${a.path&&a.path.startsWith('sources/')?`<button class="sm" data-open="${esc(a.id)}">打开</button><button class="sm" data-reveal="${esc(a.id)}">所在文件夹</button>`:''}
-        ${needsFile?`<button class="sm" data-upload-declaration="${esc(a.id)}">上传图片</button>${state.status?.finalized?.version===state.status?.currentVersion && state.status?.stage==='finalized' && (state.status.blueprintAssets||[]).some(item=>item.ledgerId===a.id)?'':`<button class="sm" data-implement-declaration="${esc(a.id)}">用小工具生成素材图</button>`}`:''}
+        ${needsFile?`<button class="sm" data-upload-declaration="${esc(a.id)}">上传图片</button>`:''}
         ${a.path&&a.trust!=='vetted'?`<button class="sm" data-approve="${esc(a.id)}">确认可用</button>`:''}
         <button class="sm" data-del="${esc(a.id)}">删除</button>
       </div>
@@ -871,11 +871,6 @@ function renderAssets(list){
         log('图片已补充，请确认后使用','s'); await loadAssets()
       }catch(e){log('补充图片失败：'+e.message,'e'); b.disabled=false; await loadAssets()}
     }; input.click()
-  }))
-  box.querySelectorAll('[data-implement-declaration]').forEach(b=>b.addEventListener('click',async()=>{
-    const thread=state.threadId; b.disabled=true
-    try{await api('/bohack/api/asset-implement',{id:b.dataset.implementDeclaration},thread); log('素材已生成，请确认后使用','s'); await loadAssets()}
-    catch(e){log('生成失败：'+e.message,'e'); b.disabled=false}
   }))
   box.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click',async()=>{
     try{ await api('/bohack/api/asset-open',{id:b.dataset.open,mode:'open'}); log('已用系统默认方式打开文件','s') }
@@ -1131,7 +1126,6 @@ async function refresh(){
   }catch(e){ console.warn('状态读取失败：',e.message) }
   finally{ scheduleRefresh() }
 }
-const assetRequests=new Set()
 let filmRender=0
 let productionRequest=null, productionFailure=null
 function styleItems(list){
@@ -1189,7 +1183,6 @@ function productionLabel(s){
 function productionReason(s){
   if(s.production?.status==='running') return s.production.phase || '制作中…'
   if(productionRequest===state.threadId) return '正在启动制作…'
-  if(assetRequests.has(JSON.stringify([state.threadId,s.currentVersion]))) return '正在处理动画素材，请稍候。'
   if(state.busy) return '正在处理其他操作，请稍候。'
   if(s.memberProduction?.closing==='abandon') return '请先重试放弃本片授权。'
   if(pendingReceipt(s) || resumableProduction(s)) return ''
@@ -1222,7 +1215,7 @@ function updateProductionAction(s){
   btn.disabled=Boolean(reason)
   const abandon=$('#btnAbandonProduction')
   abandon.hidden=!s.memberProduction || pendingReceipt(s) || s.production?.status==='running'
-  abandon.disabled=state.busy || productionRequest===state.threadId || assetRequests.has(JSON.stringify([state.threadId,s.currentVersion]))
+  abandon.disabled=state.busy || productionRequest===state.threadId
   abandon.textContent=s.memberProduction?.closing==='abandon' ? '重试放弃本片授权' : '放弃本片授权'
   const failed=s.production && (s.production.status==='failed' || s.production.status==='interrupted')
   const error=productionFailure?.thread===state.threadId && productionFailure.version===s.currentVersion && !reason ? productionFailure.message : ''
@@ -1230,7 +1223,6 @@ function updateProductionAction(s){
 }
 async function renderFilmAssets(s, ready, generation){
   const box=$('#filmAssets'), thread=state.threadId, version=s.currentVersion
-  const key=JSON.stringify([thread,version])
   if(!ready){ box.replaceChildren(); return }
   const current=()=>generation===filmRender && state.threadId===thread
   try {
@@ -1239,39 +1231,13 @@ async function renderFilmAssets(s, ready, generation){
     const items=new Map((data.assets||[]).map(a=>[a.id,a]))
     for(const a of s.production?.assets||[]) items.set(a.id,{...items.get(a.id),...a})
     if(!items.size){ box.replaceChildren(); return }
-    const busy=assetRequests.has(key) || state.busy || s.production?.status==='running' || productionRequest===thread
-    const canRevise=s.production?.status==='completed' && !pendingReceipt(s) && s.production.version==='v'+version && (s.production.styleId||null)===(s.visualStyle?.style?.id||null)
-    const drafts=box.dataset.assetThread===thread ? new Map([...box.querySelectorAll('[data-asset-feedback]')].map(el=>[el.dataset.assetFeedback,el.value])) : new Map()
-    box.dataset.assetThread=thread
     box.innerHTML='<h3>本片素材</h3>'+[...items.values()].map(a=>{
       const previews=a.files?.length ? a.files : a.variants?.length ? a.variants : a.previewUrl ? [{previewUrl:a.previewUrl}] : []
       return `<div class="leaf"><b>${esc(a.name || a.id)}</b>
         <div style="display:flex;gap:12px;flex-wrap:wrap">${previews.filter(f=>f.previewUrl).map(f=>`<figure><img src="${esc(f.previewUrl)}" alt="${esc(a.name || a.id)}" style="width:120px;height:90px;object-fit:contain;background:var(--surface);border-radius:10px"><figcaption>${esc(f.variant || '')}</figcaption></figure>`).join('')}</div>
         ${a.sourceUrl ? `<a href="${esc(a.sourceUrl)}" download>下载素材源文件</a>` : ''}
-        ${canRevise && a.revisable!==false && (s.production.assets||[]).some(item=>item.id===a.id) ? `<label>素材修改意见<textarea data-asset-feedback="${esc(a.id)}" placeholder="例如：给人物换一顶红帽子"></textarea></label><button class="sm ghost" data-revise-asset="${esc(a.id)}">修改此素材并重新制作</button>` : ''}</div>`
+        </div>`
     }).join('')+'<p role="status" class="hint"></p>'
-    for(const input of box.querySelectorAll('[data-asset-feedback]')) input.value=drafts.get(input.dataset.assetFeedback) || ''
-    for(const btn of box.querySelectorAll('[data-revise-asset]')){
-      btn.disabled=busy
-      btn.onclick=async()=>{
-        const id=btn.dataset.reviseAsset
-        const feedback=[...box.querySelectorAll('[data-asset-feedback]')].find(el=>el.dataset.assetFeedback===id).value.trim()
-        if(!feedback){ box.querySelector('[role=status]').textContent='请先填写素材修改意见。'; return }
-        assetRequests.add(key); productionRequest=thread; productionFailure=null
-        for(const b of box.querySelectorAll('button')) b.disabled=true
-        updateProductionAction(s)
-        box.querySelector('[role=status]').textContent='正在启动素材修改和成片制作…'
-        try {
-          const result=await api('/bohack/api/production',{mode:s.production.mode,regenerateAssetId:id,assetFeedback:feedback},thread)
-          if(result.membershipError) throw new Error(result.membershipError)
-        } catch(e){ productionFailure={thread,version,message:e.message} }
-        finally {
-          assetRequests.delete(key)
-          if(productionRequest===thread) productionRequest=null
-          if(thread===state.threadId){ await refresh(); updateProductionAction(state.status) }
-        }
-      }
-    }
   } catch(e){
     if(current()) box.textContent='无法加载素材：'+e.message
   }

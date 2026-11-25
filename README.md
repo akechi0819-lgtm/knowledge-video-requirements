@@ -43,7 +43,7 @@ app="$(./scripts/build-desktop.sh)"
 
 任务目录的 `timings.json` 记录段落时间轴、旁白起止及配音后端提供的逐字边界。宿主在各段 25% 和 75% 的画面中读取可见镜头标识，生成 `film/mapping.json`，并写出 `film/verify-report.json` 与 `film/stills/index.html`。映射缺失、段落错位、视频解码失败或出现全黑帧时，成片停留在验收目录。运行用时和命令错误摘要分别见 `timings.jsonl` 和 `commands.jsonl`。
 
-编码素材阶段仍使用 DSH 原生文件工具与后台作业。受管 HOME 位于开发态 `.runtime/skill-runtime` 或桌面数据目录下的 `skill-runtime`。制作 Agent 默认总预算 60 分钟、空闲预算 12 分钟，可分别用 `BOHACK_VIDEO_BUDGET_MS` 和 `BOHACK_VIDEO_IDLE_MS` 调整。暂停后复用当前任务已保存的局部场景与配音缓存。
+定稿后直接进入配音与局部 HTML 画面制作。资料库中已确认的成片图片随片放入 `现成素材/`，显式关联蓝图段落的图片同时绑定到相应段落。制作 Agent 默认总预算 60 分钟、空闲预算 12 分钟，可分别用 `BOHACK_VIDEO_BUDGET_MS` 和 `BOHACK_VIDEO_IDLE_MS` 调整。模型流瞬断时，原会话默认自动重试两次，次数可用 `BOHACK_VIDEO_TRANSIENT_RETRIES` 调整。自动重试和手动续跑均沿用当前任务已保存的局部场景与配音缓存。
 
 首次安装风格 Skill 时，在仓库根目录运行 `git submodule update --init`。
 

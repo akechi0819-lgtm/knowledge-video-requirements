@@ -23,17 +23,19 @@ test('资料页展示当前蓝图的段落并保存或取消关联', async()=>{
   assert.equal(JSON.stringify(call.body.sections),'[]')
 })
 
-test('定稿后的已绑定声明只保留上传入口',()=>{
+test('声明素材在定稿前后均保留图片上传入口',()=>{
   const box={innerHTML:'',querySelectorAll:()=>[]}
   const state={status:{currentVersion:3,stage:'finalized',finalized:{version:3},sections:[{id:'B01'}],blueprintAssets:[{ledgerId:'one',sections:['B01']}]}}
   const render=vm.runInNewContext(code+'\nrenderAssets',{$:()=>box,state,esc:String})
   render([{id:'one',name:'绑定',side:'videomake',type:'image',declared:true},{id:'two',name:'未绑定',side:'videomake',type:'image',declared:true}])
   assert.match(box.innerHTML,/data-upload-declaration="one"/)
   assert.doesNotMatch(box.innerHTML,/data-implement-declaration="one"/)
-  assert.match(box.innerHTML,/data-implement-declaration="two"/)
+  assert.match(box.innerHTML,/data-upload-declaration="two"/)
+  assert.doesNotMatch(box.innerHTML,/data-implement-declaration/)
   state.status.stage='draft'
   render([{id:'one',name:'绑定',side:'videomake',type:'image',declared:true}])
-  assert.match(box.innerHTML,/data-implement-declaration="one"/)
+  assert.match(box.innerHTML,/data-upload-declaration="one"/)
+  assert.doesNotMatch(box.innerHTML,/data-implement-declaration/)
 })
 
 test('制作完成的素材声明显示已生成，未匹配的声明与真实上传保留原状态',()=>{
@@ -51,7 +53,7 @@ test('制作完成的素材声明显示已生成，未匹配的声明与真实�
   assert.doesNotMatch(row('one'),/待补|data-upload-declaration|data-implement-declaration/)
   assert.match(row('two'),/待补/)
   assert.match(row('two'),/data-upload-declaration="two"/)
-  assert.match(row('two'),/data-implement-declaration="two"/)
+  assert.doesNotMatch(row('two'),/data-implement-declaration/)
   assert.match(row('uploaded'),/可用/)
   assert.doesNotMatch(row('uploaded'),/tag[^>]*>已生成/)
 })
@@ -69,7 +71,7 @@ test('轮询发现素材制作完成时即使蓝图未变也刷新资料页',asy
     api:async url=>url.endsWith('/status')?completed:{raw:''},syncStudioChoice(){},renderBlueprint(){blueprintRendered++},
     renderAssets(){rendered++},renderFilm(){},renderValidation(){},renderRequirement(){},scheduleRefresh(){},
     console:{warn(...args){warning=args}}}
-  const refreshCode=html.slice(html.indexOf('async function refresh(){'),html.indexOf('const assetRequests=new Set()'))
+  const refreshCode=html.slice(html.indexOf('async function refresh(){'),html.indexOf('let filmRender=0'))
   const refresh=vm.runInNewContext(code.slice(0,code.indexOf('function t2tag('))+'\n'+refreshCode+'\nrefresh',context)
   await refresh()
   assert.equal(warning,undefined)
@@ -94,7 +96,7 @@ test('制作状态、版本、风格或素材不匹配时声明仍待补',()=>{
     render([asset])
     assert.match(box.innerHTML,/待补/,JSON.stringify(change))
     assert.match(box.innerHTML,/data-upload-declaration="one"/,JSON.stringify(change))
-    assert.match(box.innerHTML,/data-implement-declaration="one"/,JSON.stringify(change))
+    assert.doesNotMatch(box.innerHTML,/data-implement-declaration/,JSON.stringify(change))
     status.production=production
   }
   status.blueprintAssets=[]

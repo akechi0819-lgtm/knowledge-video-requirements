@@ -42,6 +42,15 @@ test('运行中的素材和首段画面使用实时活动，等待提示和已�
   assert.match(headline({status:'failed', phase:'生成素材', activity:'实时活动'}), /制作未完成/)
 })
 
+test('已保存画面时仍显示自动重试活动', () => {
+  const window = {}
+  vm.runInNewContext(readFileSync(new URL('../web/film.js', import.meta.url), 'utf8'), { window })
+  const activity = '连接意外中断，正在自动重试续跑…'
+  assert.equal(window.BohackFilm.headline({
+    status: 'running', phase: '编写画面', activity, sections: [{ id: 'S01', scene: true }, { id: 'S02' }],
+  }), activity)
+})
+
 test('中央等待画面随实时活动更新和清除', () => {
   const make = () => ({dataset:{},classList:{toggle(){}},replaceChildren(){this.innerHTML=''},querySelector(selector){return selector.includes('.film-waiting') && this.innerHTML?.includes('film-waiting') ? {} : null},querySelectorAll(){return []}})
   const elements = Object.fromEntries(['pane-film','phaseRail','filmHeadline','filmRail','filmPlayer','filmWaitMeta','filmPrep','filmBp','filmState','pixelAssets'].map(id => [id, make()]))
@@ -60,20 +69,14 @@ test('中央等待画面随实时活动更新和清除', () => {
   assert.match(elements.filmPlayer.innerHTML, /视频 Agent 正在读取蓝图和素材/)
 })
 
-test('成片素材显示多种预览，单项修改直接启动制作', async () => {
+test('成片素材保留历史预览和下载，素材展示为只读', async () => {
   const render = html.slice(html.indexOf('async function renderFilmAssets('), html.indexOf('function styleSummary('))
-  const calls = [], buttons = [], status = {textContent:''}, feedback = {dataset:{assetFeedback:'a'},value:'换红帽子'}
-  const box = {
-    dataset:{},
-    set innerHTML(value) { this.markup=value; buttons.push({dataset:{reviseAsset:'a'}}) },
-    querySelectorAll(selector) { return selector==='[data-asset-feedback]' ? [feedback] : buttons },
-    querySelector() { return status }, replaceChildren() {},
-  }
-  const s={currentVersion:1,production:{status:'completed',version:'v1',mode:'agent',assets:[{id:'a',name:'人物',files:[{variant:'idle',previewUrl:'/idle.png'},{variant:'walk',previewUrl:'/walk.png'}],sourceUrl:'/character.py'},{id:'b',name:'背景',revisable:false,sourceUrl:'/background.py'}]}}
+  const calls = []
+  const box = { set innerHTML(value) { this.markup=value }, replaceChildren() {} }
+  const s={currentVersion:1,production:{status:'completed',version:'v1',mode:'agent',assets:[{id:'a',name:'人物',files:[{variant:'idle',previewUrl:'/idle.png'},{variant:'walk',previewUrl:'/walk.png'}],sourceUrl:'/character.py'},{id:'b',name:'背景',sourceUrl:'/background.py'}]}}
   const context={
-    $:()=>box,state:{threadId:'t',busy:false,status:s},filmRender:1,assetRequests:new Set(),productionRequest:null,productionFailure:null,
-    esc:x=>String(x),pendingReceipt:()=>false,updateProductionAction(){},refresh:async()=>{},
-    api:async(url,body)=>{calls.push({url,body}); return url.includes('generated-assets?') ? {assets:[]} : {}},
+    $:()=>box,state:{threadId:'t'},filmRender:1,esc:x=>String(x),
+    api:async(url)=>{calls.push(url); return {assets:[]}},
   }
   const run=vm.runInNewContext(render+'\nrenderFilmAssets',context)
   await run(s,true,1)
@@ -81,10 +84,17 @@ test('成片素材显示多种预览，单项修改直接启动制作', async ()
   assert.match(box.markup,/\/walk.png/)
   assert.match(box.markup,/href="\/character.py" download/)
   assert.doesNotMatch(box.markup,/<img src="\/background.py"/)
-  assert.doesNotMatch(box.markup,/data-revise-asset="b"/)
-  assert.doesNotMatch(box.markup,/确认此项/)
-  feedback.value='换红帽子'
-  await buttons[0].onclick()
-  const production=calls.find(c=>c.url==='/bohack/api/production')
-  assert.equal(JSON.stringify(production.body),JSON.stringify({mode:'agent',regenerateAssetId:'a',assetFeedback:'换红帽子'}))
+  assert.doesNotMatch(box.markup,/data-revise-asset|data-asset-feedback|修改此素材并重新制作/)
+  assert.deepEqual(calls,['/bohack/api/generated-assets?version=1'])
+})
+
+test('Agent 制作进度从启动视频制作开始', () => {
+  const make = () => ({dataset:{},classList:{toggle(){}},replaceChildren(){this.innerHTML=''},querySelector(){return null},querySelectorAll(){return []}})
+  const elements = Object.fromEntries(['pane-film','phaseRail','filmHeadline','filmRail','filmPlayer','filmWaitMeta','filmPrep','filmBp','filmState','pixelAssets'].map(id => [id, make()]))
+  elements['pane-film'].querySelector = selector => selector === '#pixelAssets' ? elements.pixelAssets : null
+  const window = {}
+  vm.runInNewContext(readFileSync(new URL('../web/film.js', import.meta.url), 'utf8'), {window,document:{getElementById:id=>elements[id]},location:{origin:'http://localhost'},URL})
+  window.BohackFilm.render({production:{id:'p',mode:'agent',status:'running',phase:'启动视频制作 Agent',sections:[]}}, {threadId:'t'})
+  assert.match(elements.phaseRail.innerHTML, /启动视频制作 Agent/)
+  assert.doesNotMatch(elements.phaseRail.innerHTML, /编码素材/)
 })
