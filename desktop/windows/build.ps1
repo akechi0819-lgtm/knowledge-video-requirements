@@ -120,9 +120,10 @@ Copy-Item (Join-Path $repo 'desktop/Chromium-LICENSE.txt') (Join-Path $runtime '
 # Build codecs from exactly the source archives distributed alongside them.
 $sources = Join-Path $codecDir 'sources'
 New-Item -ItemType Directory -Force $sources | Out-Null
+Get-VerifiedFile 'https://zlib.net/fossils/zlib-1.3.1.tar.gz' (Join-Path $sources 'zlib-1.3.1.tar.gz') '9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23'
 Get-VerifiedFile 'https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz' (Join-Path $sources 'ffmpeg-9.0.2.tar.xz') '8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e'
 Get-VerifiedFile 'https://download.videolan.org/pub/videolan/x264/snapshots/x264-snapshot-20191217-2245.tar.bz2' (Join-Path $sources 'x264-snapshot-20191217-2245.tar.bz2') '0bb67d095513391e637b3b47e8efc3ba4603c3844f1b4c2690f4d36da7763055'
-Get-VerifiedFile 'https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz' (Join-Path $sources 'lame-3.100.tar.gz') 'ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e'
+Get-VerifiedFile 'https://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz' (Join-Path $sources 'lame-3.100.tar.gz') 'ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e'
 $codecScript = Join-Path $codecDir 'build-codecs.sh'
 $codecSource = @'
 #!/usr/bin/env bash
@@ -132,6 +133,14 @@ out="$(cygpath -u "$JIANGJIE_CODEC_OUT")"
 prefix="$root/prefix"
 mkdir -p "$root/build" "$prefix" "$out" "$root/licenses"
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+cd "$root/build"
+tar xf "$root/sources/zlib-1.3.1.tar.gz"
+cd zlib-1.3.1
+make -f win32/Makefile.gcc -j2 libz.a
+mkdir -p "$prefix/include" "$prefix/lib"
+cp zlib.h zconf.h "$prefix/include/"
+cp libz.a "$prefix/lib/"
+cp LICENSE "$root/licenses/zlib-LICENSE"
 cd "$root/build"
 tar xf "$root/sources/x264-snapshot-20191217-2245.tar.bz2"
 cd x264-snapshot-20191217-2245
@@ -149,12 +158,18 @@ cp COPYING "$root/licenses/lame-COPYING"
 cd "$root/build"
 tar xf "$root/sources/ffmpeg-9.0.2.tar.xz"
 cd ffmpeg-9.0.2
-./configure --prefix="$prefix" --enable-gpl --enable-libx264 --enable-libmp3lame --disable-shared --enable-static --disable-ffplay --disable-autodetect --extra-cflags="-I$prefix/include" --extra-ldflags="-L$prefix/lib -static"
+./configure --prefix="$prefix" --enable-gpl --enable-libx264 --enable-libmp3lame --enable-zlib --disable-shared --enable-static --disable-ffplay --disable-autodetect --extra-cflags="-I$prefix/include" --extra-ldflags="-L$prefix/lib -static"
 make -j2 ffmpeg.exe ffprobe.exe
 cp ffmpeg.exe ffprobe.exe "$out/"
 cp COPYING.GPLv2 "$root/licenses/ffmpeg-COPYING.GPLv2"
 "$out/ffmpeg.exe" -v error -f lavfi -i color=black:s=64x64:r=10 -f lavfi -i sine=frequency=440 -t 0.2 -c:v libx264 -c:a aac -y "$root/build/smoke.mp4"
 "$out/ffprobe.exe" -v error -show_entries format=duration -of default=nw=1 "$root/build/smoke.mp4"
+"$out/ffmpeg.exe" -v error -i "$root/build/smoke.mp4" -frames:v 1 -update 1 -y "$root/build/smoke.png"
+"$out/ffmpeg.exe" -v error -i "$root/build/smoke.png" -f null -
+"$out/ffmpeg.exe" -hide_banner -filters > "$root/build/filters.txt"
+for filter in ebur128 freezedetect acompressor; do
+  grep -E "[[:space:]]$filter[[:space:]]" "$root/build/filters.txt" > /dev/null
+done
 "$out/ffmpeg.exe" -v error -f lavfi -i sine=frequency=440 -t 0.2 -c:a libmp3lame -y "$root/build/smoke.mp3"
 '@
 [IO.File]::WriteAllText($codecScript, ($codecSource -replace "`r`n", "`n"), [Text.UTF8Encoding]::new($false))
