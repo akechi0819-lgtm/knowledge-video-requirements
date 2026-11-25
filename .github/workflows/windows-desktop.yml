@@ -47,6 +47,18 @@ jobs:
           $setup = Join-Path $output 'Jiangjie-Windows-x64-0.2.1-setup.exe'
           $install = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installed`"" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "安装失败：$($install.ExitCode)" }
+          $env:JIANGJIE_DESKTOP_DATA = Join-Path $output 'webview-smoke-data'
+          $launcher = Join-Path $installed 'Jiangjie.exe'
+          $smokeLog = Join-Path $output 'webview-smoke.log'
+          $smoke = Start-Process $launcher -ArgumentList '--smoke' -PassThru -RedirectStandardError $smokeLog
+          if (-not $smoke.WaitForExit(90000)) {
+            $smoke.Kill($true)
+            throw '等待桌面窗口加载超时'
+          }
+          if ($smoke.ExitCode -ne 0) {
+            Get-Content $smokeLog
+            throw "桌面窗口加载失败：$($smoke.ExitCode)"
+          }
           $node = Join-Path $installed 'resources/runtime/node/node.exe'
           $npm = Join-Path $output 'cache/node-v24.22.1-win-x64/node_modules/npm/bin/npm-cli.js'
           & $node $npm ci --prefix membership --omit=dev --no-audit --no-fund

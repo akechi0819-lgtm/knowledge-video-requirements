@@ -30,12 +30,11 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             using var lockFile = OpenLock();
             using var workbench = new Workbench();
-            if (args.FirstOrDefault() == "--smoke")
-                return workbench.SmokeAsync().GetAwaiter().GetResult();
             if (args.FirstOrDefault() == "--integration-test")
                 return workbench.IntegrationTestAsync().GetAwaiter().GetResult();
-            Application.Run(new DesktopForm(workbench));
-            return 0;
+            using var window = new DesktopForm(workbench, args.FirstOrDefault() == "--smoke");
+            Application.Run(window);
+            return window.ExitCode;
         }
         catch (Exception error)
         {
@@ -209,16 +208,6 @@ internal static class Program
             catch (OperationCanceledException) { throw new TimeoutException("等待工作台启动超时。" + lastLine); }
         }
 
-        public async Task<int> SmokeAsync()
-        {
-            Uri uri = await ReadyAsync();
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            string html = await client.GetStringAsync(uri);
-            if (!html.Contains("讲界", StringComparison.Ordinal)) throw new InvalidDataException("工作台页面内容不完整");
-            Console.Out.WriteLine("工作台启动检查通过");
-            return 0;
-        }
-
         public async Task<int> IntegrationTestAsync()
         {
             Uri uri = await ReadyAsync();
@@ -241,12 +230,15 @@ internal static class Program
     private sealed class DesktopForm : Form
     {
         private readonly Workbench workbench;
+        private readonly bool smoke;
         private readonly WebView2 web = new() { Dock = DockStyle.Fill };
         private Uri? workbenchUrl;
+        public int ExitCode { get; private set; }
 
-        public DesktopForm(Workbench workbench)
+        public DesktopForm(Workbench workbench, bool smoke)
         {
             this.workbench = workbench;
+            this.smoke = smoke;
             Text = "讲界视频工坊";
             Width = 1200;
             Height = 780;
@@ -277,13 +269,33 @@ internal static class Program
                     if (Uri.TryCreate(e.Uri, UriKind.Absolute, out Uri? destination) && destination.Scheme is "https" or "http")
                         Process.Start(new ProcessStartInfo(destination.AbsoluteUri) { UseShellExecute = true });
                 };
+                if (smoke) web.CoreWebView2.NavigationCompleted += CompleteSmokeAsync;
                 web.CoreWebView2.Navigate(workbenchUrl.AbsoluteUri);
             }
             catch (Exception error)
             {
-                MessageBox.Show(error.Message, "讲界启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                CloseWithError(error.Message);
+            }
+        }
+
+        private async void CompleteSmokeAsync(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            try
+            {
+                if (!e.IsSuccess) throw new InvalidOperationException($"工作台加载失败：{e.WebErrorStatus}");
+                if (await web.ExecuteScriptAsync("document.getElementById('accountBtn') !== null") != "true")
+                    throw new InvalidDataException("桌面窗口未显示会员入口");
                 Close();
             }
+            catch (Exception error) { CloseWithError(error.Message); }
+        }
+
+        private void CloseWithError(string message)
+        {
+            ExitCode = 1;
+            if (smoke) Console.Error.WriteLine(message);
+            else MessageBox.Show(message, "讲界启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Close();
         }
     }
 }

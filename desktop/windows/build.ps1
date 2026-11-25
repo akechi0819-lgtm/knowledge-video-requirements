@@ -79,7 +79,7 @@ foreach ($file in @('package.json', 'cordis.yml', 'cordis.patch.yml')) {
 foreach ($dir in @('.agents', 'rules')) {
     Copy-Item -Recurse -Force (Join-Path $sourceBase "workspace/$dir") (Join-Path $base 'workspace')
 }
-foreach ($file in @('package.json', 'package-lock.json', 'dsh-workbench.cmd', 'dsh.cmd')) {
+foreach ($file in @('package.json', 'package-lock.json')) {
     Copy-Item (Join-Path $sourceBase $file) $base
 }
 $packed = & $node $npm pack --silent --pack-destination $cache (Join-Path $sourceBase 'packages/bohack-blueprint')
@@ -110,11 +110,11 @@ Copy-Item (Join-Path $repo '.project-skills/andy-vibe-knowledge/LICENSE') (Join-
 Copy-Item (Join-Path $repo '.project-skills/deepseek-opus-motion-skill/LICENSE') (Join-Path $skills 'motion-design-prompt-generator/LICENSE')
 Copy-Item (Join-Path $repo 'desktop/agent.patch.yml') (Join-Path $resources 'desktop-agent.patch.yml')
 
-$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $cache 'playwright-browsers'
-Invoke-Checked $node @((Join-Path $kit 'node_modules/playwright-core/cli.js'), 'install', 'chromium')
-$browsers = @(Get-ChildItem $env:PLAYWRIGHT_BROWSERS_PATH -Directory -Filter 'chromium-*' | Where-Object { Test-Path (Join-Path $_.FullName 'chrome-win64/chrome.exe') })
-if ($browsers.Count -ne 1) { throw '无法确定 Playwright Chromium 路径。' }
-Copy-Item -Recurse (Join-Path $browsers[0].FullName 'chrome-win64') (Join-Path $runtime 'browser')
+$browserZip = Join-Path $cache 'chromium-win-1754043.zip'
+Get-VerifiedFile 'https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/1754043/chrome-win.zip' $browserZip '0363eaf409db8478a95653f63115615f8ca89cebb5ffc8d503f963f6587da2e9'
+$browser = Join-Path $runtime 'browser'
+New-Item -ItemType Directory $browser | Out-Null
+Invoke-Checked 'tar.exe' @('-xf', $browserZip, '--strip-components=1', '-C', $browser, '--exclude', '*/interactive_ui_tests.exe', '--exclude', '*/setup.exe')
 Copy-Item (Join-Path $repo 'desktop/Chromium-LICENSE.txt') (Join-Path $runtime 'browser/Chromium-LICENSE.txt')
 
 # Build codecs from exactly the source archives distributed alongside them.
