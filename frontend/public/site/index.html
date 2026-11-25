@@ -272,6 +272,11 @@
   .clock{font-size:clamp(56px,13vw,200px);font-weight:300;line-height:1;letter-spacing:.02em;font-variant-numeric:tabular-nums}
   .clock .t{color:var(--muted)}
   .cta p{max-width:560px;color:#cfcfcf;text-wrap:pretty}
+  .download-options{display:flex;justify-content:center;align-items:stretch;flex-wrap:wrap;gap:16px;width:min(100%,640px)}
+  .download-option{display:flex;flex-direction:column;align-items:stretch;gap:10px;flex:1 1 270px;text-align:left}
+  .download-option .btn{justify-content:space-between;min-height:58px}
+  .download-option .unavailable{display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:16px 30px;border:1.5px solid rgba(245,245,245,.3);color:#cfcfcf;font-size:13px;font-weight:600;letter-spacing:.16em}
+  .download-option small{color:#cfcfcf;font-size:12px;line-height:1.6;letter-spacing:.04em}
 
   footer{border-top:1px solid var(--line);padding:40px 0}
   footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:20px;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
@@ -306,7 +311,7 @@
       <a href="#video-agent">视频 Agent</a>
       <a href="#loop">工序</a>
       <a href="#mission">成片演示</a>
-      <a href="/bohack/">开始创作</a>
+      <a href="#downloads">下载桌面版</a>
     </nav>
     <button class="burger" id="burger" aria-label="打开菜单" aria-expanded="false" aria-controls="drawer"><span></span><span></span></button>
   </div>
@@ -319,7 +324,7 @@
     <a href="#mission" data-close style="transition-delay:.2s">演示成片 <small>02</small></a>
     <a href="#frames" data-close style="transition-delay:.25s">逐段核对 <small>03</small></a>
     <a href="#loop" data-close style="transition-delay:.3s">返工闭环 <small>04</small></a>
-    <a href="/bohack/" data-close style="transition-delay:.35s">开始创作 <small>↗</small></a>
+    <a href="#downloads" data-close style="transition-delay:.35s">下载桌面版 <small>↗</small></a>
     <a href="https://github.com/akechi0819-lgtm/knowledge-video-requirements" target="_blank" rel="noopener" style="transition-delay:.35s">GitHub 仓库 <small>↗</small></a>
   </nav>
 </div>
@@ -334,7 +339,7 @@
       <h1 id="hero-title" class="split" data-split aria-label="从一段对话，到一部知识影片">从一段对话<br>到一部知识影片</h1>
       <p class="lede h-in">需求整理&ensp;·&ensp;分段蓝图&ensp;·&ensp;视频 Agent。三个模块接力，把创作者的意图与<br class="lede-break" />资料，编排、配音、渲染、质检，交付为成片。</p>
       <div class="ctas h-in">
-        <a href="/bohack/" class="btn">开始创作</a>
+        <a href="#downloads" class="btn">下载桌面版</a>
         <a href="#mission" class="btn ghost">观看 90 秒演示</a>
       </div>
     </div>
@@ -491,19 +496,26 @@
   </section>
 
   <!-- CTA -->
-  <section class="cta" aria-labelledby="cta-title">
+  <section class="cta" id="downloads" aria-labelledby="cta-title">
     <div class="bg" id="ctaBg"><img src="./media/table.jpg" alt="" /></div>
     <div class="wrap">
       <span class="eyebrow">Ready for liftoff</span>
       <div class="clock" id="ctaClock" aria-hidden="true"><span class="t">T-</span>00:01:30</div>
       <h2 id="cta-title" class="section-title">你的下一条知识视频，从一句话开始。</h2>
-      <p>打开在线工作台，填写自己的 MiMo API Key，即可开始创作。项目保存在本机，制作由服务器完成。</p>
-      <div class="ctas" style="display:flex;gap:20px;flex-wrap:wrap;justify-content:center">
-        <a class="btn" href="/bohack/">打开工作台
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 12L12 4M6 4h6v6"/></svg>
-        </a>
-        <a class="btn ghost" href="#mission">再看一遍成片</a>
+      <p>下载讲界桌面版，在本机完成创作与视频制作。账号和平台模型服务需要联网。</p>
+      <div class="download-options" aria-label="桌面版下载">
+        <div class="download-option">
+          <a class="btn" href="/downloads/Jiangjie-macOS-arm64-0.2.1.dmg">下载 macOS 版
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v9M4 8l4 4 4-4M3 14h10"/></svg>
+          </a>
+          <small>0.2.1 内测版 · Apple Silicon · macOS 14 或更高版本<br>使用临时签名</small>
+        </div>
+        <div class="download-option">
+          <div class="unavailable">Windows x64 <span>准备中</span></div>
+          <small>Windows 版本完成测试后开放下载</small>
+        </div>
       </div>
+      <a class="btn ghost" href="#mission">再看一遍成片</a>
     </div>
   </section>
 </main>
@@ -512,7 +524,7 @@
   <div class="wrap">
     <span>讲界视频工坊 · BoHack</span>
     <nav aria-label="页脚">
-      <a href="/bohack/">工作台</a><a href="#mission">成片</a><a href="#frames">核对</a>
+      <a href="#downloads">下载桌面版</a><a href="#mission">成片</a><a href="#frames">核对</a>
       <a href="https://github.com/akechi0819-lgtm/knowledge-video-requirements" target="_blank" rel="noopener">GitHub</a>
     </nav>
   </div>
@@ -792,21 +804,6 @@ function run(){
     if(panel) scrollTo({top:pipe.scrollTrigger.labelToScroll(panel.id),behavior:'instant'});
   });
 }
-</script>
-<script>
-(function(){
-  var kicked=false;
-  function prewarm(){
-    if(kicked) return; kicked=true;
-    if(typeof window.fetch!=='function') return;
-    try{ fetch('/bohack/',{redirect:'manual',credentials:'same-origin'}).catch(function(){}) }catch(e){}
-  }
-  var links=document.querySelectorAll('a[href^="/bohack"]');
-  for(var i=0;i<links.length;i++){
-    links[i].addEventListener('pointerdown',prewarm);
-    links[i].addEventListener('focus',prewarm);
-  }
-})();
 </script>
 </body>
 </html>

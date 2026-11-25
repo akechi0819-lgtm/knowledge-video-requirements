@@ -2,7 +2,7 @@
 
 ## Mac 桌面工作台（邀请码内测）
 
-[下载 macOS 内测 DMG](https://github.com/akechi0819-lgtm/knowledge-video-requirements/releases/tag/v0.2.0-beta.2)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。新版桌面端已支持通过欧云收银台扫码购买 6 元周卡。上方历史内测包发布早于支付功能。
+[官网下载 macOS 内测 DMG](https://jiangjie.gingers.cloud/#downloads)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。新版桌面端已支持通过欧云收银台扫码购买 6 元周卡。Windows x64 通过安装和制作验收后开放下载。
 
 在 macOS 14 或更高版本的 Apple Silicon Mac 上挂载 DMG，把「讲界」拖到「应用程序」后打开。App 内置 DSH、Node.js、Python、Chromium、FFmpeg 和 ffprobe，中文渲染沿用 macOS 自带字体。关闭窗口或退出时，本次启动的 DSH 会一并停止。本次内测包使用临时签名，正式分发需要 Developer ID 和 Apple 公证。
 
@@ -21,17 +21,17 @@
 构建机需要 Apple Silicon、Xcode Command Line Tools、已检出的项目 Skill 子模块，以及下载依赖用的网络。依赖缓存写入 `.runtime/`。App 在系统临时目录组装和签名，避免桌面同步目录添加扩展属性。首次构建会编译 FFmpeg 和音视频编码依赖。DMG 内带对应源码、构建脚本和许可证。
 
 ```sh
-app="$(./scripts/build-desktop.sh)"
+app="$(JIANGJIE_MEMBER_URL=https://jiangjie.gingers.cloud/desktop-membership ./scripts/build-desktop.sh)"
 ./scripts/package-desktop.sh "$app" "$PWD/.runtime/讲界-arm64-本地验收.dmg"
 ```
 
 正式包构建和打包时使用同一个 `JIANGJIE_SIGN_IDENTITY`，值为钥匙串内有效的 Developer ID Application 签名身份。打包时同时设置 `JIANGJIE_NOTARY_PROFILE`，对应 `notarytool store-credentials` 已保存的钥匙串配置。脚本等待 Apple 接受后为 DMG 附票，并执行附票和 Gatekeeper 检查。正式验收还需要在一台干净的 Apple Silicon Mac 上从 DMG 安装并导出已有项目。
 
-## 多人网页预览
+## 旧网页预览的自托管说明
 
-官网入口为 https://jiangjie.gingers.cloud/ ，点击“开始创作”进入 /bohack/ 在线工作台。官网使用 PR #9 的 `frontend/public/site/` 静态页面，由讲界专用 Nginx 配置提供首页、图片和演示视频，制作请求继续交给现有网关。
+[讲界官网](https://jiangjie.gingers.cloud/) 提供产品介绍、成片演示和桌面版下载。旧 `/bohack/` 链接跳转到下载区。下面是仓库保留的自托管预览实现说明。
 
-体验者打开网页即可使用，无需安装依赖、注册或订阅。制作在服务器运行，每个浏览器分配独立容器。通用文本、代码和看图由服务器配置的多模态模型统一处理，优先适配 GPT 6.1 Terra；配音默认使用小米 MiMo，独立填写小米 Key，也可选择其他兼容 OpenAI Speech 的服务。个人 API Key 仅保存在该实例内存中。模型费用由各自的服务商账户结算。
+在自行部署的预览中，体验者打开网页即可使用，无需安装依赖、注册或订阅。制作在服务器运行，每个浏览器分配独立容器。通用文本、代码和看图由服务器配置的多模态模型统一处理，优先适配 GPT 6.1 Terra；配音默认使用小米 MiMo，独立填写小米 Key，也可选择其他兼容 OpenAI Speech 的服务。个人 API Key 仅保存在该实例内存中。模型费用由各自的服务商账户结算。
 
 设置页主要配置通用文本/代码、配音两类模型；同一服务商且权限通用时可共用一把 Key。音色属于配音服务：MiMo 预设使用“茉莉”，其他服务填写各自支持的音色 ID，切换服务不会沿用小米音色。独立工具路由折叠在高级设置中；生图接口暂未接入制作，无需配置。
 

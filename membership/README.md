@@ -69,6 +69,8 @@ node invite.mjs /path/to/membership.sqlite 3
 
 独立的 systemd 服务 `jiangjie-membership-beta` 监听服务器的 `127.0.0.1:18787`。讲界域名的 Nginx 把 `/desktop-membership/` 转给会员服务。程序位于 `/opt/jiangjie-membership-beta`，SQLite 位于 `/var/lib/jiangjie-membership-beta/membership.sqlite`。上游和会话签名配置由 systemd 从权限为 0600 的 `/etc/jiangjie-membership-beta/service.env` 读入。
 
+旧网页工作台下线后，官网和会员服务仍分别使用 `/opt/jiangjie-preview` 下的站点、TLS 证书和 Node 运行时。
+
 在获授权的服务器终端生成一枚邀请码，并把标准输出保存在私有文件后单独发放。
 
 ```sh
