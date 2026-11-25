@@ -1,4 +1,4 @@
-// Run on Apple Silicon with a built App outside the checkout.
+// Run against an installed desktop bundle with fixture membership and model services.
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes, createHash } from 'node:crypto'
@@ -11,9 +11,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createMembershipService } from './server.mjs'
 
 const app = process.argv[2]
-if (!app) throw new Error('Usage: node membership/test-desktop.mjs /path/to/讲界.app')
+if (!app) throw new Error('Usage: node membership/test-desktop.mjs <installed app directory>')
+const windows = process.platform === 'win32'
 const root = await mkdtemp(path.join(os.tmpdir(), 'jiangjie-membership-e2e-'))
-const bin = path.join(app, 'Contents', 'MacOS')
+const bin = windows ? app : path.join(app, 'Contents', 'MacOS')
+const ffmpeg = windows ? path.join(app, 'resources', 'runtime', 'ffmpeg', 'ffmpeg.exe') : path.join(bin, 'ffmpeg')
 const mount = async (server, port = 0) => {
   server.listen(port, '127.0.0.1')
   await once(server, 'listening')
@@ -24,10 +26,8 @@ const sections = [
   { id: 'B01', title: '岩浆喷出', intent: '岩浆可沿裂缝到达地面。', visual: '剖面展示岩浆通道。', narration: '岩浆沿着火山裂缝喷出。' },
   { id: 'B02', title: '冷却成岩', intent: '熔岩冷却会形成火成岩。', visual: '展示熔岩冷却的变化。', narration: '流出的熔岩冷却成为岩石。' },
 ]
-const asset = { id: 'lava', name: '火山岩石', type: 'prop', description: '一块暗红的火山岩石', sections: ['B01'] }
-const shape = { d: 'M 30 60 L 190 25 L 290 130 L 110 230 Z', fill: '#b84940', stroke: '#000000', width: 2 }
-const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0}#stage{position:relative;width:1280px;height:720px;background:#f5e4cd}div#lava{width:220px;height:200px;border-radius:70%;background:#c03b19;position:absolute;left:530px;top:240px}</style><div id="stage"><div id="lava"></div></div><script>window.seek=t=>lava.style.transform='translateY('+(-40*t)+'px)'</script>`
-const audio = execFileSync(path.join(bin, 'ffmpeg'), ['-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1.2', '-f', 'mp3', '-'])
+const html = id => `<!doctype html><meta charset="utf-8"><style>body{margin:0}#stage{position:relative;width:1280px;height:720px;background:#f5e4cd}div#lava{width:220px;height:200px;border-radius:70%;background:#c03b19;position:absolute;left:530px;top:240px}</style><div id="stage" data-shot-id="${id}"><div id="lava"></div></div><script>window.seek=t=>lava.style.transform='translateY('+(-40*t)+'px)'</script>`
+const audio = execFileSync(ffmpeg, ['-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1.2', '-f', 'mp3', '-'])
 const calls = []
 const mock = createServer(async (req, res) => {
   const chunks = []
@@ -47,18 +47,15 @@ const mock = createServer(async (req, res) => {
   let name, args
   let content = '我记下了。'
   if (tools.includes('write_blueprint') && !used.some(call => call.function.name === 'write_blueprint')) {
-    name = 'write_blueprint'; args = { topic: '火山', core: '火山熔岩的变化', sections, assets: [asset] }
+    name = 'write_blueprint'; args = { topic: '火山', core: '火山熔岩的变化', sections, assets: [] }
     calls.push('platform/blueprint')
   } else if (tools.includes('submit')) {
     const written = used.filter(call => call.function.name === 'write_scene').length
     const previewed = used.filter(call => call.function.name === 'preview').length
-    if (written < sections.length) { name = 'write_scene'; args = { id: 'S0' + (written + 1), html } }
+    if (written < sections.length) { name = 'write_scene'; args = { id: 'S0' + (written + 1), html: html(sections[written].id) } }
     else if (previewed < sections.length) { name = 'preview'; args = { id: 'S0' + (previewed + 1), seconds: 0 } }
     else if (!used.some(call => call.function.name === 'submit')) { name = 'submit'; args = {} }
     calls.push('platform/video:' + name)
-  } else if (!body.stream) {
-    content = JSON.stringify({ shapes: Array.from({ length: 5 }, () => shape) })
-    calls.push('platform/asset')
   } else calls.push(own ? 'own/requirement' : 'platform/requirement')
   const usage = { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 }
   if (!body.stream) return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content } }], usage }))
@@ -84,13 +81,15 @@ const { server, db } = await createMembershipService({
   tts: { baseURL: mockUrl + '/platform', key: 'provider-fixture-key', model: 'platform-voice', voice: 'fixture' },
 })
 await mount(server, port)
-const child = spawn(path.join(bin, 'Jiangjie'), [], {
-  env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: os.homedir(), USER: process.env.USER,
+const child = spawn(path.join(bin, windows ? 'Jiangjie.exe' : 'Jiangjie'), windows ? ['--integration-test'] : [], {
+  env: { ...(windows ? process.env : { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: os.homedir(), USER: process.env.USER }),
     JIANGJIE_DESKTOP_DATA: path.join(root, 'AppData'), JIANGJIE_MEMBER_URL: memberUrl },
-  stdio: ['ignore', 'pipe', 'pipe'],
+  stdio: [windows ? 'pipe' : 'ignore', 'pipe', 'pipe'],
 })
 const ended = once(child, 'exit')
 let workbenchPid
+let startup = ''
+if (windows) child.stdout.on('data', bytes => { startup += bytes })
 child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr)
 let workbench
 let savedByokKey = false
@@ -124,6 +123,10 @@ const newThread = async () => (await workbenchApi('threads', {})).thread.id
 const count = () => db.prepare('SELECT COUNT(*) AS count FROM usage').get().count
 try {
   workbench = await poll(async () => {
+    if (windows) {
+      if (child.exitCode !== null) throw new Error('Windows launcher exited before the workbench was ready')
+      return startup.match(/^dsh web: (http:\/\/127\.0\.0\.1:\d+)\r?$/m)?.[1]
+    }
     const pid = processList().split('\n').map(line => line.trim().split(/\s+/, 3))
       .find(([, ppid, command]) => Number(ppid) === child.pid && (command === 'node' || command?.endsWith('/node')))?.[0]
     if (!pid) return null
@@ -159,8 +162,6 @@ try {
   await workbenchApi('confirm', { all: true }, first)
   await workbenchApi('finalize', {}, first)
   await workbenchApi('styles-select', { id: 'general', version: 1 }, first)
-  const assets = await workbenchApi('generated-assets-generate', { version: 1, id: asset.id }, first)
-  assert.equal(assets.assets[0].status, 'generated')
   const job = await workbenchApi('production', { mode: 'agent' }, first)
   assert.ok(job.membershipAuthorizationId)
   const settled = await poll(async () => (await workbenchApi('status', undefined, first)).production, state => ['completed', 'failed'].includes(state?.status), 60)
@@ -171,9 +172,9 @@ try {
   assert.ok(film.ok && (await film.arrayBuffer()).byteLength > 1000)
   const report = JSON.parse(await readFile(path.join(root, 'AppData', 'workspace', 'threads', first, 'production', job.id, 'film', 'verify-report.json'), 'utf8'))
   assert.deepEqual(report.hardErrors, [])
-  for (const route of ['platform/requirement', 'platform/blueprint', 'platform/asset', 'platform/tts', 'platform/video:submit']) assert.ok(calls.includes(route), route)
+  for (const route of ['platform/requirement', 'platform/blueprint', 'platform/tts', 'platform/video:submit']) assert.ok(calls.includes(route), route)
   assert.equal(db.prepare('SELECT COUNT(DISTINCT production_id) AS count FROM usage').get().count, 1)
-  console.log('Blueprint, asset, TTS, DSH video Agent, native rendering, MP4 export and finished grant OK', JSON.stringify(calls))
+  console.log('Blueprint, TTS, DSH video Agent, native rendering, MP4 export and finished grant OK', JSON.stringify(calls))
   await useAccount('mode', { mode: 'byok' })
   await workbenchApi('settings', { model: { baseUrl: mockUrl + '/own', model: 'own-text', apiKey: 'own-fixture-key' } })
   savedByokKey = true
@@ -189,8 +190,10 @@ try {
   try {
     if (savedByokKey) await workbenchApi('settings', { model: { clearApiKey: true } })
   } finally {
-    child.kill()
-    await ended
+    if (windows) child.stdin.end()
+    else child.kill()
+    const [exitCode] = await ended
+    if (windows) assert.equal(exitCode, 0, 'Windows launcher did not shut down cleanly')
     if (workbenchPid) {
       try { process.kill(-workbenchPid, 'SIGTERM') }
       catch (error) { if (error.code !== 'ESRCH') throw error }

@@ -275,7 +275,6 @@
   .download-options{display:flex;justify-content:center;align-items:stretch;flex-wrap:wrap;gap:16px;width:min(100%,640px)}
   .download-option{display:flex;flex-direction:column;align-items:stretch;gap:10px;flex:1 1 270px;text-align:left}
   .download-option .btn{justify-content:space-between;min-height:58px}
-  .download-option .unavailable{display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:16px 30px;border:1.5px solid rgba(245,245,245,.3);color:#cfcfcf;font-size:13px;font-weight:600;letter-spacing:.16em}
   .download-option small{color:#cfcfcf;font-size:12px;line-height:1.6;letter-spacing:.04em}
 
   footer{border-top:1px solid var(--line);padding:40px 0}
@@ -511,8 +510,10 @@
           <small>0.2.1 内测版 · Apple Silicon · macOS 14 或更高版本<br>使用临时签名</small>
         </div>
         <div class="download-option">
-          <div class="unavailable">Windows x64 <span>准备中</span></div>
-          <small>Windows 版本完成测试后开放下载</small>
+          <a class="btn" href="/downloads/Jiangjie-Windows-x64-0.2.1-setup.exe">下载 Windows x64 版
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v9M4 8l4 4 4-4M3 14h10"/></svg>
+          </a>
+          <small>0.2.1 内测版 · 需要 Microsoft Edge WebView2<br>安装包为未签名版本</small>
         </div>
       </div>
       <a class="btn ghost" href="#mission">再看一遍成片</a>

@@ -1,0 +1,84 @@
+name: 讲界 Windows x64 安装包
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-2025
+    steps:
+      - run: git config --global core.autocrlf input
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 检出随包分发的 Skill
+        run: |
+          git submodule update --init .project-skills/andy-vibe-knowledge .project-skills/deepseek-opus-motion-skill .project-skills/huashu-art-motion
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          install: >-
+            make diffutils tar
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-nasm mingw-w64-x86_64-pkgconf
+      - name: 安装 NSIS
+        run: choco install nsis --no-progress -y
+      - uses: actions/cache/restore@v4
+        id: codecs
+        with:
+          path: ${{ runner.temp }}/jiangjie/cache/codecs/compiled
+          key: windows-x64-codecs-${{ hashFiles('desktop/windows/build.ps1') }}
+      - name: 构建桌面安装包
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $msysBash = Join-Path $env:MSYS2_LOCATION 'usr/bin/bash.exe'
+          $nsisCompiler = Join-Path "${env:ProgramFiles(x86)}" 'NSIS/makensis.exe'
+          ./desktop/windows/build.ps1 -OutputDirectory "$env:RUNNER_TEMP\jiangjie" -MsysBash $msysBash -NsisCompiler $nsisCompiler
+      - name: 检查编译缓存
+        id: compiled
+        if: always() && steps.codecs.outputs.cache-hit != 'true'
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\jiangjie\cache\codecs\compiled\SHA256SUMS.txt") {
+            'ready=true' >> $env:GITHUB_OUTPUT
+          }
+      - uses: actions/cache/save@v4
+        if: always() && steps.compiled.outputs.ready == 'true'
+        with:
+          path: ${{ runner.temp }}/jiangjie/cache/codecs/compiled
+          key: ${{ steps.codecs.outputs.cache-primary-key }}
+      - name: 安装并验收会员登录与成片导出
+        run: |
+          $output = "$env:RUNNER_TEMP\jiangjie"
+          $installed = "$env:RUNNER_TEMP\讲界 验收"
+          $setup = Join-Path $output 'Jiangjie-Windows-x64-0.2.1-setup.exe'
+          $install = Start-Process $setup -ArgumentList "/S /D=$installed" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "安装失败：$($install.ExitCode)" }
+          $env:JIANGJIE_DESKTOP_DATA = Join-Path $output 'webview-smoke-data'
+          $launcher = Join-Path $installed 'Jiangjie.exe'
+          $smokeLog = Join-Path $output 'webview-smoke.log'
+          $smoke = Start-Process $launcher -ArgumentList '--smoke' -PassThru -RedirectStandardError $smokeLog
+          if (-not $smoke.WaitForExit(90000)) {
+            $smoke.Kill($true)
+            throw '等待桌面窗口加载超时'
+          }
+          if ($smoke.ExitCode -ne 0) {
+            Get-Content $smokeLog
+            throw "桌面窗口加载失败：$($smoke.ExitCode)"
+          }
+          $node = Join-Path $installed 'resources/runtime/node/node.exe'
+          $npm = Join-Path $output 'cache/node-v24.22.1-win-x64/node_modules/npm/bin/npm-cli.js'
+          & $node $npm ci --prefix membership --omit=dev --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $node membership/test-desktop.mjs $installed
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jiangjie-Windows-x64-0.2.1
+          path: ${{ runner.temp }}/jiangjie/Jiangjie-Windows-x64-0.2.1-setup.exe
+          if-no-files-found: error
+          compression-level: 0

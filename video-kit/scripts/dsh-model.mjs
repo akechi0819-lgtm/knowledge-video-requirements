@@ -10,7 +10,8 @@ export async function callDsh(messages) {
     return await new Promise((resolve, reject) => {
       const env = { ...process.env }
       const cli = process.env.DSH_CLI || (process.platform === 'win32' ? 'dsh.cmd' : 'dsh')
-      const child = spawn(cli, ['headless', '--json', '--approval-policy', 'never', '-'], { cwd, env, shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+      const shell = process.platform === 'win32' && !/\.exe$/i.test(cli)
+      const child = spawn(cli, ['headless', '--json', '--approval-policy', 'never', '-'], { cwd, env, shell, stdio: ['pipe', 'pipe', 'pipe'] })
       const watchdog = setTimeout(() => child.kill(), 180000)
       let stdout = '', stderr = '', pending = '', toolUsed = false
       child.stdout.on('data', chunk => {

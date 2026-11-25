@@ -2,7 +2,7 @@
 
 ## Mac 桌面工作台（邀请码内测）
 
-[官网下载 macOS 内测 DMG](https://jiangjie.gingers.cloud/#downloads)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。新版桌面端已支持通过欧云收银台扫码购买 6 元周卡。Windows x64 通过安装和制作验收后开放下载。
+[官网下载 macOS 内测 DMG](https://jiangjie.gingers.cloud/#downloads)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。新版桌面端已支持通过欧云收银台扫码购买 6 元周卡。[Windows x64 内测安装包](https://jiangjie.gingers.cloud/#downloads)也在官网下载。
 
 在 macOS 14 或更高版本的 Apple Silicon Mac 上挂载 DMG，把「讲界」拖到「应用程序」后打开。App 内置 DSH、Node.js、Python、Chromium、FFmpeg 和 ffprobe，中文渲染沿用 macOS 自带字体。关闭窗口或退出时，本次启动的 DSH 会一并停止。本次内测包使用临时签名，正式分发需要 Developer ID 和 Apple 公证。
 
@@ -26,6 +26,16 @@ app="$(JIANGJIE_MEMBER_URL=https://jiangjie.gingers.cloud/desktop-membership ./s
 ```
 
 正式包构建和打包时使用同一个 `JIANGJIE_SIGN_IDENTITY`，值为钥匙串内有效的 Developer ID Application 签名身份。打包时同时设置 `JIANGJIE_NOTARY_PROFILE`，对应 `notarytool store-credentials` 已保存的钥匙串配置。脚本等待 Apple 接受后为 DMG 附票，并执行附票和 Gatekeeper 检查。正式验收还需要在一台干净的 Apple Silicon Mac 上从 DMG 安装并导出已有项目。
+
+### Windows x64 构建
+
+Windows 版使用 .NET 8、MSYS2 MINGW64（gcc、make、nasm 和 pkgconf）与 NSIS 打包，桌面窗口需要 Microsoft Edge WebView2。用户项目保存在 `%LOCALAPPDATA%\讲界`，自配密钥通过 Windows DPAPI 加密。
+
+```powershell
+pwsh -File desktop/windows/build.ps1 -OutputDirectory C:\jiangjie-build
+```
+
+Windows 构建工作流从安装包实际安装，验证桌面窗口、会员登录与 MP4 导出后上传产物。
 
 ## 旧网页预览的自托管说明
 
