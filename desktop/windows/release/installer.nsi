@@ -29,6 +29,9 @@ RequestExecutionLevel user
 !ifndef APP_VERSION
   !define APP_VERSION "0.2.1"
 !endif
+!ifndef APP_VI_VERSION
+  !define APP_VI_VERSION "0.2.1.0"
+!endif
 !ifndef RELEASE_SEQUENCE
   !define RELEASE_SEQUENCE "2"
 !endif
@@ -68,11 +71,11 @@ SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 
 ; 版本资源元数据
-VIProductVersion "${APP_VERSION}.0"
+VIProductVersion "${APP_VI_VERSION}"
 VIAddVersionKey "ProductName" "${APP_NAME}"
 VIAddVersionKey "CompanyName" "${APP_PUBLISHER}"
 VIAddVersionKey "FileDescription" "${APP_NAME} Windows x64 安装程序"
-VIAddVersionKey "FileVersion" "${APP_VERSION}.0"
+VIAddVersionKey "FileVersion" "${APP_VI_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey "LegalCopyright" "Copyright (c) Jiangjie Studio"
 

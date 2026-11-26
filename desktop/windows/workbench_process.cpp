@@ -644,7 +644,7 @@ void ExportNativeFallbackDiagnostics(const DesktopPaths& paths, const fs::path& 
         }
     }
     const auto zip = BuildStoreZip(entries);
-    const auto temp = destination.parent_path() / (L".jiangjie-diagnostics-" + CreateSessionToken() + L".tmp");
+    const auto temp = destination.parent_path() / (L".jj-diag-" + CreateSessionToken().substr(0, 16) + L".tmp");
     try {
         {
             Handle file(CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));

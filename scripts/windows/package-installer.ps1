@@ -67,8 +67,13 @@ function Resolve-OnlineBootstrapper([string]$NativeDir, [string]$StageDir) {
         $candidates += (Join-Path $NativeDir 'Release/Jiangjie-Setup-Online-x64.exe')
     }
     $candidates += (Join-Path $StageDir 'Jiangjie-Setup-Online-x64.exe')
-    $candidates += (Join-Path $repo '.runtime/windows-desktop/native-Ninja/Jiangjie-Setup-Online-x64.exe')
-    $candidates += (Join-Path $repo '.runtime/windows-desktop/native-Visual-Studio-17-2022/Release/Jiangjie-Setup-Online-x64.exe')
+    $desktopCache = Join-Path $repo '.runtime/windows-desktop'
+    if (Test-Path -LiteralPath $desktopCache -PathType Container) {
+        foreach ($dir in (Get-ChildItem -LiteralPath $desktopCache -Directory -Filter 'native-*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+            $candidates += (Join-Path $dir.FullName 'Release/Jiangjie-Setup-Online-x64.exe')
+            $candidates += (Join-Path $dir.FullName 'Jiangjie-Setup-Online-x64.exe')
+        }
+    }
     foreach ($c in $candidates) {
         if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { return [IO.Path]::GetFullPath($c) }
     }
@@ -176,9 +181,11 @@ if (-not $makensis) {
         throw 'makensis.exe (NSIS 3.x Unicode) is required to build Jiangjie-Setup-Offline-x64.exe. Install NSIS 3.x or pass -AllowMissingMakensis.'
     }
 } else {
+    $viVersion = if ($Version -match '^(\d+\.\d+\.\d+)') { "$($Matches[1]).0" } else { '0.0.0.0' }
     $commonDefs = @(
         '/V3',
         "/DAPP_VERSION=$Version",
+        "/DAPP_VI_VERSION=$viVersion",
         "/DRELEASE_SEQUENCE=$ReleaseSequence",
         "/DRELEASE_CHANNEL=$Channel",
         "/DSTAGE_DIR=$StageDirectory",

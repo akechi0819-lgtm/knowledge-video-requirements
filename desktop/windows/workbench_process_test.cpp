@@ -154,7 +154,7 @@ int wmain(int argc, wchar_t** argv) {
             }
             return FakeNode(argc, argv);
         }
-        const auto root = fs::current_path() / (L"process-test-" + std::to_wstring(GetCurrentProcessId()) + L"-" + CreateSessionToken());
+        const auto root = fs::temp_directory_path() / (L"jj-wp-" + std::to_wstring(GetCurrentProcessId()) + L"-" + CreateSessionToken().substr(0, 12));
         fs::create_directories(root);
         Test(root);
         fs::remove_all(root);
