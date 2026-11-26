@@ -134,19 +134,19 @@ function Get-TrackedAppProcesses([string]$RootDir) {
             })
         }
     }
-    return @($targets)
+    return , $targets.ToArray()
 }
 
 function Get-ListeningLoopbackPorts([int[]]$ProcessIds) {
-    if (-not $ProcessIds -or $ProcessIds.Count -eq 0) { return @() }
+    if (-not $ProcessIds -or @($ProcessIds).Count -eq 0) { return , [int[]]@() }
     $ports = [System.Collections.Generic.List[int]]::new()
 
     if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
-        $conns = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+        $conns = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
             Where-Object {
                 ($_.OwningProcess -in $ProcessIds) -and
                 ($_.LocalAddress -in @('127.0.0.1', '::1', '0.0.0.0'))
-            }
+            })
         foreach ($c in $conns) {
             if ($c.LocalPort -gt 0 -and -not $ports.Contains([int]$c.LocalPort)) {
                 $ports.Add([int]$c.LocalPort)
@@ -157,7 +157,7 @@ function Get-ListeningLoopbackPorts([int[]]$ProcessIds) {
     if ($ports.Count -eq 0) {
         $netstat = Join-Path $systemRoot 'System32\netstat.exe'
         if (Test-Path -LiteralPath $netstat -PathType Leaf) {
-            $lines = & $netstat -ano -p TCP 2>$null
+            $lines = @(& $netstat -ano -p TCP 2>$null)
             foreach ($line in $lines) {
                 if ($line -match '^\s*TCP\s+127\.0\.0\.1:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$') {
                     $port = [int]$Matches[1]
@@ -169,7 +169,7 @@ function Get-ListeningLoopbackPorts([int[]]$ProcessIds) {
             }
         }
     }
-    return @($ports)
+    return , $ports.ToArray()
 }
 
 function Resolve-SmokeVoice([string]$RequestedVoice) {
@@ -606,8 +606,8 @@ try {
         if (-not $verifyReport.pass) {
             throw "verify-report.json reported pass=false: $($verifyReport.problems -join '; ')"
         }
-        if ($verifyReport.segments.Count -ne 4) {
-            throw "Expected 4 hotpot segments in verify-report.json, got $($verifyReport.segments.Count)"
+        if (@($verifyReport.segments).Count -ne 4) {
+            throw "Expected 4 hotpot segments in verify-report.json, got $(@($verifyReport.segments).Count)"
         }
 
         # Assert video/audio stream specs via packaged ffprobe.exe
@@ -649,7 +649,7 @@ try {
             resolution  = "${width}x${height}"
             fps         = [math]::Round($fps, 3)
             filmSeconds = [math]::Round($duration, 3)
-            segments    = $verifyReport.segments.Count
+            segments    = @($verifyReport.segments).Count
             verifyPass  = $true
         }
         Write-Step "Stage 3 PASSED: final.mp4 (${width}x${height}, $([math]::Round($fps, 2)) fps, $vCodec+$aCodec, $([math]::Round($duration, 2))s) + VERIFY PASS."
