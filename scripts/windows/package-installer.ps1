@@ -183,42 +183,61 @@ if (-not $makensis) {
     }
 } else {
     $viVersion = if ($Version -match '^(\d+\.\d+\.\d+)') { "$($Matches[1]).0" } else { '0.0.0.0' }
+    # Create a short-path directory junction (e.g. D:\jjs-xxxx) so 32-bit makensis.exe
+    # never overflows Windows 260-char MAX_PATH on nested node_modules trees.
+    $stageDrive = [IO.Path]::GetPathRoot($StageDirectory)
+    $shortStage = Join-Path $stageDrive ("jjs-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    $createdShortStage = $false
+    try {
+        $null = New-Item -ItemType Junction -Path $shortStage -Target $StageDirectory -ErrorAction Stop
+        $createdShortStage = $true
+        $nsisStageDir = $shortStage
+    } catch {
+        $nsisStageDir = $StageDirectory
+    }
     $commonDefs = @(
+        '/INPUTCHARSET', 'UTF8',
         '/V3',
         "/DAPP_VERSION=$Version",
         "/DAPP_VI_VERSION=$viVersion",
         "/DRELEASE_SEQUENCE=$ReleaseSequence",
         "/DRELEASE_CHANNEL=$Channel",
-        "/DSTAGE_DIR=$StageDirectory",
+        "/DSTAGE_DIR=$nsisStageDir",
         "/DOUT_FILE=$offlineOut"
     )
     if (Test-Path -LiteralPath $componentHashesFile -PathType Leaf) {
         $commonDefs += "/DCOMPONENT_HASHES_FILE=$componentHashesFile"
     }
 
-    $prebuiltUninst = $null
-    if ($SignMode -ne 'none') {
-        Write-Host '[package] Two-pass NSIS build: generating & signing Uninstall.exe...'
-        $uninstGen = Join-Path $OutputDirectory '.gen-uninstaller.exe'
-        $uninstExe = Join-Path $OutputDirectory '.signed-Uninstall.exe'
-        & $makensis @($commonDefs + @('/DGENERATE_UNINSTALLER_ONLY=1', "/DUNINSTALLER_GENERATOR_EXE=$uninstGen", "/DUNINSTALLER_OUTPUT_PATH=$uninstExe", $nsiScript))
-        if ($LASTEXITCODE -ne 0) { throw "NSIS uninstaller generation failed ($LASTEXITCODE)" }
-        & $uninstGen /S
-        if (-not (Test-Path -LiteralPath $uninstExe -PathType Leaf)) { throw 'Failed to emit Uninstall.exe' }
-        $global:LASTEXITCODE = 0
-        & $signScript -Files @($uninstExe) -Mode $SignMode -ReportPath (Join-Path $OutputDirectory 'sign-uninstaller-report.json')
-        if ($LASTEXITCODE -ne 0) { throw "Uninstaller signing failed ($LASTEXITCODE)" }
-        Remove-Item -LiteralPath $uninstGen -Force -ErrorAction SilentlyContinue
-        $prebuiltUninst = $uninstExe
-    }
+    try {
+        $prebuiltUninst = $null
+        if ($SignMode -ne 'none') {
+            Write-Host '[package] Two-pass NSIS build: generating & signing Uninstall.exe...'
+            $uninstGen = Join-Path $OutputDirectory '.gen-uninstaller.exe'
+            $uninstExe = Join-Path $OutputDirectory '.signed-Uninstall.exe'
+            & $makensis @($commonDefs + @('/DGENERATE_UNINSTALLER_ONLY=1', "/DUNINSTALLER_GENERATOR_EXE=$uninstGen", "/DUNINSTALLER_OUTPUT_PATH=$uninstExe", $nsiScript))
+            if ($LASTEXITCODE -ne 0) { throw "NSIS uninstaller generation failed ($LASTEXITCODE)" }
+            & $uninstGen /S
+            if (-not (Test-Path -LiteralPath $uninstExe -PathType Leaf)) { throw 'Failed to emit Uninstall.exe' }
+            $global:LASTEXITCODE = 0
+            & $signScript -Files @($uninstExe) -Mode $SignMode -ReportPath (Join-Path $OutputDirectory 'sign-uninstaller-report.json')
+            if ($LASTEXITCODE -ne 0) { throw "Uninstaller signing failed ($LASTEXITCODE)" }
+            Remove-Item -LiteralPath $uninstGen -Force -ErrorAction SilentlyContinue
+            $prebuiltUninst = $uninstExe
+        }
 
-    Write-Host '[package] Compiling Jiangjie-Setup-Offline-x64.exe...'
-    $buildDefs = @($commonDefs)
-    if ($prebuiltUninst) { $buildDefs += "/DPREBUILT_UNINSTALLER=$prebuiltUninst" }
-    & $makensis @($buildDefs + @($nsiScript))
-    if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
-    if ($prebuiltUninst) { Remove-Item -LiteralPath $prebuiltUninst -Force -ErrorAction SilentlyContinue }
-    Assert-NoUpx $offlineOut
+        Write-Host '[package] Compiling Jiangjie-Setup-Offline-x64.exe...'
+        $buildDefs = @($commonDefs)
+        if ($prebuiltUninst) { $buildDefs += "/DPREBUILT_UNINSTALLER=$prebuiltUninst" }
+        & $makensis @($buildDefs + @($nsiScript))
+        if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
+        if ($prebuiltUninst) { Remove-Item -LiteralPath $prebuiltUninst -Force -ErrorAction SilentlyContinue }
+        Assert-NoUpx $offlineOut
+    } finally {
+        if ($createdShortStage -and (Test-Path -LiteralPath $shortStage)) {
+            [IO.Directory]::Delete($shortStage, $false)
+        }
+    }
 }
 
 # 5. Sign outer installers AFTER compilation (and BEFORE manifest hashing!)

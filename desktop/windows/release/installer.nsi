@@ -12,6 +12,7 @@
 
 Unicode True
 ManifestDPIAware true
+ManifestLongPathAware true
 ManifestSupportedOS Win10
 RequestExecutionLevel user
 
@@ -184,7 +185,7 @@ Section "MainApplication" SEC_MAIN
   File "${STAGE_DIR}\Jiangjie.exe"
   File "${STAGE_DIR}\JiangjieUpdater.exe"
 
-  ; 2. 落盘至版本隔离目录 versions\<releaseSequence>\
+  ; 2. 落盘至版本隔离目录 versions\<releaseSequence>
   SetOutPath "$INSTDIR\versions\${RELEASE_SEQUENCE}"
   File "${STAGE_DIR}\JiangjieApp.exe"
   File "${STAGE_DIR}\BohackCredentialStore.exe"

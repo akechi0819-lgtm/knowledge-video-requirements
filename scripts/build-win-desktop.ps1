@@ -102,6 +102,13 @@ $stage = Join-Path $parent ('.win-desktop-' + [guid]::NewGuid())
 $null = New-Item -ItemType Directory -Path $stage
 try {
     Copy-Tree $RuntimeDirectory $stage
+    # Prune unused Chrome DevTools Markdown issue descriptions (up to 201-char relative paths)
+    # that would otherwise exceed Windows 260-char MAX_PATH under %LOCALAPPDATA%\Programs\Jiangjie\versions\<seq>\.
+    $longInspectorDocs = Join-Path $stage 'dsh-workbench-fix/dsh-base/node_modules/@deepseek-ai/dsh-experimental-inspector/lib/devtools/models/issues_manager/descriptions'
+    if (Test-Path -LiteralPath $longInspectorDocs -PathType Container) {
+        Get-ChildItem -LiteralPath $longInspectorDocs -Recurse -Force | ForEach-Object { if (-not $_.PSIsContainer) { $_.IsReadOnly = $false } }
+        Remove-Item -LiteralPath $longInspectorDocs -Recurse -Force
+    }
     Invoke-Checked cmake @('--install', $native, '--config', 'Release', '--prefix', $stage)
 
     $base = 'dsh-workbench-fix/dsh-base'
