@@ -11,11 +11,10 @@
  *   - SHA256SUMS.txt           标准校验汇总文件
  */
 import { createHash, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify, createPublicKey } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { gunzipSync, gzipSync } from 'node:zlib'
+import { createGzip, gunzipSync, gzipSync } from 'node:zlib'
 
 const BLOCK_SIZE = 64 * 1024 // 64 KiB deterministic chunking for .blockmap
 
@@ -140,11 +139,105 @@ function collectFilesSorted(rootDir, relPaths) {
   return files
 }
 
+function tarOctal(value, width) {
+  const str = Math.max(0, Math.floor(value)).toString(8).padStart(width - 1, '0')
+  return Buffer.from(str.slice(-(width - 1)) + '\0', 'ascii')
+}
+
+function makeTarHeader({ name, size, typeflag = '0', mode = 0o644 }) {
+  const hdr = Buffer.alloc(512, 0)
+  const nameBuf = Buffer.from(name, 'utf8')
+  nameBuf.copy(hdr, 0, 0, Math.min(nameBuf.length, 100))
+  tarOctal(mode, 8).copy(hdr, 100)
+  tarOctal(0, 8).copy(hdr, 108)
+  tarOctal(0, 8).copy(hdr, 116)
+  tarOctal(size, 12).copy(hdr, 124)
+  tarOctal(0, 12).copy(hdr, 136)
+  hdr.fill(0x20, 148, 156)
+  hdr[156] = typeflag.charCodeAt(0)
+  Buffer.from('ustar\0', 'ascii').copy(hdr, 257)
+  Buffer.from('00', 'ascii').copy(hdr, 263)
+  let sum = 0
+  for (let i = 0; i < 512; i++) sum += hdr[i]
+  Buffer.from(sum.toString(8).padStart(6, '0') + '\0 ', 'ascii').copy(hdr, 148)
+  return hdr
+}
+
+function makePaxRecord(key, value) {
+  const body = ` ${key}=${value}\n`
+  const bodyBytes = Buffer.byteLength(body, 'utf8')
+  let len = bodyBytes + String(bodyBytes).length
+  while (len !== bodyBytes + String(len).length) len = bodyBytes + String(len).length
+  return Buffer.from(`${len}${body}`, 'utf8')
+}
+
+async function writeDeterministicTarGz(archivePath, files) {
+  await new Promise((resolve, reject) => {
+    const gzip = createGzip({ level: 6 })
+    const out = createWriteStream(archivePath)
+    const zeroPad = Buffer.alloc(512, 0)
+
+    const writeChunk = chunk => {
+      if (!gzip.write(chunk)) {
+        return new Promise(res => gzip.once('drain', res))
+      }
+      return null
+    }
+
+    gzip.on('error', reject)
+    out.on('error', reject)
+    out.on('finish', resolve)
+    gzip.pipe(out)
+
+    ;(async () => {
+      try {
+        for (const f of files) {
+          const entryName = f.relPath.replace(/\\/g, '/')
+          const needsPax = Buffer.byteLength(entryName, 'utf8') > 99 || /[^\x20-\x7e]/.test(entryName) || f.size >= 0o77777777777
+          if (needsPax) {
+            let paxData = makePaxRecord('path', entryName)
+            if (f.size >= 0o77777777777) paxData = Buffer.concat([paxData, makePaxRecord('size', String(f.size))])
+            const paxHdr = makeTarHeader({ name: 'PaxHeader/entry', size: paxData.length, typeflag: 'x', mode: 0o644 })
+            const p1 = writeChunk(paxHdr); if (p1) await p1
+            const p2 = writeChunk(paxData); if (p2) await p2
+            const remPax = paxData.length % 512
+            if (remPax) { const p3 = writeChunk(zeroPad.subarray(0, 512 - remPax)); if (p3) await p3 }
+          }
+          const shortName = needsPax ? 'pax-entry' : entryName
+          const fileHdr = makeTarHeader({ name: shortName, size: f.size, typeflag: '0', mode: 0o644 })
+          const h = writeChunk(fileHdr); if (h) await h
+
+          if (f.size > 0) {
+            await new Promise((res, rej) => {
+              const rs = createReadStream(f.absPath, { highWaterMark: 256 * 1024 })
+              rs.on('error', rej)
+              rs.on('data', chunk => {
+                if (!gzip.write(chunk)) {
+                  rs.pause()
+                  gzip.once('drain', () => rs.resume())
+                }
+              })
+              rs.on('end', res)
+            })
+            const rem = f.size % 512
+            if (rem) { const p = writeChunk(zeroPad.subarray(0, 512 - rem)); if (p) await p }
+          }
+        }
+        const e1 = writeChunk(zeroPad); if (e1) await e1
+        const e2 = writeChunk(zeroPad); if (e2) await e2
+        gzip.end()
+      } catch (err) {
+        gzip.destroy(err)
+        reject(err)
+      }
+    })()
+  })
+}
+
 export async function buildComponents({ stageDir, outDir, hashesOut }) {
   mkdirSync(outDir, { recursive: true })
   const index = []
   const hashes = {}
-  const tarCmd = process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
 
   for (const spec of COMPONENT_LAYOUT) {
     const existingSources = spec.sources.filter(s => existsSync(path.join(stageDir, s)))
@@ -156,7 +249,6 @@ export async function buildComponents({ stageDir, outDir, hashesOut }) {
     const baseDir = spec.unpackDir && existingSources.length === 1 && existingSources[0] === spec.unpackDir
       ? path.join(stageDir, spec.unpackDir)
       : stageDir
-    const relInputs = baseDir === stageDir ? existingSources : ['.']
     const files = collectFilesSorted(baseDir, baseDir === stageDir ? existingSources : readdirSync(baseDir))
     let unpackedSizeBytes = 0
     const manifestHash = createHash('sha256')
@@ -169,7 +261,7 @@ export async function buildComponents({ stageDir, outDir, hashesOut }) {
     const archiveName = `component-${spec.id}-${fileManifestSha256.slice(0, 12)}.tar.gz`
     const archivePath = path.join(outDir, archiveName)
 
-    execFileSync(tarCmd, ['-czf', archivePath, '-C', baseDir, ...relInputs], { stdio: 'pipe' })
+    await writeDeterministicTarGz(archivePath, files)
     const sizeBytes = statSync(archivePath).size
     const sha256 = await hashFile(archivePath, 'sha256', 'hex')
 
