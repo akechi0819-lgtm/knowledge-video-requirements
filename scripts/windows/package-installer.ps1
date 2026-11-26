@@ -208,6 +208,30 @@ if (-not $makensis) {
     if (Test-Path -LiteralPath $componentHashesFile -PathType Leaf) {
         $commonDefs += "/DCOMPONENT_HASHES_FILE=$componentHashesFile"
     }
+    $compIndexPath = Join-Path $componentsDir 'components-index.json'
+    if (Test-Path -LiteralPath $compIndexPath -PathType Leaf) {
+        $compIndex = Get-Content -LiteralPath $compIndexPath -Raw -Encoding utf8 | ConvertFrom-Json
+        $compMap = @{}
+        foreach ($item in $compIndex) {
+            $compMap[$item.id] = (Join-Path $componentsDir $item.fileName)
+        }
+        $requiredComps = @('node', 'python', 'webview2', 'chromium', 'codecs', 'app')
+        $allPresent = $true
+        foreach ($cid in $requiredComps) {
+            if (-not $compMap.ContainsKey($cid) -or -not (Test-Path -LiteralPath $compMap[$cid] -PathType Leaf)) {
+                $allPresent = $false
+                break
+            }
+        }
+        if ($allPresent) {
+            $commonDefs += "/DCOMP_NODE_TAR=$($compMap['node'])"
+            $commonDefs += "/DCOMP_PYTHON_TAR=$($compMap['python'])"
+            $commonDefs += "/DCOMP_WEBVIEW2_TAR=$($compMap['webview2'])"
+            $commonDefs += "/DCOMP_CHROMIUM_TAR=$($compMap['chromium'])"
+            $commonDefs += "/DCOMP_CODECS_TAR=$($compMap['codecs'])"
+            $commonDefs += "/DCOMP_APP_TAR=$($compMap['app'])"
+        }
+    }
 
     try {
         $prebuiltUninst = $null

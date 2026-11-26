@@ -70,9 +70,8 @@ InstallDir "$LOCALAPPDATA\Programs\${APP_ID}"
 InstallDirRegKey HKCU "${UNINSTALL_REG_KEY}" "InstallLocation"
 BrandingText "${APP_NAME} · Windows x64 Per-User 安装包"
 
-; 使用 LZMA 固实压缩（严禁使用 UPX 等易触发杀软误报的加壳工具）
-SetCompressor /SOLID lzma
-SetCompressorDictSize 32
+; 使用 zlib 压缩外层壳（内置组件已预压缩为 .tar.gz，避免 32 位 NSIS 固实压缩超 2 GiB 映射限制，且严禁使用 UPX）
+SetCompressor /FINAL zlib
 
 ; 版本资源元数据
 VIProductVersion "${APP_VI_VERSION}"
@@ -187,10 +186,6 @@ Section "MainApplication" SEC_MAIN
 
   ; 2. 落盘至版本隔离目录 versions\<releaseSequence>
   SetOutPath "$INSTDIR\versions\${RELEASE_SEQUENCE}"
-  File "${STAGE_DIR}\JiangjieApp.exe"
-  File "${STAGE_DIR}\BohackCredentialStore.exe"
-  File "${STAGE_DIR}\desktop-agent.patch.yml"
-  File "${STAGE_DIR}\runtime-bom.json"
   !ifdef COMPONENT_HASHES_FILE
     File "${COMPONENT_HASHES_FILE}"
   !endif
@@ -198,10 +193,75 @@ Section "MainApplication" SEC_MAIN
     File "${RELEASE_DESCRIPTOR_FILE}"
   !endif
 
-  File /r "${STAGE_DIR}\desktop"
-  File /r "${STAGE_DIR}\dsh-workbench-fix"
-  File /r "${STAGE_DIR}\video-kit"
-  File /r "${STAGE_DIR}\runtime"
+  !ifdef COMP_APP_TAR
+    ; 嵌入已压缩的组件归档（总大小 < 800 MiB，彻底规避 32 位 NSIS 2 GiB 数据块上限）
+    CreateDirectory "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\node"
+    CreateDirectory "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\python"
+    CreateDirectory "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\webview2"
+    CreateDirectory "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\chromium"
+    CreateDirectory "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\codecs"
+    SetOutPath "$INSTDIR\.pkg-tmp"
+
+    DetailPrint "正在释放内置运行环境 (Node.js / Python / 编解码器 / 浏览器)..."
+    File "/oname=node.tar.gz" "${COMP_NODE_TAR}"
+    nsExec::ExecToLog `"$SYSDIR\tar.exe" -xzf "$INSTDIR\.pkg-tmp\node.tar.gz" -C "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\node"`
+    Pop $0
+    Delete "$INSTDIR\.pkg-tmp\node.tar.gz"
+    ${If} $0 != 0
+      Abort "安装失败：无法解压内置 Node.js 运行时 (错误码 $0)。"
+    ${EndIf}
+
+    File "/oname=python.tar.gz" "${COMP_PYTHON_TAR}"
+    nsExec::ExecToLog `"$SYSDIR\tar.exe" -xzf "$INSTDIR\.pkg-tmp\python.tar.gz" -C "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\python"`
+    Pop $0
+    Delete "$INSTDIR\.pkg-tmp\python.tar.gz"
+    ${If} $0 != 0
+      Abort "安装失败：无法解压内置 Python 运行时 (错误码 $0)。"
+    ${EndIf}
+
+    File "/oname=codecs.tar.gz" "${COMP_CODECS_TAR}"
+    nsExec::ExecToLog `"$SYSDIR\tar.exe" -xzf "$INSTDIR\.pkg-tmp\codecs.tar.gz" -C "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\codecs"`
+    Pop $0
+    Delete "$INSTDIR\.pkg-tmp\codecs.tar.gz"
+    ${If} $0 != 0
+      Abort "安装失败：无法解压内置音视频编解码器 (错误码 $0)。"
+    ${EndIf}
+
+    File "/oname=webview2.tar.gz" "${COMP_WEBVIEW2_TAR}"
+    nsExec::ExecToLog `"$SYSDIR\tar.exe" -xzf "$INSTDIR\.pkg-tmp\webview2.tar.gz" -C "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\webview2"`
+    Pop $0
+    Delete "$INSTDIR\.pkg-tmp\webview2.tar.gz"
+    ${If} $0 != 0
+      Abort "安装失败：无法解压内置 WebView2 运行时 (错误码 $0)。"
+    ${EndIf}
+
+    File "/oname=chromium.tar.gz" "${COMP_CHROMIUM_TAR}"
+    nsExec::ExecToLog `"$SYSDIR\tar.exe" -xzf "$INSTDIR\.pkg-tmp\chromium.tar.gz" -C "$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\chromium"`
+    Pop $0
+    Delete "$INSTDIR\.pkg-tmp\chromium.tar.gz"
+    ${If} $0 != 0
+      Abort "安装失败：无法解压内置渲染浏览器 (错误码 $0)。"
+    ${EndIf}
+
+    DetailPrint "正在释放讲界工作台主程序与视频模块..."
+    File "/oname=app.tar.gz" "${COMP_APP_TAR}"
+    nsExec::ExecToLog `"$INSTDIR\versions\${RELEASE_SEQUENCE}\runtime\python\python.exe" -I -B -X utf8 -c "import tarfile,sys; t=tarfile.open(sys.argv[1]); t.extractall(sys.argv[2],filter='data'); t.close()" "$INSTDIR\.pkg-tmp\app.tar.gz" "$INSTDIR\versions\${RELEASE_SEQUENCE}"`
+    Pop $0
+    Delete "$INSTDIR\.pkg-tmp\app.tar.gz"
+    RMDir /r "$INSTDIR\.pkg-tmp"
+    ${If} $0 != 0
+      Abort "安装失败：无法解压应用主程序组件 (错误码 $0)。"
+    ${EndIf}
+  !else
+    File "${STAGE_DIR}\JiangjieApp.exe"
+    File "${STAGE_DIR}\BohackCredentialStore.exe"
+    File "${STAGE_DIR}\desktop-agent.patch.yml"
+    File "${STAGE_DIR}\runtime-bom.json"
+    File /r "${STAGE_DIR}\desktop"
+    File /r "${STAGE_DIR}\dsh-workbench-fix"
+    File /r "${STAGE_DIR}\video-kit"
+    File /r "${STAGE_DIR}\runtime"
+  !endif
 
   ; 3. 写入或嵌入已签名的卸载器
   SetOutPath "$INSTDIR"
