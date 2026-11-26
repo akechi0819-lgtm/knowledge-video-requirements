@@ -431,6 +431,7 @@ jobs:
       - name: Publish to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.build-windows.outputs.tag_name }}
           VERSION: ${{ needs.build-windows.outputs.version }}
           CHANNEL: ${{ needs.build-windows.outputs.channel }}
