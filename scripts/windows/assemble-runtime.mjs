@@ -216,7 +216,12 @@ function escapeRegex(value) {
 
 function inventory(root) {
   const buildPaths = [...new Set([repo, cache, scratch].filter(Boolean))];
-  const genericHostPaths = [...new Set([os.tmpdir(), process.env.USERPROFILE].filter(Boolean))];
+  // On GitHub-hosted Windows runners, USERPROFILE/TEMP are generic `runneradmin` / `RUNNER~1`
+  // paths that match upstream SHA-256-locked PyPI wheels (numpy/scipy/frozenlist build metadata).
+  // Still enforce build-specific [repo, cache, scratch] everywhere, and USERPROFILE/TEMP on dev hosts.
+  const isSharedCiProfile = /^c:[\\/]users[\\/](?:runneradmin|runner~1)(?:[\\/]|$)/i.test(process.env.USERPROFILE || '') ||
+    /^c:[\\/]users[\\/](?:runneradmin|runner~1)(?:[\\/]|$)/i.test(os.tmpdir() || '');
+  const genericHostPaths = isSharedCiProfile ? [] : [...new Set([os.tmpdir(), process.env.USERPROFILE].filter(Boolean))];
   const compileRegex = items => {
     const patterns = items.flatMap(host => {
       const slash = host.split('\\').join('/');
