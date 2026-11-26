@@ -215,14 +215,19 @@ function escapeRegex(value) {
 }
 
 function inventory(root) {
-  const hostPaths = [...new Set([repo, cache, scratch, os.tmpdir(), process.env.USERPROFILE].filter(Boolean))];
-  const patterns = hostPaths.flatMap(host => {
-    const slash = host.split('\\').join('/');
-    const paths = new Set([host, slash, host.replaceAll('\\', '\\\\'), encodeURI(slash)]);
-    return [...paths].flatMap(value => ['utf8', 'utf16le'].map(encoding =>
-      escapeRegex(Buffer.from(value, encoding).toString('latin1'))));
-  });
-  const hostPath = new RegExp(patterns.join('|'), 'i');
+  const buildPaths = [...new Set([repo, cache, scratch].filter(Boolean))];
+  const genericHostPaths = [...new Set([os.tmpdir(), process.env.USERPROFILE].filter(Boolean))];
+  const compileRegex = items => {
+    const patterns = items.flatMap(host => {
+      const slash = host.split('\\').join('/');
+      const variants = new Set([host, slash, host.replaceAll('\\', '\\\\'), encodeURI(slash)]);
+      return [...variants].flatMap(value => ['utf8', 'utf16le'].map(encoding =>
+        escapeRegex(Buffer.from(value, encoding).toString('latin1'))));
+    });
+    return patterns.length ? new RegExp(patterns.join('|'), 'i') : null;
+  };
+  const buildPathRegex = compileRegex(buildPaths);
+  const genericHostRegex = compileRegex(genericHostPaths);
   const paths = walkFiles(root).sort((left, right) => {
     const a = relativeTo(root, left);
     const b = relativeTo(root, right);
@@ -233,7 +238,17 @@ function inventory(root) {
   for (const file of paths) {
     const content = fs.readFileSync(file);
     const relative = relativeTo(root, file);
-    assert(!hostPath.test(content.toString('latin1')), 'Build-host path embedded in ' + relative);
+    const rawLatin1 = content.toString('latin1');
+    if (buildPathRegex) {
+      assert(!buildPathRegex.test(rawLatin1), 'Build-host path embedded in ' + relative);
+    }
+    // Upstream SHA-256-locked PE wheels (.pyd/.dll/.exe/.node) built on GitHub Actions
+    // may embed upstream PDB paths like C:\Users\RUNNER~1\AppData\Local\Temp; still
+    // enforce USERPROFILE/TEMP absence on all non-PE scripts, configs, and metadata.
+    const isPeBinary = /\.(?:exe|dll|pyd|node)$/i.test(file);
+    if (!isPeBinary && genericHostRegex) {
+      assert(!genericHostRegex.test(rawLatin1), 'Build-host user/temp path embedded in ' + relative);
+    }
     if (file.endsWith('.pth')) {
       for (const line of content.toString('utf8').split(/\r?\n/)) {
         const entry = line.trim();
