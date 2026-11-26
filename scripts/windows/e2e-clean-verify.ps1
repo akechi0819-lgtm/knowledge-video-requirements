@@ -263,6 +263,7 @@ $origProcessPath = $env:PATH
 $origUserPath = $null
 $origMachinePath = $null
 $scrubbedRegistry = $false
+$hiddenSystemShims = [System.Collections.Generic.List[hashtable]]::new()
 
 try {
     # =========================================================================
@@ -276,7 +277,17 @@ try {
             [Environment]::SetEnvironmentVariable('Path', '', 'User')
             [Environment]::SetEnvironmentVariable('Path', $cleanSystemPath, 'Machine')
             $scrubbedRegistry = $true
-            Write-Step 'Scrubbed Machine & User registry PATH to Windows system directories only (will restore on exit).'
+            # GitHub-hosted Windows runners preinstall Python Launcher (py.exe/pyw.exe) directly
+            # inside C:\Windows; temporarily hide those shims so host Python is 100% unreachable.
+            foreach ($shimName in @('py.exe', 'pyw.exe')) {
+                $shimPath = Join-Path $systemRoot $shimName
+                if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+                    $bakPath = "$shimPath.jj-e2e-hidden"
+                    Move-Item -LiteralPath $shimPath -Destination $bakPath -Force
+                    $hiddenSystemShims.Add(@{ Orig = $shimPath; Bak = $bakPath })
+                }
+            }
+            Write-Step 'Scrubbed Machine & User registry PATH (and hid C:\Windows\py*.exe shims) to Windows system tools only.'
         } else {
             Write-Warning '[e2e-clean] -ScrubMachinePath requested without Administrator privileges; applying Process-level PATH isolation only.'
         }
@@ -754,6 +765,11 @@ try {
     if ($scrubbedRegistry) {
         [Environment]::SetEnvironmentVariable('Path', $origUserPath, 'User')
         [Environment]::SetEnvironmentVariable('Path', $origMachinePath, 'Machine')
+    }
+    foreach ($shim in $hiddenSystemShims) {
+        if (Test-Path -LiteralPath $shim.Bak -PathType Leaf) {
+            Move-Item -LiteralPath $shim.Bak -Destination $shim.Orig -Force -ErrorAction SilentlyContinue
+        }
     }
 
     # Best-effort cleanup of any leaked processes if a stage aborted early
