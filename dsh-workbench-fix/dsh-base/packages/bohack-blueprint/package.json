@@ -7,7 +7,8 @@
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
-    "./skill-process": "./lib/skill-process.js"
+    "./skill-process": "./lib/skill-process.js",
+    "./windows-credentials": "./lib/windows-credentials.js"
   },
   "files": [
     "index.js",

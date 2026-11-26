@@ -14,6 +14,7 @@ import { createSettings, resolveAgent } from './settings.js'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs'
 import { execFile } from 'node:child_process'
+import { childEnvironment, resolveTool } from './runtime.js'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { validateBlueprint, renderBlueprint, parseRequirement } from './blueprint.js'
@@ -368,18 +369,12 @@ function registerContractTools(agentCtx, ctx, getRequirement, resolveRequirement
 
         const runOne = (idx) => new Promise((resolve) => {
           const pyArgs = [SCENE_CLI, 'query', '--index', idx, '--query', question, '--limit', String(config.sceneLimit || 3)]
-          const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
-          execFile('python', pyArgs, { encoding: 'utf8', timeout: 30000, maxBuffer: 8e6, cwd: path.dirname(idx), env }, (err, stdout, stderr) => {
-            if (err && !stdout) {
-              // Windows may only expose the `py` launcher.
-              execFile('py', ['-3', ...pyArgs], { encoding: 'utf8', timeout: 30000, maxBuffer: 8e6, cwd: path.dirname(idx), env }, (err2, stdout2) => {
-                if (err2 && !stdout2) {
-                  resolve({ index: path.basename(idx), ok: false, error: String(err2?.message || err2).slice(0, 300), stderr: String(stderr || '').slice(0, 300) })
-                } else resolve(parseQueryOutput(idx, stdout2))
-              })
-              return
-            }
-            resolve(parseQueryOutput(idx, stdout))
+          const python = resolveTool('python')
+          const env = childEnvironment(process.env, [python])
+          execFile(python, pyArgs, { encoding: 'utf8', timeout: 30000, maxBuffer: 8e6, cwd: path.dirname(idx), env, windowsHide: true }, (err, stdout, stderr) => {
+            resolve(err && !stdout
+              ? { index: path.basename(idx), ok: false, error: err.message.slice(0, 300), stderr: stderr.slice(0, 300) }
+              : parseQueryOutput(idx, stdout))
           })
         })
 
@@ -1241,7 +1236,8 @@ export function createEngine(ctx, config = {}) {
       chatStarted = false
       throw new Error(`需求回合失败：${e?.message || e}`)
     }
-    if (chatCapture.failure) throw config.memberProject?.error(chatSessionId) || new Error('需求模型请求失败（' + chatCapture.failure + '）')
+    if (chatCapture.failure) throw config.memberProject?.error(chatSessionId)
+      || Object.assign(new Error('需求模型请求失败（' + chatCapture.failure + '）'), { code: chatCapture.failure })
     let reply = chatCapture.text
     {
       const deadline = Date.now() + 8000

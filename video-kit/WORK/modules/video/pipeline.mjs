@@ -12,10 +12,27 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import STYLE, { WORK_DIR, MODULE_DIR } from './style.mjs';
 import { concatClips, probeDuration } from './ffmpeg.mjs';
+import { childEnvironment, emitDesktopDiagnostic, resolveTool, runtimePaths, writablePath } from './runtime.mjs';
 import { buildPlan } from './plan.mjs';
 import { renderSegment } from './render.mjs';
 
-const run = promisify(execFile);
+const exec = promisify(execFile);
+async function run(program, args, options) {
+  try {
+    const result = await exec(program, args, { ...options, windowsHide: true });
+    emitDesktopDiagnostic('video', result.stderr);
+    return result;
+  } catch (error) {
+    emitDesktopDiagnostic('video', error.stderr || 'render process failed');
+    throw error;
+  }
+}
+
+function pythonEnvironment(python) {
+  const ffmpeg = resolveTool('ffmpeg');
+  const ffprobe = resolveTool('ffprobe');
+  return { ...childEnvironment(process.env, [python, ffmpeg, ffprobe]), VIDEO_FFMPEG: ffmpeg, VIDEO_FFPROBE: ffprobe };
+}
 
 function parseArgs(argv) {
   const args = { blueprint: null, out: null, voice: STYLE.tts.voice, forceTts: false, allowUnconfirmed: false, prepared: false };
@@ -43,7 +60,7 @@ async function enforceGate(bpPath, allowUnconfirmed) {
   const script = path.join(WORK_DIR, 'tools', 'blueprint.mjs');
   let stdout, code = 0;
   try {
-    const r = await run(process.execPath, [script, 'parse', bpPath, '--json'], { maxBuffer: 32 * 1024 * 1024 });
+    const r = await run(process.execPath, [script, 'parse', bpPath, '--json'], { env: childEnvironment(), maxBuffer: 32 * 1024 * 1024 });
     stdout = r.stdout;
   } catch (e) {
     code = e.code ?? 1;
@@ -88,9 +105,10 @@ async function synthesizeNarration(bpPath, audioDir, voice, force) {
   ];
   if (force) args.push('--force');
   const t0 = Date.now();
-  const { stdout } = await run(STYLE.paths.python, args, {
+  const python = resolveTool('python');
+  const { stdout } = await run(python, args, {
     maxBuffer: 32 * 1024 * 1024,
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    env: pythonEnvironment(python),
   });
   const info = JSON.parse(stdout.trim().split('\n').pop());
   const payload = JSON.parse(fs.readFileSync(outJson, 'utf8'));
@@ -152,10 +170,21 @@ async function main() {
 
   const runStart = Date.now();
 
-  const outDir = path.resolve(args.out ?? path.join(WORK_DIR, 'videos', bp.case_id, `v${bp.version}`));
+  const runtime = runtimePaths();
+  const app = process.env.JIANGJIE_APP_ROOT && runtime.app;
+  const videos = path.join(runtime.data || WORK_DIR, 'videos');
+  const destination = path.resolve(videos, bp.case_id, `v${bp.version}`);
+  const relative = path.relative(videos, destination);
+  if (!args.out && (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))) throw new Error('invalid video output path');
+  const outDir = writablePath(path.resolve(args.out ?? destination), app);
   if (gate.preview && !args.out) throw new Error('refusing to write an unconfirmed blueprint into the official v目录; pass --out explicitly');
   const resume = args.prepared && process.env.VIDEO_RESUME === '1';
   if (args.prepared && !resume && fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`output directory is not empty: ${outDir}`);
+  if (runtime.cache && (process.platform === 'win32' || process.env.JIANGJIE_CACHE_DIR)) {
+    const tmp = writablePath(path.join(runtime.cache, 'tmp'), app);
+    fs.mkdirSync(tmp, { recursive: true });
+    process.env.TEMP = process.env.TMP = process.env.TMPDIR = tmp;
+  }
   fs.mkdirSync(outDir, { recursive: true });
   const audioDir = path.join(outDir, 'audio');
   if (args.prepared && process.env.VIDEO_TTS_CACHE_DIR) seedTtsCache(bp.segments, process.env.VIDEO_TTS_CACHE_DIR, audioDir, { skipMissing: resume, preserveExisting: resume });
@@ -266,9 +295,10 @@ async function main() {
   fs.writeFileSync(path.join(outDir, 'mapping.json'), JSON.stringify(mapping, null, 2), 'utf8');
 
   // ---- vibe-knowledge 基础档：强制 BGM 混音 + 成片质检 ----
-  const pyEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' };
+  const python = resolveTool('python');
+  const pyEnv = pythonEnvironment(python);
   const fin0 = Date.now();
-  const { stdout: finOut } = await run(STYLE.paths.python, [
+  const { stdout: finOut } = await run(python, [
     path.join(MODULE_DIR, 'finish_bgm.py'), outDir, STYLE.paths.ffmpeg, STYLE.paths.ffprobe,
     ...(tts.payload.backend === 'sapi' ? ['--compress-narration'] : []),
   ], { maxBuffer: 32 * 1024 * 1024, env: pyEnv });
@@ -277,7 +307,7 @@ async function main() {
   const qa0 = Date.now();
   let qaOut;
   try {
-    qaOut = (await run(STYLE.paths.python, [
+    qaOut = (await run(python, [
       path.join(MODULE_DIR, 'qa_windows.py'), finalPath, STYLE.paths.ffmpeg, STYLE.paths.ffprobe,
     ], { maxBuffer: 32 * 1024 * 1024, env: pyEnv })).stdout;
   } catch (e) {

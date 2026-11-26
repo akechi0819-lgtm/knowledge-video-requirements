@@ -97,16 +97,24 @@ test('an active native job is still allowed to submit after more than ten minute
 test('成片校验允许无映射和自定义段落，损坏映射降级整片', async () => {
   const { verifyOriginalFilm } = await import('../lib/original-video-job.js')
   const { chmod } = await import('node:fs/promises')
+  const { createMutedVideo } = await import('./media-fixture.js')
   const root = await mkdtemp(path.join(os.tmpdir(), 'original-check-'))
   try {
     const film = path.join(root, 'film'), kit = path.join(root, 'kit')
     await mkdir(film); await mkdir(path.join(kit, 'WORK/modules/video'), {recursive:true})
     const probe = path.join(root, 'probe'), decoder = path.join(root, 'decoder')
-    await writeFile(probe, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ format:{duration:'10'}, streams:[{codec_type:'video',width:320,height:180}] })}'\n`)
-    await writeFile(decoder, '#!/bin/sh\nprintf "frame=10\\nprogress=end\\n"\n')
-    await Promise.all([chmod(probe, 0o755), chmod(decoder, 0o755)])
-    await writeFile(path.join(kit, 'WORK/modules/video/style.mjs'), `export default ${JSON.stringify({paths:{ffprobe:probe,ffmpeg:decoder}})}`)
-    await writeFile(path.join(film, 'final.mp4'), 'fixture')
+    const final = path.join(film, 'final.mp4')
+    let paths
+    if (process.platform === 'win32') {
+      paths = await createMutedVideo(final, 10)
+    } else {
+      await writeFile(probe, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ format:{duration:'10'}, streams:[{codec_type:'video',width:320,height:180}] })}'\n`)
+      await writeFile(decoder, '#!/bin/sh\nprintf "frame=10\\nprogress=end\\n"\n')
+      await Promise.all([chmod(probe, 0o755), chmod(decoder, 0o755)])
+      await writeFile(final, 'fixture')
+      paths = { ffprobe: probe, ffmpeg: decoder }
+    }
+    await writeFile(path.join(kit, 'WORK/modules/video/style.mjs'), 'export default ' + JSON.stringify({ paths }))
     const production = {sections:[{id:'B01',narration:''},{id:'B02',narration:''}]}
     let report = await verifyOriginalFilm(film, production, kit)
     assert.equal(report.pass, true); assert.equal(report.mappingMode, 'full'); assert.deepEqual(report.segments, [])
@@ -120,11 +128,15 @@ test('成片校验允许无映射和自定义段落，损坏映射降级整片',
     assert.equal(report.mappingMode, 'full'); assert.match(report.problems[0], /映射内容无效/)
     await writeFile(path.join(film, 'mapping.json'), '{broken')
     assert.equal((await verifyOriginalFilm(film, production, kit)).mappingMode, 'full')
-    await writeFile(decoder, '#!/bin/sh\nprintf "frame=0\\nprogress=end\\n"\n')
-    await assert.rejects(verifyOriginalFilm(film, production, kit), { code:'INVALID_FILM', message:/没有可解码/ })
-    await writeFile(decoder, '#!/bin/sh\nprintf "frame=10\\nprogress=end\\n"\nprintf "black_start:0 black_end:9.95 black_duration:9.95\\n" >&2\n')
+    if (process.platform === 'win32') await createMutedVideo(final, 10, 'black')
+    else {
+      await writeFile(decoder, '#!/bin/sh\nprintf "frame=0\\nprogress=end\\n"\n')
+      await assert.rejects(verifyOriginalFilm(film, production, kit), { code:'INVALID_FILM', message:/没有可解码/ })
+      await writeFile(decoder, '#!/bin/sh\nprintf "frame=10\\nprogress=end\\n"\nprintf "black_start:0 black_end:9.95 black_duration:9.95\\n" >&2\n')
+    }
     await assert.rejects(verifyOriginalFilm(film, production, kit), { code:'INVALID_FILM', message:/全黑/ })
-    await writeFile(decoder, '#!/bin/sh\nexit 1\n')
+    if (process.platform === 'win32') await writeFile(final, 'corrupt mp4')
+    else await writeFile(decoder, '#!/bin/sh\nexit 1\n')
     await assert.rejects(verifyOriginalFilm(film, production, kit), { code:'INVALID_FILM' })
     await writeFile(path.join(film, 'final.mp4'), '')
     await assert.rejects(verifyOriginalFilm(film, production, kit), { code:'INVALID_FILM' })

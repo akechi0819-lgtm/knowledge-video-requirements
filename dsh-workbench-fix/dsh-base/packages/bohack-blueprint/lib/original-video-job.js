@@ -1,10 +1,11 @@
-import { mkdir, readFile, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { pathToFileURL } from 'node:url'
-import { readAssetManifest } from './generated-assets.js'
+import { assetFile, readAssetManifest } from './generated-assets.js'
 import { appendJsonl, checkRuntimePath, prepareSkillRuntime } from './skill-runtime.js'
+import { childEnvironment, resolveTool } from './runtime.js'
 
 const runFile = promisify(execFile)
 const schema = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -21,7 +22,7 @@ export async function verifyOriginalFilm(film, production, kit) {
     const start = Date.now()
     let stderr = '', exitCode = null
     try {
-      const result = await runFile(command, args, { maxBuffer: 16 * 1024 * 1024 })
+      const result = await runFile(command, args, { cwd: film, env: childEnvironment(process.env, [command]), maxBuffer: 16 * 1024 * 1024, windowsHide: true })
       stderr = result.stderr
       exitCode = 0
       return result
@@ -34,11 +35,11 @@ export async function verifyOriginalFilm(film, production, kit) {
       appendJsonl(path.dirname(film), 'commands.jsonl', { ts: new Date(start).toISOString(), cmd: [command, ...args].map(arg => JSON.stringify(arg)).join(' '), exitCode, durationMs: Date.now() - start, stderrHead: stderr.slice(0, 1000), cwd: process.cwd() })
     }
   }
-  const probed = await audited(style.paths.ffprobe, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', file])
+  const probed = await audited(style.paths.ffprobe || resolveTool('ffprobe', process.env, kit), ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', file])
   const probe = JSON.parse(probed.stdout), duration = Number(probe.format?.duration)
   if (!Number.isFinite(duration) || duration <= 0 || !probe.streams?.some(stream => stream.codec_type === 'video' && stream.width > 0 && stream.height > 0)) throw invalidFilm('成片不是有效视频')
   // Decode the complete video, count actual frames and detect a fully black film.
-  const decoded = await audited(style.paths.ffmpeg, ['-v', 'info', '-xerror', '-i', file, '-map', '0:v:0', '-vf', 'blackdetect=d=0', '-an', '-f', 'null', '-', '-progress', 'pipe:1', '-nostats'])
+  const decoded = await audited(style.paths.ffmpeg || resolveTool('ffmpeg', process.env, kit), ['-v', 'info', '-xerror', '-i', file, '-map', '0:v:0', '-vf', 'blackdetect=d=0', '-an', '-f', 'null', '-', '-progress', 'pipe:1', '-nostats'])
   const counts = [...decoded.stdout.matchAll(/^frame=\s*(\d+)\s*$/gm)].map(match => Number(match[1]))
   if (!counts.length || Math.max(...counts) < 1) throw invalidFilm('成片没有可解码的视频帧。')
   const black = [...decoded.stderr.matchAll(/black_start:([\d.]+)\s+black_end:([\d.]+)\s+black_duration:([\d.]+)/g)]
@@ -83,8 +84,20 @@ export async function runOriginalVideoJob({ ctx, sessionId, dir, production, kit
     if (assetManifest?.assets.length) {
       const mount = path.join(scenes, 'assets')
       const target = path.relative(scenes, path.join(dir, 'assets'))
-      try { await symlink(target, mount, 'dir') }
-      catch (error) { if (error.code !== 'EEXIST' || await readlink(mount) !== target) throw error }
+      if (process.platform === 'win32') {
+        const files = new Set(['assets/manifest.json', ...assetManifest.assets.flatMap(asset =>
+          [asset.sourceScript, ...asset.files.flatMap(file => [file.path, file.preview])]).filter(Boolean)])
+        for (const asset of files) {
+          const input = await assetFile(dir, asset)
+          const output = checkRuntimePath(runtime, scenes, asset, true)
+          if (input === output) continue
+          await mkdir(path.dirname(output), { recursive: true })
+          await copyFile(input, output)
+        }
+      } else {
+        try { await symlink(target, mount, 'dir') }
+        catch (error) { if (error.code !== 'EEXIST' || await readlink(mount) !== target) throw error }
+      }
     }
     await writeFile(path.join(dir, 'decisions.json'), JSON.stringify({
       version: production.version,

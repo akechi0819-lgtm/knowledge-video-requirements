@@ -7,7 +7,7 @@ import ipaddress
 import os
 import socket
 from pathlib import Path
-import subprocess
+from media_process import run_media
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -99,7 +99,7 @@ def synth_all(segments, audio, voice, rate, ffprobe, force=False):
                 except (ValueError, TypeError, KeyError, IndexError, binascii.Error) as error:
                     raise ValueError(f"[{sid}] MiMo 响应缺少有效的 Base64 音频") from error
             sample.write_bytes(data)
-            probe = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a:0",
+            probe = run_media([ffprobe, "-v", "error", "-select_streams", "a:0",
                 "-show_entries", "stream=codec_name:format=duration", "-of", "json", str(sample)],
                 check=True, capture_output=True, text=True)
             info = json.loads(probe.stdout)

@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, mkdir, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { discoverInstalledSkills, resolveProductionSkill, readSkillMetadata } from '../lib/skill-packages.js'
 import { checkRuntimePath, prepareSkillRuntime } from '../lib/skill-runtime.js'
+import { resolveTool } from '../lib/runtime.js'
 
 async function skill(root, folder, name, description = '说明') {
   const dir = path.join(root, '.agents/skills', folder)
@@ -25,7 +26,13 @@ test('发现任意目录、工作区覆盖、预设与完整仓库来源', async
     await mkdir(imported, { recursive: true })
     await writeFile(path.join(imported, 'SKILL.md'), '---\nname: other\ndescription: "导入的技能"\n---\n')
     await writeFile(path.join(holder, 'source.json'), JSON.stringify({ commit: '123' }))
-    await symlink(imported, path.join(workspace, '.agents/skills/imported'), 'dir')
+    const installed = path.join(workspace, '.agents/skills/imported')
+    if (process.platform === 'win32') {
+      await mkdir(installed)
+      await writeFile(path.join(installed, '.jiangjie-checkout'), path.join('first', 'repo', 'skills', 'other'))
+    } else {
+      await symlink(imported, installed, 'dir')
+    }
     const preset = path.join(kit, 'skill-packages/preset')
     await mkdir(preset, { recursive: true })
     await writeFile(path.join(preset, '讲界.manifest.json'), JSON.stringify({ id: 'preset', name: '预设', skill: 'one' }))
@@ -43,6 +50,9 @@ test('发现任意目录、工作区覆盖、预设与完整仓库来源', async
 
 test('同名 Skill 并发任务各自读取正确别名并共享持久缓存', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'skill-collision-'))
+  const windows = process.platform === 'win32'
+  const oldCache = process.env.JIANGJIE_CACHE_DIR
+  process.env.JIANGJIE_CACHE_DIR = path.join(root, 'cache')
   let a, b
   try {
     const repo = path.join(root, 'repo'), kit = path.join(root, 'kit')
@@ -51,21 +61,34 @@ test('同名 Skill 并发任务各自读取正确别名并共享持久缓存', a
     await mkdir(kit, { recursive: true })
     const playwright = path.join(kit, 'playwright.cjs')
     await writeFile(playwright, 'module.exports={chromium:{}}')
-    const style = { paths: { python: '/usr/bin/true', ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true', edge: '/usr/bin/true', playwright } }
+    const style = { paths: windows ? { python: resolveTool('python'), ffmpeg: resolveTool('ffmpeg'),
+      ffprobe: resolveTool('ffprobe'), edge: process.execPath, playwright }
+      : { python: '/usr/bin/true', ffmpeg: '/usr/bin/true', ffprobe: '/usr/bin/true', edge: '/usr/bin/true', playwright } }
     const dirs = [path.join(root, 'job-a'), path.join(root, 'job-b')]
     await Promise.all(dirs.map(dir => mkdir(dir)))
     ;[a, b] = await Promise.all([first, second].map((selectedDirectory, i) => prepareSkillRuntime({ repo, dir: dirs[i], selectedDirectory, selectedSkill: i ? 'second' : 'first', kit, settings: {}, style })))
     for (const [runtime, expected] of [[a, first], [b, second]]) {
       for (const kind of ['.agents', '.claude']) {
-        assert.equal(await realpath(path.join(runtime.env.HOME, kind, 'skills/same')), await realpath(expected))
-        assert.equal(checkRuntimePath(runtime, runtime.dir, `~/${kind}/skills/same/SKILL.md`), await realpath(path.join(expected, 'SKILL.md')))
+        const mounted = path.join(runtime.env.HOME, kind, 'skills/same')
+        if (windows) {
+          assert.equal((await lstat(mounted)).isSymbolicLink(), false)
+          assert.equal(await readFile(path.join(mounted, 'SKILL.md'), 'utf8'), await readFile(path.join(expected, 'SKILL.md'), 'utf8'))
+        } else {
+          assert.equal(await realpath(mounted), await realpath(expected))
+        }
+        assert.equal(checkRuntimePath(runtime, runtime.dir, `~/${kind}/skills/same/SKILL.md`), await realpath(path.join(mounted, 'SKILL.md')))
       }
-      assert.equal(await readlink(path.join(runtime.catalogRoot, 'same')), await realpath(expected))
+      const catalog = path.join(runtime.catalogRoot, 'same')
+      if (windows) assert.equal((await lstat(catalog)).isSymbolicLink(), false)
+      else assert.equal(await readlink(catalog), await realpath(expected))
       assert.match(await readFile(path.join(runtime.env.HOME, '.agents/skills/same/SKILL.md'), 'utf8'), /正文/)
     }
     assert.notEqual(a.env.HOME, b.env.HOME)
-    assert.equal(await realpath(path.join(a.env.HOME, '.cache')), await realpath(path.join(b.env.HOME, '.cache')))
+    assert.equal(a.env.XDG_CACHE_HOME, b.env.XDG_CACHE_HOME)
+    if (!windows) assert.equal(await realpath(path.join(a.env.HOME, '.cache')), await realpath(path.join(b.env.HOME, '.cache')))
   } finally {
+    if (oldCache === undefined) delete process.env.JIANGJIE_CACHE_DIR
+    else process.env.JIANGJIE_CACHE_DIR = oldCache
     for (const runtime of [a, b]) if (runtime) await rm(runtime.tmp, { recursive: true, force: true })
     await rm(root, { recursive: true, force: true })
   }

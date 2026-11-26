@@ -22,6 +22,45 @@
   document.body.append(dialog)
   const form = dialog.querySelector('form')
   const status = dialog.querySelector('.ws-status')
+  const wizard = document.createElement('dialog')
+  wizard.className = 'ws-dialog'
+  wizard.setAttribute('aria-labelledby', 'credential-title')
+  wizard.innerHTML = '<div class="ws-inner"><h2 id="credential-title">配置自有模型</h2><form class="ws-section"><p class="ws-help">填写服务商提供的接口地址、模型名称和密钥。保存前会发送一条简短请求测试连接，可能产生少量模型费用。</p><label class="ws-field">接口地址<input name="baseUrl" type="url" placeholder="https://api.example.com/v1" required></label><label class="ws-field">模型名称<input name="model" autocomplete="off" required></label><label class="ws-field">API 密钥<input name="apiKey" type="password" autocomplete="new-password" required></label><p class="ws-status" role="status"></p><div class="ws-actions"><button class="ghost" type="button">稍后配置</button><button class="primary" type="submit">测试连接并保存</button></div></form></div>'
+  const wizardForm = wizard.querySelector('form')
+  const wizardStatus = wizard.querySelector('.ws-status')
+  let wizardLoading = false
+  wizard.querySelector('button[type=button]').onclick = () => wizard.close()
+  wizard.addEventListener('close', () => {
+    wizardForm.elements.apiKey.value = ''
+    wizardStatus.textContent = ''
+    wizard.remove()
+  })
+  wizardForm.addEventListener('submit', async event => {
+    event.preventDefault()
+    const fields = ['baseUrl', 'model', 'apiKey'].map(name => wizardForm.elements[name])
+    const model = Object.fromEntries(fields.map(field => [field.name, field.value.trim()]))
+    const submit = wizardForm.querySelector('button[type=submit]')
+    const cancel = wizardForm.querySelector('button[type=button]')
+    for (const field of [...fields, submit, cancel]) field.disabled = true
+    const preventClose = event => event.preventDefault()
+    wizard.addEventListener('cancel', preventClose)
+    try {
+      wizardStatus.textContent = '正在测试模型连接…'
+      const response = await apiFetch('/bohack/api/model-connectivity', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(model),
+      })
+      const result = await response.json()
+      if (!response.ok || !result.ok) throw new Error(result.error || '未能连接模型。')
+      wizardStatus.textContent = '连接已通过，正在加密保存…'
+      await request({ model })
+      wizard.close()
+    } catch (error) {
+      wizardStatus.textContent = error.message
+    } finally {
+      for (const field of [...fields, submit, cancel]) field.disabled = false
+      wizard.removeEventListener('cancel', preventClose)
+    }
+  })
   const ttsProvider = document.createElement('select')
   ttsProvider.name = 'ttsProvider'
   ttsProvider.add(new Option('小米 MiMo', 'mimo'))
@@ -68,6 +107,57 @@
   for (const [name, label] of [['model','模型配置'], ['styles','风格 Skill 管理']]) {
     const button = document.createElement('button'); button.type = 'button'; button.dataset.panel = name; button.textContent = label
     button.onclick = () => showPanel(name); tabs.append(button)
+  }
+  if (window.chrome?.webview?.postMessage) {
+    const exportButton = document.createElement('button')
+    exportButton.type = 'button'
+    exportButton.className = 'ghost'
+    exportButton.textContent = '导出诊断包'
+    exportButton.onclick = () => window.chrome.webview.postMessage('export-diagnostics')
+    dialog.querySelector('.ws-head h2').after(exportButton)
+
+    // Gentle in-app update banner (never forces restart during active video rendering)
+    let updateBanner = null
+    const ensureUpdateBanner = () => {
+      if (updateBanner) return updateBanner
+      const el = document.createElement('aside')
+      el.className = 'jj-update-banner'
+      el.setAttribute('role', 'status')
+      el.setAttribute('aria-live', 'polite')
+      el.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:9999;max-width:380px;padding:14px 16px;border-radius:10px;border:1px solid rgba(246,174,98,.45);background:rgba(18,18,22,.96);color:#f5f5f5;box-shadow:0 12px 32px rgba(0,0,0,.45);font-size:13px;line-height:1.5;display:flex;flex-direction:column;gap:10px'
+      el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong class="jj-upd-title" style="color:#f6ae62;font-size:14px">新版本已就绪，重启即生效</strong><button type="button" class="jj-upd-dismiss" aria-label="稍后提醒" style="background:none;border:0;color:#999;cursor:pointer;font-size:15px">×</button></div><p class="jj-upd-msg" style="margin:0;color:#d6d6d6"></p><div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="jj-upd-later ghost" style="padding:6px 12px">稍后</button><button type="button" class="jj-upd-restart primary" style="padding:6px 12px">立即重启更新</button></div>'
+      el.querySelector('.jj-upd-dismiss').onclick = () => el.remove()
+      el.querySelector('.jj-upd-later').onclick = () => el.remove()
+      el.querySelector('.jj-upd-restart').onclick = async () => {
+        const msg = el.querySelector('.jj-upd-msg')
+        try {
+          const r = await fetch('/bohack/api/desktop/busy')
+          const busyState = r.ok ? await r.json() : { busy: false }
+          if (busyState.busy) {
+            msg.textContent = '当前有视频渲染任务正在进行，为避免中断成片，请在渲染完成后再重启更新。'
+            return
+          }
+        } catch {}
+        window.chrome.webview.postMessage('apply-update-restart')
+      }
+      document.body.append(el)
+      updateBanner = el
+      return el
+    }
+    window.chrome.webview.addEventListener?.('message', event => {
+      const payload = typeof event.data === 'string' ? (() => { try { return JSON.parse(event.data) } catch { return null } })() : event.data
+      if (!payload || typeof payload !== 'object') return
+      if (payload.type === 'update-ready') {
+        const el = ensureUpdateBanner()
+        if (!el.isConnected) document.body.append(el)
+        el.querySelector('.jj-upd-title').textContent = `新版本 v${payload.version || ''} 已就绪，重启即生效`
+        el.querySelector('.jj-upd-msg').textContent = '差分更新已在后台完成校验并准备就绪。点击下方按钮将在空闲时重启生效，或下次打开时自动切换。'
+      } else if (payload.type === 'update-blocked-busy') {
+        const el = ensureUpdateBanner()
+        if (!el.isConnected) document.body.append(el)
+        el.querySelector('.jj-upd-msg').textContent = '当前有视频渲染任务正在进行，为避免中断成片，请在渲染完成后再重启更新。'
+      }
+    })
   }
   showPanel('model')
   let data = null
@@ -197,6 +287,25 @@
     } catch (error) { status.textContent = `保存失败：${error.message}` } finally { save.disabled = false }
   })
   window.BohackSettings = {
+    async openCredentialWizard(force = false) {
+      if (wizard.open || wizardLoading) return
+      wizardLoading = true
+      try {
+        const settings = await request()
+        const { baseUrl, model, hasApiKey } = settings.model || {}
+        if (!force && baseUrl && model && hasApiKey) return
+        wizardForm.elements.baseUrl.value = baseUrl || ''
+        wizardForm.elements.model.value = model || ''
+        document.body.append(wizard)
+        wizard.showModal()
+      } catch {
+        // The Settings page still provides the underlying storage error.
+        if (force) {
+          document.body.append(wizard)
+          wizard.showModal()
+        }
+      } finally { wizardLoading = false }
+    },
     async open(panel = 'model') {
       const member = document.getElementById('accountBtn').dataset.mode === 'member'
       tabs.querySelector('[data-panel="model"]').hidden = member
@@ -349,6 +458,10 @@ document.querySelector('#styleImport').addEventListener('click',async()=>{
       render(await request(body))
       status.textContent = ''
       if (body) await refresh()
+      if (body?.action === 'mode' && state.mode === 'byok' && state.credentialWizard) {
+        dialog.close()
+        await window.BohackSettings.openCredentialWizard()
+      }
     }
     catch (error) { status.textContent = `操作失败：${error.message}`; if (state) mode.value = state.mode }
     finally { dialog.querySelectorAll('button, input, select').forEach(el => el.disabled = el.classList.contains('account-purchase')) }
@@ -367,5 +480,11 @@ document.querySelector('#styleImport').addEventListener('click',async()=>{
   }
   logout.onclick = () => update({action:'logout'})
   mode.onchange = () => update({action:'mode', mode:mode.value})
-  request().then(render).catch(error => { button.textContent = '账号'; button.title = `账号状态读取失败：${error.message}` })
+  request().then(result => {
+    render(result)
+    if (result.mode === 'byok' && result.credentialWizard) void window.BohackSettings.openCredentialWizard()
+  }).catch(error => { button.textContent = '账号'; button.title = '账号状态读取失败：'+error.message })
+  window.addEventListener('bohack-missing-credential', () => {
+    if (state?.mode === 'byok' && state.credentialWizard) void window.BohackSettings.openCredentialWizard(true)
+  })
 })()

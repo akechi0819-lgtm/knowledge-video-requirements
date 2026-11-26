@@ -1,0 +1,17 @@
+
+{
+  "schemaVersion": 1,
+  "webview2": {
+    "version": "158.0.4370.45",
+    "archive": "webview2-fixed.cab",
+    "url": "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/4fe269a2-de5a-488b-b6a0-9d9a42d641b8/Microsoft.WebView2.FixedVersionRuntime.158.0.4370.45.x64.cab",
+    "sha256": "a7d41bc8b51f5594130113c8e218742a2762fbc74c4ee4c2a4e59b9ec172aff5"
+  },
+  "chromium": {
+    "version": "160.0.8185.0",
+    "revision": 1755030,
+    "archive": "chromium-win-x64-1755030.zip",
+    "url": "https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/1755030/chrome-win.zip",
+    "sha256": "ee4a1ff822e68e12fbaa21260edcdd5ba766b08c74d0f1ef4b5282ab1a7d54fe"
+  }
+}

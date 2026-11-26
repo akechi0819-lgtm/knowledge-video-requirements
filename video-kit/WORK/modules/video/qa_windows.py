@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
+from media_process import run_media
 import sys
 from pathlib import Path
 
@@ -50,7 +50,7 @@ def main() -> int:
     fr.mkdir(exist_ok=True)
     for f in fr.glob("*.png"):
         f.unlink()
-    subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(src),
+    run_media([ffmpeg, "-v", "error", "-y", "-i", str(src),
                     "-vf", f"fps=1/{every},scale=1280:-2", str(fr / "f_%04d.png")], check=True)
     fs = sorted(fr.glob("f_*.png"))
 
@@ -83,18 +83,18 @@ def main() -> int:
         d.text((x + 4, y + 2), f"{int(t // 60)}:{int(t % 60):02d}", fill="yellow", font=font)
     sheet.save(out / "sheet.jpg", quality=82)
 
-    r = subprocess.run([ffmpeg, "-nostats", "-i", str(src), "-vn",
+    r = run_media([ffmpeg, "-nostats", "-i", str(src), "-vn",
                         "-af", "ebur128=peak=true", "-f", "null", "-"],
                        capture_output=True, text=True).stderr
     I = re.findall(r"I:\s+(-?[\d.]+) LUFS", r)
     P = re.findall(r"Peak:\s+(-?[\d.]+) dBFS", r)
-    fz = subprocess.run([ffmpeg, "-nostats", "-i", str(src), "-an",
+    fz = run_media([ffmpeg, "-nostats", "-i", str(src), "-an",
                          "-vf", "fps=10,scale=480:-2,freezedetect=n=0.002:d=3", "-f", "null", "-"],
                         capture_output=True, text=True).stderr
     starts = [float(x) for x in re.findall(r"freeze_start: ([\d.]+)", fz)]
     durs = [float(x) for x in re.findall(r"freeze_duration: ([\d.]+)", fz)]
     if len(durs) < len(starts):
-        durs.append(float(subprocess.run(
+        durs.append(float(run_media(
             [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(src)],
             capture_output=True, text=True, check=True).stdout) - starts[-1])
     frozen = list(zip(starts, durs))
@@ -111,7 +111,7 @@ def main() -> int:
         print("静止检测：没有超过 3 秒的静止画面")
 
     def _pcm(f, t, sr=4000):
-        b = subprocess.run([ffmpeg, "-v", "error", "-t", str(t), "-i", str(f),
+        b = run_media([ffmpeg, "-v", "error", "-t", str(t), "-i", str(f),
                             "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"],
                            capture_output=True, check=True).stdout
         return np.frombuffer(b, np.float32).copy()

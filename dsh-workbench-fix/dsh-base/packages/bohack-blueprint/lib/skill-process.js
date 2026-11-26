@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { appendJsonl, checkRuntimePath, expandRuntimeHome } from './skill-runtime.js'
+import { childEnvironment } from './runtime.js'
 
 export const name = 'bohack-skill-process'
 export const inject = ['tools', 'workingDirectory', 'skills']
@@ -67,7 +68,7 @@ export async function apply(ctx) {
       })
       let handle
       try {
-        handle = host.spawn({ ...spec, cwd, env: { ...spec.env, ...runtime.env }, signal: AbortSignal.any([spec.signal, runtime.signal].filter(Boolean)) })
+        handle = host.spawn({ ...spec, cwd, env: { ...childEnvironment(spec.env), ...runtime.env }, signal: AbortSignal.any([spec.signal, runtime.signal].filter(Boolean)) })
       } catch (error) {
         log(null, error.message)
         throw error

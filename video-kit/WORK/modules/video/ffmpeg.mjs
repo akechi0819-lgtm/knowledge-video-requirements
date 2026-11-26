@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import STYLE from './style.mjs';
+import { childEnvironment, emitDesktopDiagnostic } from './runtime.mjs';
 
 const run = promisify(execFile);
 const FF = STYLE.paths.ffmpeg;
@@ -15,12 +16,16 @@ const FP = STYLE.paths.ffprobe;
 // reader can catch the file mid-rewrite. Retry briefly instead of failing a segment.
 const TRANSIENT = /moov atom not found|Invalid data found|Error opening input/;
 export async function runRetry(bin, args, opts = {}, attempts = 4) {
+  if (!bin) throw new Error('Set VIDEO_FFMPEG and VIDEO_FFPROBE to absolute executable paths');
   let last;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await run(bin, args, opts);
+      const result = await run(bin, args, { ...opts, env: childEnvironment(opts.env, [bin]), windowsHide: true });
+      emitDesktopDiagnostic('ffmpeg', result.stderr);
+      return result;
     } catch (e) {
       last = e;
+      emitDesktopDiagnostic('ffmpeg', e.stderr || 'codec process failed');
       const msg = `${e.stderr ?? ''}${e.message ?? ''}`;
       if (!TRANSIENT.test(msg) || i === attempts - 1) throw e;
       await new Promise((r) => setTimeout(r, 400 * (i + 1)));
@@ -40,7 +45,7 @@ export async function probeDuration(file) {
 }
 
 export async function probeStreams(file) {
-  const { stdout } = await run(FP, ['-v', 'error', '-show_streams', '-of', 'json', file]);
+  const { stdout } = await runRetry(FP, ['-v', 'error', '-show_streams', '-of', 'json', file]);
   return JSON.parse(stdout).streams ?? [];
 }
 
@@ -67,7 +72,7 @@ export async function assertClipPlayable(file) {
 export async function concatClips(clips, outFile) {
   const listFile = path.join(path.dirname(outFile), 'concat-list.txt');
   // concat demuxer needs forward slashes and escaped single quotes.
-  const body = clips.map((c) => `file '${c.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
+  const body = clips.map(file => "file '" + path.relative(path.dirname(outFile), file).split(path.sep).join('/').replace(/'/g, "'\\''") + "'").join('\n');
   fs.writeFileSync(listFile, body + '\n', 'utf8');
   const e = STYLE.encode;
   await runRetry(FF, [

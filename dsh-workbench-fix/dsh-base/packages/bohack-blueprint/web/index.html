@@ -418,6 +418,10 @@ function busy(on,label){
   if(on){ const b=$('#stageBadge'); b.innerHTML='<span class="spin"></span>'+(label||'处理中') }
   if(!on) refresh()
 }
+function workbenchError(payload, fallback) {
+  if (payload.code === 'MISSING_CREDENTIAL') window.dispatchEvent(new Event('bohack-missing-credential'))
+  return Object.assign(new Error(payload.error || payload.message || fallback), { code: payload.code })
+}
 async function api(url, body, threadId=state.threadId){
   const production = url === '/bohack/api/production'
   const opt = body===undefined ? {} : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}
@@ -428,7 +432,7 @@ async function api(url, body, threadId=state.threadId){
     throw error
   })
   const j = await r.json().catch(()=>({ok:false,error:production ? '工作台未返回制作状态，请刷新后再试。' : '响应不是 JSON ('+r.status+')'}))
-  if(!r.ok || j.ok===false) throw new Error(j.error || (production ? '工作台未能处理制作操作，请稍后重试。' : 'HTTP '+r.status))
+  if(!r.ok || j.ok===false) throw workbenchError(j, production ? '工作台未能处理制作操作，请稍后重试。' : 'HTTP '+r.status)
   return j
 }
 
@@ -439,14 +443,14 @@ async function streamApi(url, body, onEvent){
   })
   if(!response.ok){
     const data=await response.json().catch(()=>({}))
-    throw new Error(data.error||('HTTP '+response.status))
+    throw workbenchError(data, 'HTTP '+response.status)
   }
   const reader=response.body.getReader(), decoder=new TextDecoder()
   let buffer='', result, completed=false
   function consume(line){
     if(!line.trim()) return
     const event=JSON.parse(line)
-    if(event.type==='error') throw new Error(event.message||'处理失败')
+    if(event.type==='error') throw workbenchError(event, '处理失败')
     if(event.type==='done'){ result=event.result; completed=true }
     else if(event.type==='status'||event.type==='text'||event.type==='activity') onEvent(event)
   }

@@ -1,5 +1,42 @@
 export const mimoBaseUrl = 'https://api.xiaomimimo.com/v1'
 
+export function missingCredential() {
+  return Object.assign(new Error('请配置通用模型的接口地址、模型名称和 API 密钥。'), { code: 'MISSING_CREDENTIAL' })
+}
+
+export function desktopModelRoute(baseUrl) {
+  let url
+  try { url = new URL(baseUrl) } catch { throw new Error('请填写有效的模型地址。') }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+  if ((url.protocol !== 'https:' && !(local && url.protocol === 'http:')) || url.username || url.password || url.search || url.hash) {
+    throw new Error('模型地址应使用 HTTPS（本机环回可使用 HTTP），且不能包含凭据或查询参数。')
+  }
+  return url.origin === 'https://api.openai.com' ? '/responses' : '/chat/completions'
+}
+
+export async function testDesktopModel(input, request = fetch) {
+  const model = String(input.model || '').trim()
+  const apiKey = String(input.apiKey || '').trim()
+  const base = String(input.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/(?:chat\/completions|responses)$/, '')
+  if (!model || !apiKey || !base) throw missingCredential()
+  const route = desktopModelRoute(base)
+  const payload = route === '/responses' ? { model, input: 'Reply OK' } : { model, messages: [{ role: 'user', content: 'Reply OK' }] }
+  let response
+  try {
+    response = await request(base + route, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000),
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + apiKey }, body: JSON.stringify(payload) })
+  } catch { throw new Error('无法连接模型。请检查网络和接口地址。') }
+  const body = response.ok ? await response.json().catch(() => null) : null
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new Error('模型连通性测试失败（HTTP ' + response.status + '）。请检查密钥和模型名称。')
+  }
+  if (route === '/responses' ? !Array.isArray(body?.output) : !Array.isArray(body?.choices)) {
+    throw new Error('接口返回的内容与所选模型协议不匹配。')
+  }
+  return { ok: true }
+}
+
 export function checkCloudEndpoint(value, kind) {
   if (process.env.BOHACK_CLOUD_MODEL && value && kind === 'tts') {
     const url = new URL(value)

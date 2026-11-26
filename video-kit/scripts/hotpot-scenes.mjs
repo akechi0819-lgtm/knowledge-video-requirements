@@ -2,9 +2,10 @@
 // One-off scenes for the explicitly configured hotpot demonstration thread.
 import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
 import { resolve, join, dirname, extname } from 'node:path';
+import { writablePath } from '../WORK/modules/video/runtime.mjs';
 const args = process.argv.slice(2);
 if (args[0] !== '--input' || args[2] !== '--output' || args.length !== 4) throw Error('Expected --input FILE --output NEW_DIR');
-const input = resolve(args[1]), out = resolve(args[3]);
+const input = resolve(args[1]), out = writablePath(resolve(args[3]), process.env.JIANGJIE_APP_ROOT);
 const p = JSON.parse(await readFile(input, 'utf8'));
 if (p.status !== '准备制作' || p.sections?.map(s => s.blueprintId).join(',') !== 'B01,B02,B03,B04,B05') throw Error('火锅演示需要已定稿的 B01–B05 五段蓝图');
 if (!p.sections[0].image || !p.sections[4].image) throw Error('B01 和 B05 必须绑定上传的火锅餐桌原图');

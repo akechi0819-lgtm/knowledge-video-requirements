@@ -13,6 +13,8 @@ import { createWebHandler } from './lib/web.js'
 import { createThreads } from './lib/threads.js'
 import { createMembership } from './lib/membership.js'
 import { createMultiuserHandler } from './lib/multiuser.js'
+import path from 'node:path'
+import { runtimePaths, writablePath } from './lib/runtime.js'
 
 export const name = '@bohack/blueprint'
 export const inject = ['webServer']
@@ -49,12 +51,22 @@ function installNetworkDiagnostics(ctx) {
 
 export function apply(ctx, config = {}) {
   if (config.multiuser) {
+    if (process.env.DSH_INTERNAL_TOKEN || process.env.JIANGJIE_READY_ID) throw new Error('Local workbench startup cannot use the multiuser profile')
     const handler = createMultiuserHandler(ctx, { ...config, ...config.multiuser })
     ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: '/bohack', handler }), 'bohack: multiuser route')
     return
   }
   if (process.env.JIANGJIE_DESKTOP_WORKSPACE) {
     config = { ...config, workspace: process.env.JIANGJIE_DESKTOP_WORKSPACE, desktop: true }
+  } else if (process.env.JIANGJIE_WORKBENCH_WORKSPACE || process.env.JIANGJIE_DATA_DIR) {
+    config = { ...config, workspace: process.env.JIANGJIE_WORKBENCH_WORKSPACE || path.join(runtimePaths().data, 'workspace') }
+  }
+  if (process.env.JIANGJIE_APP_ROOT) {
+    const { app, data } = runtimePaths()
+    config = { ...config, workspace: config.workspace || (data && path.join(data, 'workspace')) }
+    for (const directory of [config.workspace || './workspace', config.settingsRoot, config.styleLibraryRoot].filter(Boolean)) {
+      writablePath(path.resolve(directory), app)
+    }
   }
   if (config.debugNetwork) {
     ctx.effect(() => installNetworkDiagnostics(ctx), 'bohack: network diagnostics')

@@ -1,16 +1,40 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { childEnvironment, findExecutable, runtimePaths, writablePath } from '../WORK/modules/video/runtime.mjs'
 
 // An empty cwd keeps the headless task outside project instructions.
 export async function callDsh(messages) {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'dsh-scene-'))
+  const runtime = runtimePaths()
+  const bundled = fileURLToPath(new URL('../../dsh-workbench-fix/dsh-base/node_modules/@deepseek-ai/dsh/lib/bin.js', import.meta.url))
+  const windows = process.platform === 'win32'
+  let cli = process.env.DSH_CLI || (windows ? bundled : 'dsh')
+  if (windows && path.basename(cli).toLowerCase() === 'dsh.cmd') {
+    // Recognize the source and npm shims without invoking cmd.exe.
+    if (cli === 'dsh.cmd') cli = bundled
+    else {
+      const parent = path.dirname(cli)
+      cli = path.resolve(parent, path.basename(parent) === '.bin' ? '../@deepseek-ai/dsh/lib/bin.js' : 'node_modules/@deepseek-ai/dsh/lib/bin.js')
+    }
+  }
+  const entry = findExecutable(cli)
+  if (!entry || (windows && /\.(cmd|bat)$/i.test(entry))) throw new Error('Set DSH_CLI to the DSH JavaScript bin or executable: ' + cli)
+  const js = /\.(?:c?js|mjs)$/i.test(entry)
+  const command = js ? process.execPath : entry
+  const args = ['headless', '--json', '--approval-policy', 'never', '-']
+  if (js) args.unshift(entry)
+  const tmp = runtime.cache ? path.join(runtime.cache, 'tmp') : os.tmpdir()
+  await mkdir(writablePath(tmp, process.env.JIANGJIE_APP_ROOT && runtime.app), { recursive: true })
+  const cwd = await mkdtemp(path.join(tmp, 'dsh-scene-'))
   try {
     return await new Promise((resolve, reject) => {
-      const env = { ...process.env }
-      const cli = process.env.DSH_CLI || (process.platform === 'win32' ? 'dsh.cmd' : 'dsh')
-      const child = spawn(cli, ['headless', '--json', '--approval-policy', 'never', '-'], { cwd, env, shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+      const env = childEnvironment(process.env, [command])
+      const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      child.stdin.on('error', reject)
       const watchdog = setTimeout(() => child.kill(), 180000)
       let stdout = '', stderr = '', pending = '', toolUsed = false
       child.stdout.on('data', chunk => {

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { discoverSkillPackages, resolveSkillDir } from '../lib/skill-packages.js'
@@ -11,9 +11,13 @@ test('discovers original skill packages without adapters and blocks multiuser ex
   try {
     const dir = path.join(temp, 'skill-packages', 'example')
     await mkdir(dir, { recursive: true })
-    await writeFile(path.join(dir, '讲界.manifest.json'), JSON.stringify({ id: 'example', name: 'Example', skill: 'andy-vibe-knowledge' }))
+    const workspace = path.join(temp, 'workspace')
+    const skill = path.join(workspace, '.agents/skills/fixture')
+    await mkdir(skill, { recursive: true })
+    await writeFile(path.join(skill, 'SKILL.md'), 'Installed fixture')
+    await writeFile(path.join(dir, '讲界.manifest.json'), JSON.stringify({ id: 'example', name: 'Example', skill: 'fixture' }))
     assert.equal((await discoverSkillPackages(temp))[0].id, 'example')
-    await assert.rejects(runVideoJob({ dir: temp, kit: temp, multiuser: true, production: { style: { id: 'example' } } }), /单任务进程沙箱/)
+    await assert.rejects(runVideoJob({ dir: temp, kit: temp, skillsRoot: workspace, multiuser: true, production: { style: { id: 'example' } } }), /单任务进程沙箱/)
   } finally { await rm(temp, { recursive: true, force: true }) }
 })
 
@@ -25,7 +29,7 @@ test('desktop installed skills take precedence and missing skills report install
     const installed = path.join(desktop, '.agents', 'skills', 'film')
     await mkdir(installed, { recursive: true })
     await writeFile(path.join(installed, 'SKILL.md'), 'installed upstream')
-    assert.match(await resolveSkillDir('film', repo, desktop), /desktop\/\.agents\/skills\/film$/)
+    assert.equal(await resolveSkillDir('film', repo, desktop), await realpath(installed))
     await assert.rejects(resolveSkillDir('absent', repo, desktop), /原版 Skill 未安装：absent/)
   } finally { await rm(temp, { recursive: true, force: true }) }
 })

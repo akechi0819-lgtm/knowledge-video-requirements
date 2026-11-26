@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, readFile, readdir, readlink, realpath, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, rm, readFile, readdir, readlink, realpath, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises'
 import { appendFileSync, readlinkSync, realpathSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -6,6 +6,7 @@ import { homedir, tmpdir as osTmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { discoverInstalledSkills } from './skill-packages.js'
+import { childEnvironment, findExecutable, runtimePaths, writablePath } from './runtime.js'
 
 const run = promisify(execFile)
 const within = (file, root) => file === root || file.startsWith(root + path.sep)
@@ -52,6 +53,14 @@ async function syncLinks(root, skills) {
   }
 }
 
+async function copySkills(root, skills) {
+  await mkdir(root, { recursive: true, mode: 0o700 })
+  for (const [name, directory] of skills) {
+    await cp(directory, path.join(root, name), { recursive: true, filter: async source =>
+      !['.git', 'node_modules', '.venv'].includes(path.basename(source)) && !(await lstat(source)).isSymbolicLink() })
+  }
+}
+
 async function toolCheck(name, command, args, env, cwd) {
   try { await run(command, args, { cwd, env, timeout: 15000 }) }
   catch (error) {
@@ -61,7 +70,12 @@ async function toolCheck(name, command, args, env, cwd) {
 
 export async function prepareSkillRuntime({ repo, workspace, dir, previousDir, selectedSkill, selectedDirectory, kit, settings, style, readOnlyPaths = [] }) {
   const desktopWorkspace = process.env.JIANGJIE_DESKTOP_WORKSPACE
-  const home = path.resolve(desktopWorkspace ? path.join(desktopWorkspace, '..', 'skill-runtime') : path.join(repo, '.runtime/skill-runtime'))
+  const windows = process.platform === 'win32'
+  const dirs = runtimePaths(process.env, repo)
+  const home = writablePath(path.resolve(windows || process.env.JIANGJIE_CACHE_DIR
+    ? path.join(dirs.cache, 'skill-runtime')
+    : desktopWorkspace ? path.join(desktopWorkspace, '..', 'skill-runtime') : path.join(repo, '.runtime/skill-runtime')),
+    process.env.JIANGJIE_APP_ROOT && dirs.app)
   await mkdir(home, { recursive: true, mode: 0o700 })
   const installed = await discoverInstalledSkills({ repo, workspace })
   const skills = new Map(installed.map(item => [item.folder, item.dir]))
@@ -84,20 +98,22 @@ export async function prepareSkillRuntime({ repo, workspace, dir, previousDir, s
   // A selected alias is task-local; never rewrite the shared HOME for it.
   const taskAliases = new Map(aliases)
   if (selected) { catalog.set(name, selected); taskAliases.set(name, selected); if (selectedSkill) taskAliases.set(selectedSkill, selected) }
-  const catalogRoot = path.join(dir, '.dsh/skills')
-  const python = (await optional(path.join(home, 'venv/bin/python3'), stat)) ? path.join(home, 'venv/bin/python3') : style.paths.python
+  const venv = path.join(home, windows ? 'venv/Scripts/python.exe' : 'venv/bin/python3')
+  const python = !process.env.VIDEO_PYTHON && (await optional(venv, stat)) ? venv : style.paths.python
   const cache = path.join(home, '.cache')
-  const managedBrowserCache = path.join(home, 'Library/Caches/ms-playwright')
-  const localBrowserCache = path.join(homedir(), 'Library/Caches/ms-playwright')
+  const managedBrowserCache = path.join(home, windows ? 'ms-playwright' : 'Library/Caches/ms-playwright')
+  const localBrowserCache = windows ? managedBrowserCache : path.join(homedir(), 'Library/Caches/ms-playwright')
   const browserCache = process.env.PLAYWRIGHT_BROWSERS_PATH === '0' ? '0' : path.resolve(process.env.PLAYWRIGHT_BROWSERS_PATH ||
     (await optional(localBrowserCache, stat) ? localBrowserCache : managedBrowserCache))
+  const bash = windows ? findExecutable('bash.exe') : '/bin/bash'
+  const system = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    /^(?:path|systemroot|systemdrive|windir|comspec|programfiles(?:\(x86\))?|programdata|userprofile|lang|lc_ctype|lc_all|ssl_cert_file|ssl_cert_dir|jiangjie_app_root)$/i.test(key)))
   const env = {
+    ...childEnvironment(system, [python, style.paths.ffmpeg, style.paths.ffprobe, process.execPath, bash]),
     HOME: home, XDG_CACHE_HOME: cache,
     UV_CACHE_DIR: path.join(cache, 'uv'), PIP_CACHE_DIR: path.join(cache, 'pip'), npm_config_cache: path.join(cache, 'npm'),
     PLAYWRIGHT_BROWSERS_PATH: browserCache, PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
     NODE_PATH: path.join(kit, 'node_modules'), VIDEO_PYTHON: python,
-    PATH: [...new Set([python, style.paths.ffmpeg, style.paths.ffprobe, process.execPath]
-      .filter(path.isAbsolute).map(path.dirname).concat(process.env.PATH || ''))].join(path.delimiter),
   }
   for (const [key, value] of Object.entries({ VIDEO_BROWSER: style.paths.edge, VIDEO_PLAYWRIGHT: style.paths.playwright, VIDEO_FFMPEG: style.paths.ffmpeg, VIDEO_FFPROBE: style.paths.ffprobe })) {
     if (value) env[key] = value
@@ -113,8 +129,8 @@ export async function prepareSkillRuntime({ repo, workspace, dir, previousDir, s
 
   // Serialize shared HOME updates. Each job's environment and selected catalog entry are independent.
   const sync = syncTail.then(async () => {
-    await Promise.all(runtimeSubdirs.map(relative => syncLinks(path.join(home, relative), aliases)))
-    if (browserCache !== managedBrowserCache && browserCache !== '0' && !await optional(managedBrowserCache, stat)) {
+    if (!windows) await Promise.all(runtimeSubdirs.map(relative => syncLinks(path.join(home, relative), aliases)))
+    if (!windows && browserCache !== managedBrowserCache && browserCache !== '0' && !await optional(managedBrowserCache, stat)) {
       await mkdir(path.dirname(managedBrowserCache), { recursive: true, mode: 0o700 })
       await symlink(browserCache, managedBrowserCache, 'dir')
     }
@@ -131,15 +147,15 @@ export async function prepareSkillRuntime({ repo, workspace, dir, previousDir, s
   })
   syncTail = sync.catch(() => {})
   await sync
-  await syncLinks(catalogRoot, catalog)
 
-  const browser = style.paths.edge || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  const browser = style.paths.edge || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null)
+  if (!browser) throw new Error('制作环境缺少可用的 Chromium，请设置 VIDEO_EDGE_PATH 或 VIDEO_BROWSER。')
   await Promise.all([
     toolCheck('python3', python, ['--version'], env, dir),
     toolCheck('node', process.execPath, ['--version'], env, dir),
     toolCheck('ffmpeg', style.paths.ffmpeg, ['-version'], env, dir),
     toolCheck('ffprobe', style.paths.ffprobe, ['-version'], env, dir),
-    toolCheck('Chromium', browser, ['--version'], env, dir),
+    windows ? stat(browser) : toolCheck('Chromium', browser, ['--version'], env, dir),
     toolCheck('Playwright', process.execPath, ['-e', 'require(process.argv[1]).chromium', style.paths.playwright || 'playwright'], env, dir),
   ])
   const checkouts = installed.map(item => item.checkoutDir).filter(Boolean)
@@ -163,23 +179,34 @@ export async function prepareSkillRuntime({ repo, workspace, dir, previousDir, s
     if (stdout.trim()) throw new Error(`原版 Skill 缺少 Python 依赖：${stdout.trim().replaceAll('\n', '、')}。请在受管 Python 环境执行 python3 -m pip install -r "${requirements}" 后重试。`)
   }
   // Chromium uses MAC_CHROMIUM_TMPDIR for a Unix socket with a short path limit.
-  const tmp = await mkdtemp(path.join(process.platform === 'darwin' ? '/private/tmp' : osTmpdir(), 'jiangjie-'))
-  if (hasCollision && selected) {
-    const taskHome = path.join(tmp, 'home')
-    await mkdir(taskHome, { recursive: true, mode: 0o700 })
-    for (const relative of ['.cache', '.config', 'Library', 'venv', '.npm', '.local']) {
-      const shared = path.join(home, relative)
-      await mkdir(shared, { recursive: true, mode: 0o700 })
-      await symlink(shared, path.join(taskHome, relative), 'dir')
-    }
-    await Promise.all(runtimeSubdirs.map(relative => syncLinks(path.join(taskHome, relative), taskAliases)))
-    env.HOME = taskHome
-  }
-  env.TMPDIR = tmp
-  if (process.platform === 'darwin') env.MAC_CHROMIUM_TMPDIR = tmp
-  const runtime = { home: env.HOME, dir: physicalPath(dir), tmp, selected, name, names: new Set(catalog.keys()), catalogRoot, env, readRoots: [...readRoots, tmp] }
+  const tmp = await mkdtemp(path.join(windows ? home : process.platform === 'darwin' ? '/private/tmp' : osTmpdir(), 'jiangjie-'))
+  const catalogRoot = path.join(windows ? tmp : dir, '.dsh/skills')
   try {
-    for (const [file, command] of selected ? [['scripts/doctor.py', python], ['scripts/doctor.sh', '/bin/bash'], ['scripts/doctor.mjs', process.execPath]] : []) {
+    if (windows) {
+      const taskHome = path.join(tmp, 'home')
+      await Promise.all([copySkills(catalogRoot, catalog), ...runtimeSubdirs.map(relative => copySkills(path.join(taskHome, relative), taskAliases))])
+      env.HOME = taskHome
+      env.TMP = env.TEMP = tmp
+      env.APPDATA = env.LOCALAPPDATA = taskHome
+      env.XDG_CONFIG_HOME = path.join(home, '.config')
+    } else {
+      await syncLinks(catalogRoot, catalog)
+      if (hasCollision && selected) {
+        const taskHome = path.join(tmp, 'home')
+        await mkdir(taskHome, { recursive: true, mode: 0o700 })
+        for (const relative of ['.cache', '.config', 'Library', 'venv', '.npm', '.local']) {
+          const shared = path.join(home, relative)
+          await mkdir(shared, { recursive: true, mode: 0o700 })
+          await symlink(shared, path.join(taskHome, relative), 'dir')
+        }
+        await Promise.all(runtimeSubdirs.map(relative => syncLinks(path.join(taskHome, relative), taskAliases)))
+        env.HOME = taskHome
+      }
+    }
+    env.TMPDIR = tmp
+    if (process.platform === 'darwin') env.MAC_CHROMIUM_TMPDIR = tmp
+    const runtime = { home: env.HOME, dir: physicalPath(dir), tmp, selected, name, names: new Set(catalog.keys()), catalogRoot, env, readRoots: [...readRoots, tmp] }
+    for (const [file, command] of selected ? [['scripts/doctor.py', python], ['scripts/doctor.sh', bash], ['scripts/doctor.mjs', process.execPath]] : []) {
       const target = path.join(selected, file)
       if (!await optional(target, stat)) continue
       try { await run(command, [target], { cwd: runtime.dir, env, timeout: 30000 }) }

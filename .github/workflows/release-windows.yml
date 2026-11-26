@@ -1,0 +1,582 @@
+name: Windows Desktop Build, Verify & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: '发布通道 (beta / stable)'
+        required: true
+        type: choice
+        options:
+          - beta
+          - stable
+        default: beta
+      enable_signing:
+        description: '是否开启 Authenticode 代码签名'
+        required: true
+        type: boolean
+        default: false
+      sign_mode:
+        description: '签名模式（仅在 enable_signing=true 时生效）'
+        required: true
+        type: choice
+        options:
+          - azure-trusted-signing
+          - signtool-ev
+        default: azure-trusted-signing
+      version:
+        description: '可选 SemVer 版本号（留空则自动生成 0.2.1-beta.<run_number> 或 0.2.1）'
+        required: false
+        type: string
+        default: ''
+      release_sequence:
+        description: '可选严格递增整数序列号（留空则自动使用 100 + github.run_number）'
+        required: false
+        type: string
+        default: ''
+      rollout_percentage:
+        description: '灰度放量百分比 (0-100)'
+        required: true
+        type: string
+        default: '100'
+      publish_release:
+        description: '验收通过后是否发布至 GitHub Releases 及对象存储/CDN（首次试跑可先选 false）'
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ===========================================================================
+  # Job 1: 构建 Windows x64 运行时、原生壳、双轨安装包、条件签名与发布清单
+  # ===========================================================================
+  build-windows:
+    name: Build & Package Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      release_sequence: ${{ steps.meta.outputs.release_sequence }}
+      channel: ${{ steps.meta.outputs.channel }}
+      rollout_percentage: ${{ steps.meta.outputs.rollout_percentage }}
+      sign_mode: ${{ steps.meta.outputs.sign_mode }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+      should_publish: ${{ steps.meta.outputs.should_publish }}
+
+    steps:
+      - name: Checkout repository with recursive submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Resolve release metadata & signing policy
+        id: meta
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          IN_CHANNEL: ${{ inputs.channel }}
+          IN_ENABLE_SIGNING: ${{ inputs.enable_signing }}
+          IN_SIGN_MODE: ${{ inputs.sign_mode }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_SEQUENCE: ${{ inputs.release_sequence }}
+          IN_ROLLOUT: ${{ inputs.rollout_percentage }}
+          IN_PUBLISH: ${{ inputs.publish_release }}
+          HAS_AZURE_SIGN: ${{ secrets.AZURE_SIGNING_ENDPOINT != '' }}
+          HAS_AZURE_LOGIN: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          HAS_EV_SIGN: ${{ secrets.WIN_SIGN_CERT_SHA1 != '' || secrets.WIN_SIGN_PFX_BASE64 != '' || secrets.WIN_SIGN_CSP != '' }}
+          HAS_EV_PFX: ${{ secrets.WIN_SIGN_PFX_BASE64 != '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:EVENT_NAME -eq 'push') {
+            $tagName = $env:REF_NAME
+            $version = $tagName -replace '^v', ''
+            $channel = if ($version -match '-') { 'beta' } else { 'stable' }
+            $rollout = '100'
+            $shouldPublish = 'true'
+            if ($env:HAS_AZURE_SIGN -eq 'true') {
+              $signMode = 'azure-trusted-signing'
+            } elseif ($env:HAS_EV_SIGN -eq 'true') {
+              $signMode = 'signtool-ev'
+            } else {
+              Write-Warning 'No signing secrets configured on tag push; proceeding with WIN_SIGN_MODE=none.'
+              $signMode = 'none'
+            }
+            $seq = [int]$env:RUN_NUMBER + 100
+          } else {
+            $channel = if ($env:IN_CHANNEL) { $env:IN_CHANNEL } else { 'beta' }
+            if ($env:IN_VERSION) {
+              $version = $env:IN_VERSION.Trim() -replace '^v', ''
+            } elseif ($channel -eq 'beta') {
+              $version = "0.2.1-beta.$($env:RUN_NUMBER)"
+            } else {
+              $version = '0.2.1'
+            }
+            $tagName = "v$version"
+            $seq = if ($env:IN_SEQUENCE -and $env:IN_SEQUENCE.Trim()) { [int]$env:IN_SEQUENCE.Trim() } else { [int]$env:RUN_NUMBER + 100 }
+            $rollout = if ($env:IN_ROLLOUT -and $env:IN_ROLLOUT.Trim()) { $env:IN_ROLLOUT.Trim() } else { '100' }
+            $shouldPublish = if ($env:IN_PUBLISH -eq 'true') { 'true' } else { 'false' }
+            if ($env:IN_ENABLE_SIGNING -eq 'true') {
+              $signMode = if ($env:IN_SIGN_MODE) { $env:IN_SIGN_MODE } else { 'azure-trusted-signing' }
+            } else {
+              $signMode = 'none'
+            }
+          }
+
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid SemVer version: $version"
+          }
+          if ($seq -lt 1) {
+            throw "release_sequence must be a positive integer, got: $seq"
+          }
+          $rolloutInt = [int]$rollout
+          if ($rolloutInt -lt 0 -or $rolloutInt -gt 100) {
+            throw "rollout_percentage must be in [0, 100], got: $rollout"
+          }
+
+          $artifactName = "jiangjie-win-x64-$channel-$version-seq$seq"
+          Write-Host "Resolved release: version=$version tag=$tagName channel=$channel seq=$seq rollout=$rollout% signMode=$signMode publish=$shouldPublish"
+
+          @(
+            "version=$version"
+            "release_sequence=$seq"
+            "channel=$channel"
+            "rollout_percentage=$rolloutInt"
+            "sign_mode=$signMode"
+            "artifact_name=$artifactName"
+            "tag_name=$tagName"
+            "should_publish=$shouldPublish"
+            "has_azure_login=$($env:HAS_AZURE_LOGIN)"
+            "has_ev_pfx=$($env:HAS_EV_PFX)"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Setup Node.js 24 (for build-time scripts & tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Cache Phase 3 Windows Runtime Downloads (Node / Python / FFmpeg / npm / pip)
+        uses: actions/cache@v4
+        with:
+          path: .runtime/win-runtime
+          key: win-runtime-x64-${{ hashFiles('scripts/windows/runtime-manifest.json', 'scripts/windows/python-requirements.lock.txt', 'dsh-workbench-fix/dsh-base/package-lock.json', 'video-kit/package-lock.json') }}
+          restore-keys: |
+            win-runtime-x64-
+
+      - name: Cache Phase 4 Browser & WebView2 SDK Archives
+        uses: actions/cache@v4
+        with:
+          path: |
+            .runtime/windows-desktop/*.zip
+            .runtime/windows-desktop/*.cab
+          key: win-desktop-browsers-${{ hashFiles('scripts/windows/browser-lock.json', 'scripts/build-win-desktop.ps1') }}
+          restore-keys: |
+            win-desktop-browsers-
+
+      - name: Ensure NSIS 3.x Unicode is installed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+            choco install nsis --yes --no-progress
+            'C:\Program Files (x86)\NSIS' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $env:PATH = "C:\Program Files (x86)\NSIS;$env:PATH"
+          }
+          makensis.exe /VERSION
+
+      - name: Azure Login (when Azure Trusted Signing is enabled)
+        if: steps.meta.outputs.sign_mode == 'azure-trusted-signing' && steps.meta.outputs.has_azure_login == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare Azure Trusted Signing Dlib (when enabled)
+        if: steps.meta.outputs.sign_mode == 'azure-trusted-signing'
+        id: acs-dlib
+        shell: pwsh
+        env:
+          EXISTING_DLIB: ${{ secrets.AZURE_SIGNING_DLIB_PATH }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXISTING_DLIB -and (Test-Path -LiteralPath $env:EXISTING_DLIB -PathType Leaf)) {
+            "dlib_path=$($env:EXISTING_DLIB)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            return
+          }
+          $pkgDir = Join-Path $env:RUNNER_TEMP 'azure-trusted-signing-client'
+          $null = New-Item -ItemType Directory -Force -Path $pkgDir
+          $nupkg = Join-Path $pkgDir 'client.zip'
+          Invoke-WebRequest -Uri 'https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client' -OutFile $nupkg
+          Expand-Archive -LiteralPath $nupkg -DestinationPath $pkgDir -Force
+          $dlib = Get-ChildItem -LiteralPath $pkgDir -Recurse -Filter 'Azure.CodeSigning.Dlib.dll' |
+            Where-Object { $_.FullName -like '*\x64\*' } | Select-Object -First 1
+          if (-not $dlib) { throw 'Failed to locate x64 Azure.CodeSigning.Dlib.dll from NuGet package.' }
+          Write-Host "Prepared Azure.CodeSigning.Dlib.dll at $($dlib.FullName)"
+          "dlib_path=$($dlib.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Prepare Temporary PFX Certificate (when signtool-ev uses Base64 PFX)
+        if: steps.meta.outputs.sign_mode == 'signtool-ev' && steps.meta.outputs.has_ev_pfx == 'true'
+        id: ev-pfx
+        shell: pwsh
+        env:
+          WIN_SIGN_PFX_BASE64: ${{ secrets.WIN_SIGN_PFX_BASE64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pfxPath = Join-Path $env:RUNNER_TEMP "jiangjie-ev-$($env:GITHUB_RUN_ID).pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WIN_SIGN_PFX_BASE64))
+          "pfx_path=$pfxPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Phase 3 — Assemble Windows x64 Runtime (with Cache)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -File scripts/windows/bundle-runtime.ps1
+
+      - name: Phase 4 — Build Native Win32 + WebView2 Shell & Run CTest
+        shell: pwsh
+        env:
+          JIANGJIE_MEMBER_URL: ${{ vars.JIANGJIE_MEMBER_URL || 'https://jiangjie.gingers.cloud/desktop-membership' }}
+          JIANGJIE_MEMBER_AGENT_API: ${{ vars.JIANGJIE_MEMBER_AGENT_API || '' }}
+          JIANGJIE_RELEASE_PUBKEY_B64: ${{ vars.JIANGJIE_RELEASE_PUBKEY_B64 || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $generator = 'Visual Studio 17 2022'
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+            $ver = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+            if ($ver -match '^18\.') { $generator = 'Visual Studio 18 2026' }
+            elseif ($ver -match '^17\.') { $generator = 'Visual Studio 17 2022' }
+          }
+          Write-Host "Using CMake generator: $generator"
+          pwsh -NoProfile -File scripts/build-win-desktop.ps1 `
+            -Generator $generator `
+            -AppVersion "${{ steps.meta.outputs.version }}" `
+            -ReleaseSequence "${{ steps.meta.outputs.release_sequence }}" `
+            -UpdateChannel "${{ steps.meta.outputs.channel }}"
+
+      - name: Run Release Manifest & Website Download Unit Tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node --test scripts/windows/generate-release-manifest.test.mjs
+          node --test frontend/public/site/downloads.test.mjs
+          node --test desktop/windows/diagnostics.test.mjs
+
+      - name: Phase 5 — Package Dual-Track Installers, Conditional Sign, SHA256SUMS & Manifests
+        shell: pwsh
+        env:
+          WIN_SIGN_MODE: ${{ steps.meta.outputs.sign_mode }}
+          WIN_SIGN_TIMESTAMP_URL: ${{ vars.WIN_SIGN_TIMESTAMP_URL || '' }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_SIGNING_CERT_PROFILE }}
+          AZURE_SIGNING_DLIB_PATH: ${{ steps.acs-dlib.outputs.dlib_path }}
+          WIN_SIGN_CERT_SHA1: ${{ secrets.WIN_SIGN_CERT_SHA1 }}
+          WIN_SIGN_PFX_PATH: ${{ steps.ev-pfx.outputs.pfx_path }}
+          WIN_SIGN_PFX_PASSWORD: ${{ secrets.WIN_SIGN_PFX_PASSWORD }}
+          WIN_SIGN_CSP: ${{ secrets.WIN_SIGN_CSP }}
+          WIN_SIGN_KEY_CONTAINER: ${{ secrets.WIN_SIGN_KEY_CONTAINER }}
+          WIN_SIGN_CERT_FILE: ${{ secrets.WIN_SIGN_CERT_FILE }}
+          JIANGJIE_FEED_SIGNING_KEY_PEM: ${{ secrets.JIANGJIE_FEED_SIGNING_KEY_PEM }}
+          JIANGJIE_FEED_KEY_ID: ${{ vars.JIANGJIE_FEED_KEY_ID || 'jiangjie-release-2026' }}
+          DOWNLOADS_BASE_URL: ${{ vars.JIANGJIE_DOWNLOADS_BASE_URL || 'https://jiangjie.gingers.cloud/downloads' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -File scripts/windows/package-installer.ps1 `
+            -Version "${{ steps.meta.outputs.version }}" `
+            -ReleaseSequence "${{ steps.meta.outputs.release_sequence }}" `
+            -Channel "${{ steps.meta.outputs.channel }}" `
+            -RolloutPercentage "${{ steps.meta.outputs.rollout_percentage }}" `
+            -BaseUrl "$env:DOWNLOADS_BASE_URL" `
+            -SignMode "${{ steps.meta.outputs.sign_mode }}"
+
+      - name: Verify Build Outputs (Bootstrapper Size, SHA256SUMS.txt, release-manifest.json)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outDir = "build/win-release/${{ steps.meta.outputs.channel }}/${{ steps.meta.outputs.release_sequence }}"
+          $online = Get-Item "$outDir/Jiangjie-Setup-Online-x64.exe"
+          $offline = Get-Item "$outDir/Jiangjie-Setup-Offline-x64.exe"
+          Write-Host "Online bootstrapper: $($online.Length) bytes"
+          Write-Host "Offline installer  : $($offline.Length) bytes"
+          if ($online.Length -gt 10MB) { throw "Online bootstrapper exceeds 10 MiB limit!" }
+          if ($offline.Length -lt 10MB) { throw "Offline installer suspiciously small ($($offline.Length) bytes)!" }
+
+          foreach ($req in @('SHA256SUMS.txt', 'release-manifest.json', 'releases.win.json', 'feed.json', 'Jiangjie-Setup-Offline-x64.exe.blockmap')) {
+            $p = Join-Path $outDir $req
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "Required artifact missing: $p" }
+          }
+
+          $manifest = Get-Content -LiteralPath (Join-Path $outDir 'release-manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json
+          $ch = "${{ steps.meta.outputs.channel }}"
+          if (-not $manifest.channels.$ch.platforms.'windows-x64'.offline.sha256) {
+            throw 'release-manifest.json is missing windows-x64 offline SHA-256.'
+          }
+          Write-Host 'Verified SHA256SUMS.txt and release-manifest.json successfully.'
+
+      - name: Cleanup Temporary PFX File
+        if: always() && steps.ev-pfx.outputs.pfx_path != ''
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath "${{ steps.ev-pfx.outputs.pfx_path }}" -Force -ErrorAction SilentlyContinue
+
+      - name: Upload Release Artifacts for Clean-Machine Verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: build/win-release/${{ steps.meta.outputs.channel }}/${{ steps.meta.outputs.release_sequence }}/**
+          retention-days: 30
+
+  # ===========================================================================
+  # Job 2: 独立纯净机全链路端到端冒烟验收（发布强门禁，失败立即阻断发布）
+  # ===========================================================================
+  verify-clean-windows:
+    name: Verify on Clean Windows Runner (E2E Gate)
+    needs: [build-windows]
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout E2E Verification Script Only (No Submodules / No Dev Setup)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/windows/e2e-clean-verify.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Download Built Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-windows.outputs.artifact_name }}
+          path: dist-verify
+
+      - name: Verify Downloaded Installer SHA-256 Against SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sumsFile = 'dist-verify/SHA256SUMS.txt'
+          if (-not (Test-Path -LiteralPath $sumsFile -PathType Leaf)) { throw 'Missing SHA256SUMS.txt' }
+          $lines = Get-Content -LiteralPath $sumsFile -Encoding utf8 | Where-Object { $_.Trim() }
+          foreach ($line in $lines) {
+            if ($line -match '^([0-9a-fA-F]{64})\s+(.+)$') {
+              $expected = $Matches[1].ToLowerInvariant()
+              $relPath = $Matches[2].Trim()
+              $fullPath = Join-Path 'dist-verify' $relPath
+              if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Checksum file missing: $relPath" }
+              $actual = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -ne $expected) { throw "SHA-256 mismatch for ${relPath}: expected $expected, got $actual" }
+            }
+          }
+          Write-Host "All $($lines.Count) entries in SHA256SUMS.txt verified."
+
+      - name: Run Clean-Machine Full E2E Smoke Verification (Scrubbed PATH + Unicode Path + Hotpot + Job Object + Uninstall)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -File scripts/windows/e2e-clean-verify.ps1 `
+            -InstallerPath "dist-verify/Jiangjie-Setup-Offline-x64.exe" `
+            -ReportDir "build/e2e-report" `
+            -ScrubMachinePath `
+            -PurgeUserData
+
+      - name: Upload E2E Verification Report & Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-${{ needs.build-windows.outputs.channel }}-${{ needs.build-windows.outputs.version }}-seq${{ needs.build-windows.outputs.release_sequence }}
+          path: build/e2e-report/**
+          retention-days: 30
+
+  # ===========================================================================
+  # Job 3: 发布门禁通过后上传至 GitHub Releases 与条件对象存储/CDN
+  # ===========================================================================
+  publish-release:
+    name: Publish Verified Release (GitHub + CDN/Object Storage)
+    needs: [build-windows, verify-clean-windows]
+    if: needs.build-windows.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Verified Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-windows.outputs.artifact_name }}
+          path: release-dist
+
+      - name: Re-verify SHA256SUMS.txt Before Publishing
+        working-directory: release-dist
+        run: sha256sum -c SHA256SUMS.txt
+
+      - name: Publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.build-windows.outputs.tag_name }}
+          VERSION: ${{ needs.build-windows.outputs.version }}
+          CHANNEL: ${{ needs.build-windows.outputs.channel }}
+          SEQ: ${{ needs.build-windows.outputs.release_sequence }}
+          SIGN_MODE: ${{ needs.build-windows.outputs.sign_mode }}
+        run: |
+          set -euo pipefail
+          YAML_FILE="latest.yml"
+          PRERELEASE_FLAG=""
+          if [ "$CHANNEL" = "beta" ]; then
+            YAML_FILE="beta.yml"
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          cat > /tmp/release-notes.md <<EOF
+          ## 讲界视频工坊 Windows x64 v${VERSION} (${CHANNEL})
+
+          - **发布序列号**：\`${SEQ}\`
+          - **签名模式**：\`${SIGN_MODE}\`
+          - **纯净机全链路冒烟验收**：已通过（无宿主 Node/Python/FFmpeg、中文空格路径火锅成片 \`VERIFY PASS\`、Job Object 5 秒零孤儿进程、静默安装与卸载闭环）
+
+          ### 下载说明
+          - **推荐**：\`Jiangjie-Setup-Online-x64.exe\`（轻量在线引导安装器，免 UAC，支持断点续传）
+          - **离线/弱网兜底**：\`Jiangjie-Setup-Offline-x64.exe\`（完整离线安装包，含内置运行时）
+
+          ### SHA-256 校验摘要
+          \`\`\`text
+          $(cat release-dist/SHA256SUMS.txt)
+          \`\`\`
+          EOF
+
+          ASSETS=(
+            "release-dist/Jiangjie-Setup-Online-x64.exe"
+            "release-dist/Jiangjie-Setup-Offline-x64.exe"
+            "release-dist/Jiangjie-Setup-Offline-x64.exe.blockmap"
+            "release-dist/SHA256SUMS.txt"
+            "release-dist/release-manifest.json"
+            "release-dist/releases.win.json"
+            "release-dist/feed.json"
+            "release-dist/${YAML_FILE}"
+          )
+          shopt -s nullglob
+          for comp in release-dist/components/component-*.tar.gz; do
+            ASSETS+=("$comp")
+          done
+          shopt -u nullglob
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber
+            gh release edit "$TAG_NAME" --notes-file /tmp/release-notes.md $PRERELEASE_FLAG
+          else
+            gh release create "$TAG_NAME" "${ASSETS[@]}" \
+              --title "讲界视频工坊 v${VERSION} (${CHANNEL})" \
+              --notes-file /tmp/release-notes.md \
+              $PRERELEASE_FLAG
+          fi
+
+      - name: Sync to S3 / Cloudflare R2 (Conditional via Secrets)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.RELEASE_S3_REGION || 'auto' }}
+          S3_BUCKET: ${{ secrets.RELEASE_S3_BUCKET }}
+          S3_ENDPOINT: ${{ secrets.RELEASE_S3_ENDPOINT || '' }}
+          CHANNEL: ${{ needs.build-windows.outputs.channel }}
+          SEQ: ${{ needs.build-windows.outputs.release_sequence }}
+        run: |
+          set -euo pipefail
+          if [ -z "${S3_BUCKET:-}" ] || [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "S3/R2 secrets not configured; skipping S3/R2 upload."
+            exit 0
+          fi
+          ENDPOINT_ARGS=()
+          if [ -n "$S3_ENDPOINT" ]; then
+            ENDPOINT_ARGS=(--endpoint-url "$S3_ENDPOINT")
+          fi
+          YAML_FILE="latest.yml"
+          if [ "$CHANNEL" = "beta" ]; then YAML_FILE="beta.yml"; fi
+
+          # 1. 先上传不可变版本目录 (immutable cache)
+          aws "${ENDPOINT_ARGS[@]}" s3 sync release-dist/ "s3://${S3_BUCKET}/downloads/windows/x64/${CHANNEL}/${SEQ}/" \
+            --exclude "release-manifest.json" \
+            --cache-control "public, max-age=31536000, immutable"
+
+          # 2. 再原子更新通道级兜底入口与动态清单 (no-cache)
+          aws "${ENDPOINT_ARGS[@]}" s3 cp release-dist/Jiangjie-Setup-Online-x64.exe \
+            "s3://${S3_BUCKET}/downloads/windows/x64/${CHANNEL}/Jiangjie-Setup-Online-x64.exe" \
+            --cache-control "no-cache"
+          for f in feed.json releases.win.json "${YAML_FILE}" SHA256SUMS.txt; do
+            aws "${ENDPOINT_ARGS[@]}" s3 cp "release-dist/${f}" \
+              "s3://${S3_BUCKET}/downloads/windows/x64/${CHANNEL}/${f}" \
+              --cache-control "no-cache"
+          done
+          if [ "$CHANNEL" = "stable" ]; then
+            aws "${ENDPOINT_ARGS[@]}" s3 cp release-dist/release-manifest.json \
+              "s3://${S3_BUCKET}/downloads/release-manifest.json" \
+              --cache-control "no-cache"
+          else
+            aws "${ENDPOINT_ARGS[@]}" s3 cp release-dist/release-manifest.json \
+              "s3://${S3_BUCKET}/downloads/release-manifest-beta.json" \
+              --cache-control "no-cache"
+          fi
+
+      - name: Sync to Aliyun OSS (Conditional via Secrets)
+        env:
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          CHANNEL: ${{ needs.build-windows.outputs.channel }}
+          SEQ: ${{ needs.build-windows.outputs.release_sequence }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OSS_BUCKET:-}" ] || [ -z "${OSS_ENDPOINT:-}" ] || [ -z "${OSS_ACCESS_KEY_ID:-}" ] || [ -z "${OSS_ACCESS_KEY_SECRET:-}" ]; then
+            echo "Aliyun OSS secrets not configured; skipping OSS upload."
+            exit 0
+          fi
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil-v1.7.19-linux-amd64.zip -o /tmp/ossutil.zip
+          unzip -q /tmp/ossutil.zip -d /tmp/ossutil
+          OSSUTIL="$(find /tmp/ossutil -type f -name 'ossutil*' | head -n 1)"
+          chmod +x "$OSSUTIL"
+          "$OSSUTIL" config -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+
+          YAML_FILE="latest.yml"
+          if [ "$CHANNEL" = "beta" ]; then YAML_FILE="beta.yml"; fi
+
+          # 1. 先上传不可变版本目录
+          "$OSSUTIL" cp -r -f release-dist/ "oss://${OSS_BUCKET}/downloads/windows/x64/${CHANNEL}/${SEQ}/" \
+            --exclude "release-manifest.json" \
+            --meta "Cache-Control:public, max-age=31536000, immutable"
+
+          # 2. 再原子替换动态清单与兜底入口
+          "$OSSUTIL" cp -f release-dist/Jiangjie-Setup-Online-x64.exe \
+            "oss://${OSS_BUCKET}/downloads/windows/x64/${CHANNEL}/Jiangjie-Setup-Online-x64.exe" \
+            --meta "Cache-Control:no-cache"
+          for f in feed.json releases.win.json "${YAML_FILE}" SHA256SUMS.txt; do
+            "$OSSUTIL" cp -f "release-dist/${f}" \
+              "oss://${OSS_BUCKET}/downloads/windows/x64/${CHANNEL}/${f}" \
+              --meta "Cache-Control:no-cache"
+          done
+          if [ "$CHANNEL" = "stable" ]; then
+            "$OSSUTIL" cp -f release-dist/release-manifest.json \
+              "oss://${OSS_BUCKET}/downloads/release-manifest.json" \
+              --meta "Cache-Control:no-cache"
+          else
+            "$OSSUTIL" cp -f release-dist/release-manifest.json \
+              "oss://${OSS_BUCKET}/downloads/release-manifest-beta.json" \
+              --meta "Cache-Control:no-cache"
+          fi

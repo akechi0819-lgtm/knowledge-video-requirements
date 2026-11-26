@@ -30,7 +30,7 @@ class SpeechEndpointTest(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch.dict('os.environ', {
             'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a',
             'VIDEO_TTS_PROTOCOL': 'speech'
-        }), patch.object(tts_api, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'audio')) as send, patch.object(tts_api.subprocess, 'run') as probe:
+        }), patch.object(tts_api, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'audio')) as send, patch.object(tts_api, "run_media") as probe:
             probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
             segments = [{'id':'S1', 'narration':'旁白'}]
             def render(voice='api:test'):
@@ -47,7 +47,7 @@ class SpeechEndpointTest(unittest.TestCase):
             "VIDEO_TTS_ENDPOINT": "https://test.invalid/v1/chat/completions",
             "VIDEO_TTS_MODEL": "mimo-v2.5-tts", "VIDEO_TTS_KEY": "test-key",
             "VIDEO_TTS_PROTOCOL": "mimo"
-        }), patch.object(tts_api, "urlopen") as send, patch.object(tts_api.subprocess, "run") as probe:
+        }), patch.object(tts_api, "urlopen") as send, patch.object(tts_api, "run_media") as probe:
             encoded = base64.b64encode(b"test audio").decode()
             send.side_effect = lambda *a, **k: io.BytesIO(json.dumps({"choices": [{"message": {"audio": {"data": encoded}}}]}).encode())
             probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
@@ -70,7 +70,7 @@ class SpeechEndpointTest(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {
             "VIDEO_TTS_ENDPOINT": "https://test.invalid/v1/audio/speech",
             "VIDEO_TTS_MODEL": "demo", "VIDEO_TTS_KEY": "test-key"
-        }), patch.object(tts_api, "urlopen") as send, patch.object(tts_api.subprocess, "run") as probe:
+        }), patch.object(tts_api, "urlopen") as send, patch.object(tts_api, "run_media") as probe:
             send.side_effect = lambda *a, **k: io.BytesIO(b"test audio")
             probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
             segments = [{"id": "S1", "narration": "第一段。"}]
@@ -95,7 +95,7 @@ class SpeechEndpointTest(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch.dict('os.environ', {
             'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a',
             'VIDEO_TTS_PROTOCOL': 'speech'
-        }), patch.object(tts_api, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'audio')) as send, patch.object(tts_api.subprocess, 'run') as probe:
+        }), patch.object(tts_api, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'audio')) as send, patch.object(tts_api, "run_media") as probe:
             probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
             segments = [{'id': 'S1', 'narration': '旁白'}]
             with self.assertWarnsRegex(UserWarning, r'不支持语速 \+7%'):
@@ -116,7 +116,7 @@ class SpeechEndpointTest(unittest.TestCase):
             'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a'
         }), patch.object(tts_api, 'urlopen', side_effect=[
             URLError('connection refused'), URLError('timed out'), io.BytesIO(b'audio')]) as send, \
-                patch.object(tts_api.subprocess, 'run') as probe, patch.object(tts_api.time, 'sleep') as sleep:
+                patch.object(tts_api, "run_media") as probe, patch.object(tts_api.time, 'sleep') as sleep:
             probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
             _, fresh = tts_api.synth_all([{'id': 'S1', 'narration': '旁白'}], Path(tmp), 'api:test', '+0%', 'ffprobe')
             self.assertEqual(fresh, ['S1'])
@@ -127,7 +127,7 @@ class SpeechEndpointTest(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch.dict('os.environ', {
             'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a'
         }), patch.object(tts_api, 'urlopen', side_effect=URLError('connection refused')) as send, \
-                patch.object(tts_api.subprocess, 'run') as probe, patch.object(tts_api.time, 'sleep') as sleep:
+                patch.object(tts_api, "run_media") as probe, patch.object(tts_api.time, 'sleep') as sleep:
             probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
             with self.assertRaisesRegex(ValueError, r'\[S1\] 配音服务连接失败'):
                 tts_api.synth_all([{'id': 'S1', 'narration': '旁白'}], Path(tmp), 'api:test', '+0%', 'ffprobe')
@@ -139,7 +139,7 @@ class SpeechEndpointTest(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch.dict('os.environ', {
             'VIDEO_TTS_ENDPOINT': 'https://test.invalid/a', 'VIDEO_TTS_MODEL': 'model-a'
         }), patch.object(tts_api, 'urlopen', side_effect=HTTPError('https://test.invalid/a', 500, 'boom', {}, None)) as send, \
-                patch.object(tts_api.subprocess, 'run') as probe, patch.object(tts_api.time, 'sleep') as sleep:
+                patch.object(tts_api, "run_media") as probe, patch.object(tts_api.time, 'sleep') as sleep:
             probe.return_value.stdout = '{"streams":[{"codec_name":"mp3"}],"format":{"duration":"2.5"}}'
             with self.assertRaisesRegex(RuntimeError, 'HTTP 500'):
                 tts_api.synth_all([{'id': 'S1', 'narration': '旁白'}], Path(tmp), 'api:test', '+0%', 'ffprobe')

@@ -3,9 +3,9 @@
 // renderer and the orchestrator can never drift apart.
 
 import path from 'node:path';
-import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { resolveBrowser, resolveTool } from './runtime.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const MODULE_DIR = HERE;
@@ -17,30 +17,12 @@ export const REPO_DIR = path.resolve(WORK_DIR, '..');
 // repo pinned machine-specific absolute paths here; the kit must run anywhere.
 const require = createRequire(import.meta.url);
 
-function firstExisting(candidates) {
-  return candidates.find((c) => c && fs.existsSync(c)) ?? null;
-}
-
 function resolvePlaywright() {
   if (process.env.VIDEO_PLAYWRIGHT) return process.env.VIDEO_PLAYWRIGHT;
   try { return require.resolve('playwright-core'); } catch { return null; }
 }
 
-const venvPython = process.platform === 'win32'
-  ? path.join(HERE, '.venv', 'Scripts', 'python.exe')
-  : path.join(HERE, '.venv', 'bin', 'python');
-
-const browserCandidates = process.platform === 'win32' ? [
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-] : process.platform === 'darwin' ? [
-  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-] : [
-  '/usr/bin/microsoft-edge', '/usr/bin/google-chrome',
-  '/usr/bin/chromium', '/usr/bin/chromium-browser',
-];
+let browser;
 
 export const STYLE = {
   video: { width: 1280, height: 720, fps: 30 },
@@ -133,12 +115,11 @@ export const STYLE = {
   },
 
   paths: {
-    ffmpeg: process.env.VIDEO_FFMPEG || 'ffmpeg',
-    ffprobe: process.env.VIDEO_FFPROBE || 'ffprobe',
-    edge: process.env.VIDEO_BROWSER || firstExisting(browserCandidates),
-    python: process.env.VIDEO_PYTHON
-      || (fs.existsSync(venvPython) ? venvPython : (process.platform === 'win32' ? 'python' : 'python3')),
-    playwright: resolvePlaywright(),
+    get ffmpeg() { return resolveTool('ffmpeg', process.env, REPO_DIR, false); },
+    get ffprobe() { return resolveTool('ffprobe', process.env, REPO_DIR, false); },
+    get edge() { return browser === undefined ? (browser = resolveBrowser()) : browser; },
+    get python() { return resolveTool('python', process.env, REPO_DIR, false); },
+    get playwright() { return resolvePlaywright(); },
   },
 
   // Screenshot format/quality chosen from T4 spike A measurements.

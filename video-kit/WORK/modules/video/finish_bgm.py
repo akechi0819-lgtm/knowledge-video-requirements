@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
+from media_process import run_media
 import sys
 from pathlib import Path
 
@@ -25,7 +25,7 @@ SR = 48000
 
 
 def decode_audio(ffmpeg: str, src: Path, filters: list[str] | None = None) -> np.ndarray:
-    raw = subprocess.run(
+    raw = run_media(
         [ffmpeg, "-v", "error", "-i", str(src), "-map", "0:a", *(filters or []),
          "-f", "f32le", "-ac", "2", "-ar", str(SR), "-"],
         capture_output=True, check=True,
@@ -36,7 +36,7 @@ def decode_audio(ffmpeg: str, src: Path, filters: list[str] | None = None) -> np
 def remux_mix(ffmpeg: str, final: Path, tmp: Path, pcm: bytes, total: float) -> None:
     # Decoding concatenated AAC can expose encoder padding past the container
     # duration. Bound the new audio to the measured timeline used by mapping.
-    subprocess.run(
+    run_media(
         [ffmpeg, "-y", "-v", "error", "-i", str(final),
          "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-",
          "-map", "0:v", "-map", "1:a", "-c:v", "copy",
@@ -68,10 +68,11 @@ def main() -> int:
     if not speech.any():
         raise SystemExit("no speech windows found; refusing to calibrate BGM against silence")
 
-    env = {**os.environ, "PATH": str(Path(ffmpeg).parent) + os.pathsep + os.environ.get("PATH", ""),
-           "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+    env.update(VIDEO_FFMPEG=ffmpeg, PYTHONIOENCODING="utf-8", PYTHONUTF8="1",
+               PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
     bgm_wav = out_dir / "bgm.wav"
-    subprocess.run(
+    run_media(
         [sys.executable, str(VK / "tools" / "fit_bgm.py"), str(bgm_wav), "--seconds", f"{total:.3f}"],
         check=True, env=env,
     )
@@ -91,7 +92,7 @@ def main() -> int:
     # skill 交付响度目标 ≈ -14.5 LUFS / ≤ -1 dBTP：静态增益（不压缩动态，
     # 人声/BGM 比例保持不变），增益取响度与真峰值两个约束的较小值。
     pcm0 = (np.clip(mix, -1, 1) * 32767).astype("<i2").tobytes()
-    r = subprocess.run([ffmpeg, "-nostats", "-f", "s16le", "-ac", "2", "-ar", str(SR),
+    r = run_media([ffmpeg, "-nostats", "-f", "s16le", "-ac", "2", "-ar", str(SR),
                         "-i", "-", "-af", "ebur128=peak=true", "-f", "null", "-"],
                        input=pcm0, capture_output=True)
     err = r.stderr.decode("utf-8", "replace")
@@ -106,7 +107,7 @@ def main() -> int:
     pcm = (np.clip(mix, -1, 1) * 32767).astype("<i2").tobytes()
     tmp = out_dir / "final_bgm_tmp.mp4"
     remux_mix(ffmpeg, final, tmp, pcm, total)
-    new_dur = float(subprocess.run(
+    new_dur = float(run_media(
         [ffprobe, "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(tmp)],
         capture_output=True, text=True, check=True,

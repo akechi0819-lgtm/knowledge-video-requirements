@@ -4,9 +4,15 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readSkillMetadata } from './skill-packages.js'
+import { childEnvironment, findExecutable } from './runtime.js'
 
 const exec = promisify(execFile)
-const git = async (...args) => (await exec('git', args, { timeout: 120000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })).stdout.trim()
+const git = async (...args) => {
+  const command = findExecutable(process.platform === 'win32' ? 'git.exe' : 'git')
+  if (!command) throw new Error('当前运行环境未找到 Git。')
+  return (await exec(command, args, { timeout: 120000, maxBuffer: 4 * 1024 * 1024,
+    env: { ...childEnvironment(process.env, [command]), GIT_TERMINAL_PROMPT: '0' } })).stdout.trim()
+}
 
 function githubUrl(input) {
   let url
@@ -89,12 +95,18 @@ export function createGithubInstaller(workspace, { cloneUrl } = {}) {
         const location = path.relative(entry.repo, target).split(path.sep).join('/')
         const suffix = createHash('sha256').update(JSON.stringify([entry.source.url.toLowerCase(), location])).digest('hex').slice(0, 12)
         const link = path.join(root, `${slug}-${suffix}`)
-        await symlink(target, link, 'dir')
-        linked.push(link)
-        skill.installedPath = link
+        if (process.platform === 'win32') {
+          await mkdir(link)
+          linked.push(link)
+          await writeFile(path.join(link, '.jiangjie-checkout'), path.relative(storage, target), { flag: 'wx' })
+        } else {
+          await symlink(target, link, 'dir')
+          linked.push(link)
+        }
+        skill.installedPath = process.platform === 'win32' ? target : link
       }
     } catch (error) {
-      await Promise.all(linked.map(link => rm(link, { force: true })))
+      await Promise.all(linked.map(link => rm(link, { recursive: true, force: true })))
       pending.set(installId, entry)
       if (error.code === 'EEXIST') throw new Error('此仓库目录的 Skill 已安装。')
       throw error

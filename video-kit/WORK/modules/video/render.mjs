@@ -5,14 +5,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import STYLE, { MODULE_DIR } from './style.mjs';
-import { FF, assertClipPlayable } from './ffmpeg.mjs';
+import { FF, assertClipPlayable, runRetry } from './ffmpeg.mjs';
 import { installSceneRoutes } from './isolated-page.mjs';
+import { childEnvironment, runtimePaths, writablePath } from './runtime.mjs';
 
-const run = promisify(execFile);
 const require = createRequire(import.meta.url);
 
 function loadPlaywright() {
@@ -23,15 +21,31 @@ function loadPlaywright() {
 }
 
 export async function renderSegment(plan, audioFile, outDir) {
+  const runtime = runtimePaths();
+  const app = process.env.JIANGJIE_APP_ROOT && runtime.app;
+  writablePath(outDir, app);
+  const useCache = runtime.cache && (process.platform === 'win32' || process.env.JIANGJIE_CACHE_DIR);
+  if (!useCache) return renderToClip(plan, audioFile, outDir, path.join(outDir, 'frames', plan.id));
+  const tmp = writablePath(path.join(runtime.cache, 'tmp'), app);
+  fs.mkdirSync(tmp, { recursive: true });
+  const framesDir = fs.mkdtempSync(path.join(tmp, 'frames-'));
+  try {
+    return await renderToClip(plan, audioFile, outDir, framesDir);
+  } finally {
+    fs.rmSync(framesDir, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+async function renderToClip(plan, audioFile, outDir, framesDir) {
   const { width, height, fps } = STYLE.video;
-  const framesDir = path.join(outDir, 'frames', plan.id);
   fs.mkdirSync(framesDir, { recursive: true });
   for (const f of fs.readdirSync(framesDir)) fs.unlinkSync(path.join(framesDir, f));
 
   const { chromium } = loadPlaywright();
-  if (!STYLE.paths.edge) throw new Error('no Edge/Chrome/Chromium executable found; set VIDEO_BROWSER to a browser executable');
+  if (!STYLE.paths.edge) throw new Error('no Edge/Chrome/Chromium executable found; set VIDEO_EDGE_PATH or VIDEO_BROWSER to a browser executable');
   const browser = await chromium.launch({
     executablePath: STYLE.paths.edge,
+    env: childEnvironment(process.env, [STYLE.paths.edge]),
     headless: true,
     // Hardened for frame determinism: single raster thread, no LCD text /
     // GPU compositing / threaded animation / checker imaging, and all
@@ -116,7 +130,7 @@ export async function renderSegment(plan, audioFile, outDir) {
     '-movflags', e.movflags, clip,
   ];
   const enc0 = Date.now();
-  await run(FF, args, { maxBuffer: 64 * 1024 * 1024 });
+  await runRetry(FF, args, { maxBuffer: 64 * 1024 * 1024 });
   const encodeMs = Date.now() - enc0;
 
   const verified = await assertClipPlayable(clip);

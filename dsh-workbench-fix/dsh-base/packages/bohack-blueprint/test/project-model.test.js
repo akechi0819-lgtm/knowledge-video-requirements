@@ -18,7 +18,7 @@ test('项目配置共享、密钥不回显且切换地址不沿用密钥', async
     await assert.rejects(a.save({ endpoint: 'https://two.example/v1/chat/completions', model: 'm', key: '' }), /重新填写/)
     await a.save({ endpoint: 'http://127.0.0.1:11434/v1/chat/completions', model: 'local', key: '' })
     assert.equal((await b.resolve()).key, '')
-    assert.equal((await fs.stat(path.join(dir, 'project-model.private.json'))).mode & 0o777, 0o600)
+    if (process.platform !== 'win32') assert.equal((await fs.stat(path.join(dir, 'project-model.private.json'))).mode & 0o777, 0o600)
     await assert.rejects(a.save({ endpoint: 'http://remote.example/api', model: 'm', key: 'x' }), /HTTPS/)
   } finally { await fs.rm(dir, { recursive: true, force: true }) }
 })

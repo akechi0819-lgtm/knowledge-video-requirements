@@ -10,6 +10,7 @@
  */
 import { readFile, writeFile, readdir, mkdir, stat, appendFile, realpath, copyFile, rename } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
+import { childEnvironment, findExecutable, systemTool } from './runtime.js'
 import { createProduction } from './production.js'
 import { productionErrorMessage } from './production-error.js'
 import { assetPlan, inheritAssetPlan, assignAssetPlan, withAssetLock, writeAssetLedger } from './asset-plan.js'
@@ -806,10 +807,12 @@ export function createService(ctx, config = {}) {
     const sourceRoot = await realpath(path.join(root, 'sources'))
     const file = await realpath(path.join(root, asset.path))
     if (path.dirname(file) !== sourceRoot) throw new ServiceError('文件不在本创作上传目录', 'BAD_INPUT')
-    const command = process.platform === 'win32' ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+    const command = process.platform === 'win32' ? path.join(systemTool(''), '..', 'explorer.exe')
+      : process.platform === 'darwin' ? '/usr/bin/open' : findExecutable('xdg-open')
+    if (!command) throw new ServiceError('找不到系统文件打开程序', 'NOT_FOUND')
     const args = mode === 'reveal' ? (process.platform === 'win32' ? ['/select,', file] : process.platform === 'darwin' ? ['-R', file] : [path.dirname(file)]) : [file]
     await new Promise((resolve, reject) => {
-      const child = spawn(command, args, { detached: true, stdio: 'ignore' })
+      const child = spawn(command, args, { env: childEnvironment(process.env, [command]), detached: true, stdio: 'ignore' })
       child.once('error', reject)
       child.once('spawn', () => { child.unref(); resolve() })
     })

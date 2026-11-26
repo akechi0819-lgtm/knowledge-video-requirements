@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jiangjie.gingers.cloud/schemas/win-release-feed.schema.json",
+  "title": "Jiangjie Windows Release Feed & Signed Envelope",
+  "oneOf": [
+    { "$ref": "#/$defs/SignedEnvelope" },
+    { "$ref": "#/$defs/ReleasePayload" }
+  ],
+  "$defs": {
+    "Sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "HttpsUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$"
+    },
+    "Artifact": {
+      "type": "object",
+      "required": ["url", "fileName", "sizeBytes", "sha256"],
+      "properties": {
+        "url": { "$ref": "#/$defs/HttpsUrl" },
+        "fileName": { "type": "string", "minLength": 1 },
+        "sizeBytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/Sha256Hex" },
+        "sha512": { "type": "string" },
+        "publisherHint": { "type": "string" },
+        "blockmapUrl": { "$ref": "#/$defs/HttpsUrl" },
+        "blockmapSha256": { "$ref": "#/$defs/Sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "Component": {
+      "type": "object",
+      "required": ["id", "url", "sizeBytes", "unpackedSizeBytes", "sha256", "fileManifestSha256"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": ["app", "node", "python", "webview2", "chromium", "codecs", "skills", "notices"]
+        },
+        "url": { "$ref": "#/$defs/HttpsUrl" },
+        "sizeBytes": { "type": "integer", "minimum": 1 },
+        "unpackedSizeBytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/Sha256Hex" },
+        "fileManifestSha256": { "$ref": "#/$defs/Sha256Hex" },
+        "unpackDir": { "type": "string" },
+        "fileCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "ReleasePayload": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "version",
+        "releaseSequence",
+        "channel",
+        "platform",
+        "arch",
+        "minWindowsBuild",
+        "rolloutPercentage",
+        "publishedAt",
+        "expiresAt",
+        "artifacts"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$" },
+        "releaseSequence": { "type": "integer", "minimum": 1 },
+        "channel": { "type": "string", "enum": ["stable", "beta"] },
+        "platform": { "const": "windows" },
+        "arch": { "const": "x64" },
+        "minWindowsBuild": { "type": "integer", "minimum": 19045 },
+        "rolloutPercentage": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "publishedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "minBootstrapperVersion": { "type": "string" },
+        "minUpdaterVersion": { "type": "string" },
+        "releaseNotesUrl": { "$ref": "#/$defs/HttpsUrl" },
+        "deltaMetrics": {
+          "type": "object",
+          "properties": {
+            "previousSequence": { "type": ["integer", "null"] },
+            "fullBytes": { "type": "integer", "minimum": 0 },
+            "changedBytes": { "type": "integer", "minimum": 0 },
+            "reusedBytes": { "type": "integer", "minimum": 0 },
+            "savingsPercent": { "type": "number", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "artifacts": {
+          "type": "object",
+          "required": ["bootstrapper", "offline"],
+          "properties": {
+            "bootstrapper": { "$ref": "#/$defs/Artifact" },
+            "offline": { "$ref": "#/$defs/Artifact" },
+            "codecSource": { "$ref": "#/$defs/Artifact" }
+          },
+          "additionalProperties": false
+        },
+        "components": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Component" }
+        }
+      }
+    },
+    "SignedEnvelope": {
+      "type": "object",
+      "required": ["schemaVersion", "keyId", "payload", "signature"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "keyId": { "type": "string", "minLength": 1 },
+        "payload": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

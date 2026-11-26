@@ -547,7 +547,8 @@ test('prepare-scenes subprocess gets default DSH_CLI and honors env override', a
     await service.generate({},{produce:async()=>({markdown,engine:'test'})}); await service.confirm({all:true}); await service.finalize()
     async function complete(){let s=await service.production.start();for(let i=0;i<100;i++){s=await service.production.status();if(s.status!=='running')break;await sleep(20)}assert.equal(s.status,'completed',s.error);return s}
     await complete()
-    const expected=path.join(path.resolve(kit,'..','dsh-workbench-fix','dsh-base'),process.platform==='win32'?'dsh.cmd':'dsh.sh')
+    const expected=path.join(path.resolve(kit,'..','dsh-workbench-fix','dsh-base'),
+      process.platform==='win32' ? 'node_modules/@deepseek-ai/dsh/lib/bin.js' : 'dsh.sh')
     assert.equal((await readFile(path.join(root,'dsh-cli'),'utf8')).trim(),expected)
     process.env.DSH_CLI='custom-cli'
     await service.selectVisualStyle({id:'editorial',version:1})
@@ -858,12 +859,21 @@ test('原版静音成片可在无 TTS、无映射的情况下恢复并交付完�
     const skill = path.join(root, '.agents/skills/silent-local')
     await Promise.all([modules, film, skill].map(dir => mkdir(dir, { recursive: true })))
     await writeFile(path.join(skill, 'SKILL.md'), '---\nname: silent-local\ndescription: 无旁白短片\n---\n正文')
-    const ffprobe = path.join(kit, 'ffprobe')
-    const ffmpeg = path.join(kit, 'ffmpeg')
-    await writeFile(ffprobe, '#!/bin/sh\nprintf \'%s\\n\' \'{"format":{"duration":"4"},"streams":[{"codec_type":"video","width":1280,"height":720}]}\'\n')
-    await writeFile(ffmpeg, '#!/bin/sh\nprintf \'frame=120\\nprogress=end\\n\'\n')
-    await Promise.all([ffprobe, ffmpeg].map(file => chmod(file, 0o755)))
-    await writeFile(path.join(modules, 'style.mjs'), `export default ${JSON.stringify({paths:{ffprobe,ffmpeg}})}`)
+    const final = path.join(film, 'final.mp4')
+    let paths
+    if (process.platform === 'win32') {
+      const { createMutedVideo } = await import('./media-fixture.js')
+      paths = await createMutedVideo(final, 4)
+    } else {
+      const ffprobe = path.join(kit, 'ffprobe')
+      const ffmpeg = path.join(kit, 'ffmpeg')
+      await writeFile(ffprobe, '#!/bin/sh\nprintf \'%s\\n\' \'{"format":{"duration":"4"},"streams":[{"codec_type":"video","width":1280,"height":720}]}\'\n')
+      await writeFile(ffmpeg, '#!/bin/sh\nprintf \'frame=120\\nprogress=end\\n\'\n')
+      await Promise.all([ffprobe, ffmpeg].map(file => chmod(file, 0o755)))
+      await writeFile(final, 'unit media fixture')
+      paths = { ffprobe, ffmpeg }
+    }
+    await writeFile(path.join(modules, 'style.mjs'), 'export default ' + JSON.stringify({ paths }))
     await writeFile(path.join(root, 'production/status.json'), JSON.stringify({
       id: jobId, mode: 'agent', status: 'interrupted', version: 'v1', phase: '正在制作视频',
     }))
@@ -871,7 +881,6 @@ test('原版静音成片可在无 TTS、无映射的情况下恢复并交付完�
     await writeFile(path.join(job, 'production.json'), JSON.stringify({
       version: 'v1', style: { id: 'repo-skill:silent-local', kind: 'skill' }, sections: narration,
     }))
-    await writeFile(path.join(film, 'final.mp4'), 'unit media fixture')
     await writeFile(path.join(job, 'decisions.json'), '{}')
     const production = createProduction(root, { desktop:true, skillsRoot:root, videoKitDir:kit, settings:{ load:async () => ({tts:{}}) } })
     assert.equal((await production.start({ jobId })).status, 'completed')
