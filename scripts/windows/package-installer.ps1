@@ -151,6 +151,7 @@ $innerBinaries = @(
 
 if ($innerBinaries.Count -eq 0) { throw "No native executables found in $StageDirectory" }
 Write-Host "[package] Signing $($innerBinaries.Count) inner binaries (mode=$SignMode)..."
+$global:LASTEXITCODE = 0
 & $signScript -Files $innerBinaries -Mode $SignMode -ReportPath (Join-Path $OutputDirectory 'sign-inner-report.json')
 if ($LASTEXITCODE -ne 0) { throw "Inner binary signing failed with exit code $LASTEXITCODE" }
 
@@ -204,6 +205,7 @@ if (-not $makensis) {
         if ($LASTEXITCODE -ne 0) { throw "NSIS uninstaller generation failed ($LASTEXITCODE)" }
         & $uninstGen /S
         if (-not (Test-Path -LiteralPath $uninstExe -PathType Leaf)) { throw 'Failed to emit Uninstall.exe' }
+        $global:LASTEXITCODE = 0
         & $signScript -Files @($uninstExe) -Mode $SignMode -ReportPath (Join-Path $OutputDirectory 'sign-uninstaller-report.json')
         if ($LASTEXITCODE -ne 0) { throw "Uninstaller signing failed ($LASTEXITCODE)" }
         Remove-Item -LiteralPath $uninstGen -Force -ErrorAction SilentlyContinue
@@ -223,6 +225,7 @@ if (-not $makensis) {
 $outerBinaries = @($onlineOut)
 if (Test-Path -LiteralPath $offlineOut -PathType Leaf) { $outerBinaries += $offlineOut }
 Write-Host "[package] Signing $($outerBinaries.Count) outer installer(s) (mode=$SignMode)..."
+$global:LASTEXITCODE = 0
 & $signScript -Files $outerBinaries -Mode $SignMode -ReportPath (Join-Path $OutputDirectory 'sign-outer-report.json')
 if ($LASTEXITCODE -ne 0) { throw "Outer installer signing failed with exit code $LASTEXITCODE" }
 

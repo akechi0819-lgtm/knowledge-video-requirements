@@ -20,6 +20,9 @@ RequestExecutionLevel user
 !include "LogicLib.nsh"
 !include "x64.nsh"
 
+!insertmacro un.GetParameters
+!insertmacro un.GetOptions
+
 !ifndef APP_NAME
   !define APP_NAME "讲界视频工坊"
 !endif
@@ -118,6 +121,7 @@ Function .onInit
 
   ; 解析命令行参数 /NOLAUNCH
   ${GetParameters} $R0
+  ClearErrors
   StrCpy $NoLaunchFlag "0"
   ${GetOptions} $R0 "/NOLAUNCH" $R1
   ${IfNot} ${Errors}
@@ -127,9 +131,10 @@ FunctionEnd
 
 Function un.onInit
   SetShellVarContext current
-  ${GetParameters} $R0
+  ${un.GetParameters} $R0
+  ClearErrors
   StrCpy $PurgeDataFlag "0"
-  ${GetOptions} $R0 "/PURGEDATA" $R1
+  ${un.GetOptions} $R0 "/PURGEDATA" $R1
   ${IfNot} ${Errors}
     StrCpy $PurgeDataFlag "1"
   ${EndIf}
