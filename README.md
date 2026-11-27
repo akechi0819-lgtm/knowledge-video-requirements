@@ -36,7 +36,7 @@ Windows 版采用原生 C++20 Win32 宿主与固定版 Microsoft Edge WebView2 �
 ```powershell
 pwsh -File scripts/windows/bundle-runtime.ps1
 pwsh -File scripts/build-win-desktop.ps1 -AppVersion 0.2.1 -ReleaseSequence 2
-pwsh -File scripts/windows/build-release.ps1 -Version 0.2.1 -ReleaseSequence 2 -Channel beta
+pwsh -File scripts/windows/package-installer.ps1 -Version 0.2.1 -ReleaseSequence 2 -Channel beta
 ```
 
 CI 发布门禁位于 `.github/workflows/release-windows.yml`，按「`build-windows`（运行时组装、C++ 编译与单测、双轨在线/离线安装包及组件差分包）→ `verify-clean-windows`（纯净机 PATH 清洗后安装、桌面启动、`/bohack/api/health` 与 `/bohack/api/desktop/busy` 验收、卸载回归）→ `publish-release`（上传 GitHub Release 与清单）」三阶段执行；官网 `#downloads` 由 `frontend/public/site/downloads.js` 动态读取 `/downloads/release-manifest.json`，服务器上线可使用 `scripts/deploy-win-release-server.sh`。

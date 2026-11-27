@@ -103,8 +103,15 @@ echo "[3/6] 备份当前站点与 Nginx 配置至 ${BAK_DIR}..."
 [ -f "${SITE_ROOT}/index.html" ] && cp -a "${SITE_ROOT}/index.html" "${BAK_DIR}/index.html"
 [ -f "${SITE_ROOT}/downloads.js" ] && cp -a "${SITE_ROOT}/downloads.js" "${BAK_DIR}/downloads.js"
 [ -f "${SITE_ROOT}/downloads/release-manifest.json" ] && cp -a "${SITE_ROOT}/downloads/release-manifest.json" "${BAK_DIR}/release-manifest.json"
-NGINX_CONF="$(grep -rl "jiangjie.gingers.cloud" /etc/nginx/ 2>/dev/null | head -n 1 || true)"
-if [ -n "$NGINX_CONF" ] && [ -f "$NGINX_CONF" ]; then
+NGINX_CONF="${NGINX_CONF:-}"
+if [ -z "$NGINX_CONF" ]; then
+  NGINX_CONF="$(grep -rl "jiangjie.gingers.cloud" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | grep -vE '\.(bak|disabled|orig)$|~$' | head -n 1 || true)"
+fi
+if [ -z "$NGINX_CONF" ]; then
+  NGINX_CONF="$(grep -rl "jiangjie.gingers.cloud" /etc/nginx/ 2>/dev/null | grep -vE '\.(bak|disabled|orig)$|~$' | head -n 1 || true)"
+fi
+if [ -n "$NGINX_CONF" ] && [ -e "$NGINX_CONF" ]; then
+  NGINX_CONF="$(readlink -f "$NGINX_CONF")"
   cp -a "$NGINX_CONF" "${BAK_DIR}/nginx.conf"
   echo "  -> 已备份 Nginx 配置: ${NGINX_CONF}"
 fi
@@ -140,16 +147,28 @@ done
 
 # 保留现有 macOS DMG 信息（若已有），并原子更新官网 release-manifest.json
 python3 - "$WORK_DIR/assets/release-manifest.json" "${SITE_ROOT}/downloads/release-manifest.json" "${SITE_ROOT}/downloads" "$CHANNEL" <<'PY'
-import hashlib, json, os, sys
+import datetime, hashlib, json, os, re, sys
 new_path, dst_path, dl_root, channel = sys.argv[1:5]
 manifest = json.load(open(new_path, encoding="utf-8"))
 manifest["defaultChannel"] = channel
 plats = manifest["channels"][channel]["platforms"]
 
+prev_mac = None
+if os.path.isfile(dst_path):
+    try:
+        prev = json.load(open(dst_path, encoding="utf-8"))
+        for ch_data in (prev.get("channels") or {}).values():
+            mac = (ch_data.get("platforms") or {}).get("macos-arm64")
+            if isinstance(mac, dict):
+                prev_mac = mac
+                break
+    except Exception:
+        prev_mac = None
+
 # 如果服务器上已有 macOS DMG 且新清单未包含 macos-arm64，自动补充以保持 Mac 下载按钮可用
 if "macos-arm64" not in plats:
     dmg_candidates = [f for f in os.listdir(dl_root) if f.endswith(".dmg") and os.path.isfile(os.path.join(dl_root, f))]
-    dmg_candidates.sort(reverse=True)
+    dmg_candidates.sort(key=lambda f: (0 if "macOS-arm64" in f else 1, -os.path.getmtime(os.path.join(dl_root, f)), f))
     if dmg_candidates:
         dmg = dmg_candidates[0]
         full = os.path.join(dl_root, dmg)
@@ -157,10 +176,20 @@ if "macos-arm64" not in plats:
         with open(full, "rb") as fp:
             for chunk in iter(lambda: fp.read(1024 * 1024), b""):
                 h.update(chunk)
+        ver_match = re.search(r'(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.dmg$', dmg)
+        prev_same = prev_mac and (prev_mac.get("installer") or {}).get("fileName") == dmg
+        mac_version = (
+            ver_match.group(1) if ver_match
+            else (prev_mac.get("version") if prev_same and prev_mac.get("version") else manifest["channels"][channel]["version"])
+        )
+        mac_published = (
+            prev_mac.get("publishedAt") if prev_same and prev_mac.get("publishedAt")
+            else datetime.datetime.fromtimestamp(os.path.getmtime(full), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
         plats["macos-arm64"] = {
-            "version": manifest["channels"][channel]["version"],
-            "publishedAt": manifest["channels"][channel]["publishedAt"],
-            "minOs": "macOS 14.0+ (Apple Silicon)",
+            "version": mac_version,
+            "publishedAt": mac_published,
+            "minOs": (prev_mac.get("minOs") if prev_same and prev_mac.get("minOs") else "macOS 14.0+ (Apple Silicon)"),
             "installer": {
                 "fileName": dmg,
                 "url": f"/downloads/{dmg}",
@@ -168,7 +197,7 @@ if "macos-arm64" not in plats:
                 "sha256": h.hexdigest(),
             },
         }
-        print(f"  -> 自动保留现有 macOS DMG: /downloads/{dmg}")
+        print(f"  -> 自动保留现有 macOS DMG: /downloads/{dmg} (v{mac_version})")
 
 tmp = dst_path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as fp:
@@ -180,53 +209,69 @@ PY
 # 6. 更新官网前端下载页与 Nginx /downloads/ 路由
 echo "[5/6] 更新官网下载页脚本与 Nginx Range/缓存规则..."
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/${GIT_REF}"
-curl -fsSL "${RAW_BASE}/frontend/public/site/downloads.js" -o "${SITE_ROOT}/downloads.js.tmp"
+curl -fsSL "${AUTH_ARGS[@]}" "${RAW_BASE}/frontend/public/site/downloads.js" -o "${SITE_ROOT}/downloads.js.tmp"
 mv -f "${SITE_ROOT}/downloads.js.tmp" "${SITE_ROOT}/downloads.js"
 
 if [ "$SKIP_SITE_HTML" != "1" ]; then
-  curl -fsSL "${RAW_BASE}/frontend/public/site/index.html" -o "${SITE_ROOT}/index.html.tmp"
+  curl -fsSL "${AUTH_ARGS[@]}" "${RAW_BASE}/frontend/public/site/index.html" -o "${SITE_ROOT}/index.html.tmp"
   mv -f "${SITE_ROOT}/index.html.tmp" "${SITE_ROOT}/index.html"
 fi
 
 if [ -n "$NGINX_CONF" ] && [ -f "$NGINX_CONF" ]; then
   if ! grep -q "location \^~ /downloads/" "$NGINX_CONF"; then
     python3 - "$NGINX_CONF" <<'PY'
-import sys
+import re, sys
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
-snippet = """    # Release manifests & auto-update feeds: always revalidate via ETag
-    location ~ ^/downloads/.*\\.(?:json|yml|yaml)$ {
-        add_header Cache-Control "no-cache";
-        add_header X-Content-Type-Options "nosniff";
-        try_files $uri =404;
-    }
-    # Immutable versioned installers, component archives & blockmaps (supports HTTP Range resume)
+snippet = """    # Immutable versioned installers, component archives & blockmaps (supports HTTP Range resume)
     location ^~ /downloads/ {
         etag on;
         add_header Accept-Ranges bytes;
         add_header Cache-Control "public, max-age=31536000, immutable";
         add_header X-Content-Type-Options "nosniff";
         try_files $uri =404;
+
+        # Release manifests, checksums & auto-update feeds: always revalidate via ETag
+        location ~ ^/downloads/.*\\.(?:json|yml|yaml|txt)$ {
+            etag on;
+            add_header Cache-Control "no-cache";
+            add_header X-Content-Type-Options "nosniff";
+            try_files $uri =404;
+        }
+
+        # Mutable channel-level fallback online bootstrapper: always revalidate via ETag
+        location ~ ^/downloads/windows/x64/(?:beta|stable)/Jiangjie-Setup-Online-x64\\.exe$ {
+            etag on;
+            add_header Accept-Ranges bytes;
+            add_header Cache-Control "no-cache";
+            add_header X-Content-Type-Options "nosniff";
+            try_files $uri =404;
+        }
     }
 """
-anchor = "    location / {"
-if anchor not in text:
-    raise SystemExit("未能在 Nginx 配置中找到 'location / {' 锚点，请手动参照 scripts/jiangjie-preview.nginx.conf 补充 /downloads/ 规则。")
-updated = text.replace(anchor, snippet + anchor, 1)
+# 优先定位 HTTPS (listen 443) server 块内的 `location / {`，避免误注入到 80 端口跳转块
+ssl_pos = text.find("listen 443")
+search_start = ssl_pos if ssl_pos != -1 else 0
+m = re.search(r'(?m)^([ \t]*)location\s+/\s*\{\s*$', text[search_start:])
+if not m:
+    raise SystemExit("未能在 Nginx HTTPS server 块中找到 'location / {' 锚点，请手动参照 scripts/jiangjie-preview.nginx.conf 补充 /downloads/ 规则。")
+insert_at = search_start + m.start()
+updated = text[:insert_at] + snippet + text[insert_at:]
 open(path, "w", encoding="utf-8").write(updated)
-print(f"  -> 已向 {path} 注入 /downloads/ Nginx 缓存与 Range 规则。")
+print(f"  -> 已向 {path} 的 HTTPS server 块注入 /downloads/ 嵌套缓存与 Range 规则。")
 PY
     nginx -t
     systemctl reload nginx || nginx -s reload
   else
-    echo "  -> Nginx 已包含 /downloads/ 规则，跳过修改。"
+    echo "  -> Nginx 已包含 /downloads/ 规则，跳过修改（请确认 json/yml/yaml 规则嵌套在 location ^~ /downloads/ 内部）。"
   fi
 fi
 
-# 7. 公网自检（HTTP 200 清单 + HTTP 206 Range 断点续传）
+# 7. 公网自检（HTTP 200 清单 + no-cache + HTTP 206 Range 断点续传）
 echo "[6/6] 执行线上 HTTPS 自检..."
-curl -fsSI "https://jiangjie.gingers.cloud/downloads/release-manifest.json" | grep -iE "^HTTP/|cache-control|content-type"
-curl -fsSI -H "Range: bytes=0-1023" "https://jiangjie.gingers.cloud/downloads/windows/x64/${CHANNEL}/${SEQ}/Jiangjie-Setup-Offline-x64.exe" | grep -iE "^HTTP/.* 206|accept-ranges|content-range|etag"
+curl -fsSI "https://jiangjie.gingers.cloud/downloads/release-manifest.json" | grep -iE "^HTTP/|cache-control|content-type|etag"
+curl -fsSI "https://jiangjie.gingers.cloud/downloads/windows/x64/${CHANNEL}/feed.json" | grep -iE "^HTTP/|cache-control|content-type|etag"
+curl -fsSI -H "Range: bytes=0-1023" "https://jiangjie.gingers.cloud/downloads/windows/x64/${CHANNEL}/${SEQ}/Jiangjie-Setup-Offline-x64.exe" | grep -iE "^HTTP/.* 206|accept-ranges|content-range|etag|cache-control"
 
 echo "======================================================================"
 echo " 上线成功！现在打开 https://jiangjie.gingers.cloud/#downloads 即可下载 v${VERSION} (${CHANNEL}, seq=${SEQ})"
