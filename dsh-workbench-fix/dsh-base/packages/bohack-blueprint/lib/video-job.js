@@ -1,7 +1,7 @@
 import { mkdir, writeFile, readFile, readdir, stat, rm, copyFile, rename } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
@@ -10,13 +10,12 @@ import { runVideoAgent } from './video-agent.js'
 import { loadManagedSkillGuidance } from './managed-skill-guidance.js'
 import { defaultProcessGuidance } from './process-guidance.js'
 import { resolveProductionSkill } from './skill-packages.js'
+import { appRoot as repo, childEnvironment, emitDesktopDiagnostic, resolveTool } from './runtime.js'
 import { buildCaptionCues } from '../../../../../video-kit/WORK/modules/video/captions.mjs'
 import { creditHold, creditTitles, managedStageLayout, openManagedStage } from '../../../../../video-kit/WORK/modules/video/managed-stage.mjs'
 
 const exec = promisify(execFile)
 const require = createRequire(import.meta.url)
-const here = path.dirname(fileURLToPath(import.meta.url))
-const repo = path.resolve(here, '../../../../..')
 const schema = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
 const str = { type: 'string' }
 
@@ -35,14 +34,21 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   const timing = record => appendJsonl(dir, 'timings.jsonl', record)
   async function measure(phase, task) {
     const start = Date.now()
-    try { return await task() }
-    finally { timing({ type: 'phase', phase, start, end: Date.now(), elapsed: Date.now() - start }) }
+    let result = 'failed'
+    try {
+      const value = await task()
+      result = 'ok'
+      return value
+    } finally {
+      emitDesktopDiagnostic('video', 'phase=' + phase + ' ' + result)
+      timing({ type: 'phase', phase, start, end: Date.now(), elapsed: Date.now() - start })
+    }
   }
   async function auditedExec(command, args, options) {
     const ts = new Date().toISOString(), start = Date.now()
     let exitCode = null, stderr = ''
     try {
-      const result = await exec(command, args, options)
+      const result = await exec(command, args, { cwd: dir, ...options, env: childEnvironment(options.env, [command]), windowsHide: true })
       exitCode = 0
       stderr = result.stderr
       return result
@@ -51,9 +57,10 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
       stderr = error.stderr || error.message
       throw error
     } finally {
+      emitDesktopDiagnostic('video', stderr)
       const key = settings.tts?.apiKey
       if (key) stderr = stderr.replaceAll(key, '[REDACTED]')
-      appendJsonl(dir, 'commands.jsonl', { ts, cmd: [command, ...args].map(arg => JSON.stringify(arg)).join(' '), exitCode, durationMs: Date.now() - start, stderrHead: stderr.slice(0, 1000), cwd: options.cwd || process.cwd() })
+      appendJsonl(dir, 'commands.jsonl', { ts, cmd: [command, ...args].map(arg => JSON.stringify(arg)).join(' '), exitCode, durationMs: Date.now() - start, stderrHead: stderr.slice(0, 1000), cwd: options.cwd || dir })
     }
   }
   const scenes = path.join(dir, 'scenes'), film = path.join(dir, 'film'), audio = path.join(dir, 'audio-cache')
@@ -84,7 +91,10 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   await writeFile(manifest, JSON.stringify({ root: dir, assets }))
   const style = (await import(pathToFileURL(path.join(kit, 'WORK/modules/video/style.mjs')).href)).default
   let voice = settings.tts?.voice ? `api:${settings.tts.voice}` : process.env.VIDEO_VOICE || (process.env.VOICE_NAME ? `api:${process.env.VOICE_NAME}` : style.tts.voice)
-  const env = { ...process.env, VIDEO_ASSET_MANIFEST: manifest, ...(settings.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: normalizeEndpoint(settings.tts.baseUrl, settings.tts.protocol === 'mimo' ? '/chat/completions' : '/audio/speech'), VIDEO_TTS_KEY: settings.tts.apiKey || '' } : {}), ...(settings.tts?.model ? { VIDEO_TTS_MODEL: settings.tts.model } : {}), ...(settings.tts?.protocol ? { VIDEO_TTS_PROTOCOL: settings.tts.protocol } : {}) }
+  const python = style.paths.python || resolveTool('python', process.env, kit)
+  const ffprobe = style.paths.ffprobe || resolveTool('ffprobe', process.env, kit)
+  const ffmpeg = style.paths.ffmpeg
+  const env = { ...process.env, ...(ffmpeg && { VIDEO_FFMPEG: ffmpeg }), VIDEO_ASSET_MANIFEST: manifest, ...(settings.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: normalizeEndpoint(settings.tts.baseUrl, settings.tts.protocol === 'mimo' ? '/chat/completions' : '/audio/speech'), VIDEO_TTS_KEY: settings.tts.apiKey || '' } : {}), ...(settings.tts?.model ? { VIDEO_TTS_MODEL: settings.tts.model } : {}), ...(settings.tts?.protocol ? { VIDEO_TTS_PROTOCOL: settings.tts.protocol } : {}) }
   const input = path.join(dir, 'tts-input.json'), result = path.join(audio, 'tts-result.json')
   const timings = path.join(dir, 'timings.json')
   await writeFile(input, JSON.stringify({ blueprint_id: production.version, segments: production.sections }))
@@ -92,7 +102,7 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
   if (previousDir && !resume) seedTtsCache(production.sections, path.join(previousDir, 'film', 'audio'), audio, { skipMissing: true })
   timing({ type: 'phase', phase: 'prepare', start: jobStart, end: Date.now(), elapsed: Date.now() - jobStart })
   await onProgress?.('生成配音')
-  const synthesize = () => auditedExec(style.paths.python, [path.join(kit, 'WORK/modules/video/tts_driver.py'), input, audio, voice, style.tts.rate, style.paths.ffprobe, result], { env, maxBuffer: 32 * 1024 * 1024 })
+  const synthesize = () => auditedExec(python, [path.join(kit, 'WORK/modules/video/tts_driver.py'), input, audio, voice, style.tts.rate, ffprobe, result], { env, maxBuffer: 32 * 1024 * 1024 })
   await measure('tts', async () => {
     try { await synthesize() }
     catch (error) {
@@ -146,7 +156,7 @@ export async function runVideoJob({ ctx, sessionId, dir, production, kit, settin
     if (!ids.has(id)) throw new Error('段号不存在')
     if (!Number.isFinite(seconds) || seconds < 0 || seconds > plans[id].duration) throw new Error('预览时间无效')
     await onProgress?.('预览画面')
-    const browser = await chromium.launch({ executablePath: style.paths.edge, headless: true, args: ['--disable-webrtc', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'] })
+    const browser = await chromium.launch({ executablePath: style.paths.edge || undefined, env: childEnvironment(env, [style.paths.edge]), headless: true, args: ['--disable-webrtc', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'] })
     try {
       const context = await browser.newContext({ viewport: { width: style.video.width, height: style.video.height }, serviceWorkers: 'block' })
       await installSceneRoutes(context, path.join(scenes, `${id}.html`), dir, assets)

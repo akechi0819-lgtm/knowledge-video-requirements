@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import path from 'node:path'
+import { createCredentialStore, credentialScope, desktopCredentialHelper } from './credential-store.js'
+import { desktopModelRoute, missingCredential } from './models.js'
 
 export const desktopAgentOrigin = 'https://jiangjie-agent.invalid'
 const agentProvider = 'jiangjie-desktop'
@@ -48,10 +50,50 @@ export function createMembership(ctx, root, options = {}) {
   const sessions = new Map()
   let held = 0
   let accountQueue = Promise.resolve()
-  async function account() {
-    const state = await read(accountFile, { mode: 'member' })
-    return state.origin === origin ? state : { mode: state.mode }
+  const helper = options.credentialHelper ?? desktopCredentialHelper()
+  const tokenStore = id => createCredentialStore(helper, credentialScope('membership', path.resolve(accountFile), id))
+  function serializeAccount(task) {
+    const current = accountQueue.catch(() => {}).then(async () => {
+      if (!helper) return task()
+      const { withFileLock } = await import('@deepseek-ai/dsh-atomic-write')
+      await mkdir(privateRoot, { recursive: true })
+      return withFileLock(accountFile, task)
+    })
+    accountQueue = current
+    return current
   }
+  async function saveAccount(state, oldId) {
+    if (!helper) return write(accountFile, state)
+    const { writeFileAtomic } = await import('@deepseek-ai/dsh-atomic-write')
+    const saveMetadata = metadata => writeFileAtomic(accountFile, JSON.stringify(metadata) + '\n', { mode: 0o600, dirMode: 0o700 })
+    const { token, ...metadata } = state
+    if (token && !metadata.credentialId) {
+      metadata.credentialId = randomUUID()
+      await tokenStore(metadata.credentialId).write({ token })
+      try { await saveMetadata(metadata) }
+      catch (error) {
+        await tokenStore(metadata.credentialId).write({}).catch(() => {})
+        throw error
+      }
+    } else await saveMetadata(metadata)
+    if (oldId && oldId !== metadata.credentialId) await tokenStore(oldId).write({}).catch(() => {})
+    return { ...metadata, token }
+  }
+  async function readAccount() {
+    const state = await read(accountFile, { mode: 'member' })
+    const scoped = state.origin === origin
+    if (!helper) return scoped ? state : { mode: state.mode }
+    // Migrate before returning even if the deployment URL has changed. Keep
+    // the original origin binding so the old token can never reach a new URL.
+    if (state.token) {
+      const migrated = await saveAccount({ ...state, credentialId: undefined }, state.credentialId)
+      return scoped ? migrated : { mode: state.mode, credentialId: migrated.credentialId }
+    }
+    if (!scoped) return { mode: state.mode, credentialId: state.credentialId }
+    if (state.credentialId) state.token = (await tokenStore(state.credentialId).read()).token
+    return state
+  }
+  const account = () => serializeAccount(readAccount)
   async function api(route, { body, token, signal, inviteCode } = {}) {
     if (!origin) throw new Error('平台服务地址尚未配置。')
     const request = {
@@ -89,17 +131,18 @@ export function createMembership(ctx, root, options = {}) {
     }
     return { data, token: response.headers.get('set-auth-token') }
   }
-  async function view() {
-    const state = await account()
-    if (!state.token) return { enabled: true, mode: state.mode, account: null }
+  async function view(state) {
+    state ??= await account()
+    const result = { enabled: true, mode: state.mode, ...(helper && { credentialWizard: true }) }
+    if (!state.token) return { ...result, account: null }
     let member
     try { member = (await api('/api/member', state)).data }
     catch (error) {
-      if (error.status === 401) return { enabled: true, mode: state.mode, account: null }
+      if (error.status === 401) return { ...result, account: null }
       throw error
     }
     return {
-      enabled: true, mode: state.mode, pendingOrderId: state.pendingOrderId, account: {
+      ...result, pendingOrderId: state.pendingOrderId, account: {
         email: state.email, gifts: member.giftRemaining,
         plan: member.plan, passStatus: member.passStatus, remainingPercent: member.remainingPercent,
         expiresAt: member.expiresAt, canPurchase: member.canPurchase, purchaseAvailable: member.purchaseAvailable,
@@ -108,33 +151,35 @@ export function createMembership(ctx, root, options = {}) {
     }
   }
   function update(input) {
-    const current = accountQueue.catch(() => {}).then(async () => {
+    return serializeAccount(async () => {
       if (held) throw new Error('请等待当前 AI 操作完成再更改账号或模式。')
-      const state = await account()
+      const state = await readAccount()
       if (input.action === 'order-create' || input.action === 'order-check') {
         if (!state.token) throw new Error('请先登录讲界账号。')
         const orderId = input.action === 'order-check' ? state.pendingOrderId : null
         if (input.action === 'order-check' && !orderId) throw new Error('没有待支付的订单。')
         const result = input.action === 'order-create'
-          ? await api('/api/orders', {token:state.token, body:{plan:'weekly_6'}})
-          : await api('/api/orders/' + encodeURIComponent(orderId), {token:state.token})
+          ? await api('/api/orders', { token: state.token, body: { plan: 'weekly_6' } })
+          : await api('/api/orders/' + encodeURIComponent(orderId), { token: state.token })
         const order = result.data
         if (!order.orderId || (orderId && order.orderId !== orderId)) throw new Error('会员服务返回的订单编号无效。')
-        if (['fulfilled', 'expired', 'failed'].includes(order.status)) delete state.pendingOrderId
-        else state.pendingOrderId = order.orderId
-        await write(accountFile, state)
-        return { ...(await view()), order }
+        const updated = { ...state }
+        if (['fulfilled', 'expired', 'failed'].includes(order.status)) delete updated.pendingOrderId
+        else updated.pendingOrderId = order.orderId
+        await saveAccount(updated, state.credentialId)
+        return { ...(await view(await readAccount())), order }
       }
+      let next
       if (input.action === 'mode') {
         if (!['member', 'byok'].includes(input.mode)) throw new Error('未知的调用模式。')
         if (input.mode !== state.mode && state.mode === 'member' && state.token) {
           const result = await api('/api/member', state).catch(error => { if (error.status !== 401) throw error })
           if (result?.data.activeProductionId) throw new Error('请先在原项目完成正在使用会员授权的成片，再切换为自配 API。')
         }
-        await write(accountFile, { ...state, mode: input.mode })
+        next = state.origin ? { ...state, mode: input.mode } : { mode: input.mode }
       } else if (input.action === 'logout') {
         if (state.token) await api('/api/auth/sign-out', { token: state.token, body: {} }).catch(error => { if (error.status !== 401) throw error })
-        await write(accountFile, { mode: state.mode })
+        next = { mode: state.mode }
       } else if (['register', 'login'].includes(input.action)) {
         const email = String(input.email || '').trim()
         const password = String(input.password || '')
@@ -144,12 +189,11 @@ export function createMembership(ctx, root, options = {}) {
           ...(register && { inviteCode: String(input.inviteCode || '').trim() }),
         })
         if (!result.token || !result.data.user?.id) throw new Error('会员服务没有返回登录凭据。')
-        await write(accountFile, { mode: 'member', origin, token: result.token, userId: result.data.user.id, email: result.data.user.email })
+        next = { mode: 'member', origin, token: result.token, userId: result.data.user.id, email: result.data.user.email }
       } else throw new Error('未知的账号操作。')
-      return view()
+      await saveAccount(next, state.credentialId)
+      return view(await readAccount())
     })
-    accountQueue = current
-    return current
   }
   function hold() {
     held++
@@ -230,8 +274,10 @@ export function createMembership(ctx, root, options = {}) {
     function unbind(sessionId) { sessions.delete(String(sessionId)) }
     async function route(loadSettings) {
       const { mode } = await account()
-      const baseUrl = mode === 'byok' && loadSettings ? (await loadSettings()).model?.baseUrl : null
-      const useResponses = mode === 'member' ? memberResponses : baseUrl && new URL(baseUrl).origin === 'https://api.openai.com'
+      const model = mode === 'byok' && loadSettings ? (await loadSettings()).model : null
+      if (mode === 'byok' && helper && (!model?.baseUrl || !model.model || !model.apiKey)) throw missingCredential()
+      const useResponses = mode === 'member' ? memberResponses : model?.baseUrl && (helper
+        ? desktopModelRoute(model.baseUrl) === '/responses' : new URL(model.baseUrl).origin === 'https://api.openai.com')
       return { provider: useResponses ? responsesProvider : agentProvider, model: alias }
     }
     return { lease, current, close, bind, unbind, route, hold, error: id => sessions.get(String(id))?.error }
@@ -257,6 +303,7 @@ export function createMembership(ctx, root, options = {}) {
       try {
         const auth = await binding.authorize({ signal: request.signal })
         const model = auth ? { baseUrl: auth.baseUrl, model: alias, apiKey: auth.token } : (await binding.load()).model
+        if (!auth && helper && (!model?.baseUrl || !model.model || !model.apiKey)) throw missingCredential()
         if (!model?.baseUrl || !model.model) throw new Error('请在高级设置中配置通用模型地址和名称。')
         const base = endpoint(model.baseUrl).replace(/\/(?:chat\/completions|responses)$/, '')
         const body = await request.json()
@@ -280,5 +327,5 @@ export function createMembership(ctx, root, options = {}) {
     }
     return () => { globalThis.fetch = original; sessions.clear() }
   }
-  return { view, update, project, install }
+  return { view, update, project, install, credentialWizard: Boolean(helper), prepareCredentials: async () => { await account() } }
 }

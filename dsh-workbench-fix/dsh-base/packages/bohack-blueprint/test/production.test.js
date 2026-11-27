@@ -400,7 +400,7 @@ test('无上传素材的已安装 Skill 跳过编码素材并提交成片', asyn
         assert.equal((await tools.get('submit').execute({})).ok, true)
       } } }
     } } }
-    const service = createService(ctx, { productionMode:'structured', workspace:root, styleLibraryRoot:root, videoKitDir:kit })
+    const service = createService(ctx, { productionMode:'structured', workspace:root, styleLibraryRoot:root, videoKitDir:kit, credentialHelper:'' })
     await service._internal.ensureDirs()
     const section = { id:'B01', title:'开头', intent:'介绍', facts:[], visual:'画面', narration:'', notes:'' }
     await writeFile(path.join(root, 'outbox/蓝图_v1.md'), renderBlueprint({ topic:'测试', userRequirements:[], sections:[section, { ...section, id:'B02', title:'结尾' }], assets:[], meta:{'版本':'v1'} }))
@@ -606,7 +606,8 @@ test('prepare-scenes subprocess gets default DSH_CLI and honors env override', a
     await service.generate({},{produce:async()=>({markdown,engine:'test'})}); await service.confirm({all:true}); await service.finalize()
     async function complete(){let s=await service.production.start();for(let i=0;i<100;i++){s=await service.production.status();if(s.status!=='running')break;await sleep(20)}assert.equal(s.status,'completed',s.error);return s}
     await complete()
-    const expected=path.join(path.resolve(kit,'..','dsh-workbench-fix','dsh-base'),process.platform==='win32'?'dsh.cmd':'dsh.sh')
+    const expected=path.join(path.resolve(kit,'..','dsh-workbench-fix','dsh-base'),
+      process.platform==='win32' ? 'node_modules/@deepseek-ai/dsh/lib/bin.js' : 'dsh.sh')
     assert.equal((await readFile(path.join(root,'dsh-cli'),'utf8')).trim(),expected)
     process.env.DSH_CLI='custom-cli'
     await service.selectVisualStyle({id:'editorial',version:1})
@@ -893,7 +894,8 @@ test('completed jobs regenerate missing source archive atomically without changi
     assert.equal(first, await realpath(path.join(dir, 'source.zip')))
     assert.equal(second, first)
     const {execFileSync} = await import('node:child_process')
-    const files = JSON.parse(execFileSync(process.env.VIDEO_PYTHON || 'python3', ['-c', 'import json,sys,zipfile; print(json.dumps(zipfile.ZipFile(sys.argv[1]).namelist()))', first], {encoding:'utf8'}))
+    const {resolveTool} = await import('../lib/runtime.js')
+    const files = JSON.parse(execFileSync(resolveTool('python'), ['-c', 'import json,sys,zipfile; print(json.dumps(zipfile.ZipFile(sys.argv[1]).namelist()))', first], {encoding:'utf8'}))
     assert.ok(files.includes('scenes/S01.json'))
     assert.ok(files.includes('audio-cache/S01.mp3'))
     assert.equal(await readFile(path.join(root, 'status.json'), 'utf8'), original)

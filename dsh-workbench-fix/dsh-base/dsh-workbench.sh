@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 在 macOS/Linux 启动三段工作台。生产任务继承同一进程的配置。
 set -euo pipefail
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+unset PYTHONHOME PYTHONPATH NODE_PATH NODE_OPTIONS
 cd "$(dirname "$0")"
 export DSH_HOME="${DSH_HOME:-$PWD/.dsh-home}"
 # 本机拥有者维护的模型配置，保存在忽略入库的 DSH_HOME。

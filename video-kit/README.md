@@ -140,11 +140,13 @@ scene.html 通过注入的 `window.STYLE` 读同一份，渲染与编排不会�
 
 | 变量 | 作用 | 默认 |
 | --- | --- | --- |
-| `VIDEO_FFMPEG` / `VIDEO_FFPROBE` | 指定 ffmpeg/ffprobe 可执行文件 | PATH 中的 `ffmpeg`/`ffprobe` |
-| `VIDEO_BROWSER` | 指定截帧浏览器可执行文件 | 自动探测 Edge/Chrome/Chromium 常见位置 |
-| `VIDEO_PYTHON` | 指定跑 TTS/混音/质检的 python | kit 内 `.venv`，无则 PATH 的 python/python3 |
+| `VIDEO_FFMPEG` / `VIDEO_FFPROBE` | 指定 ffmpeg/ffprobe 绝对路径 | 优先使用应用内运行时，源码模式可从受控 PATH 解析 |
+| `VIDEO_EDGE_PATH` / `VIDEO_BROWSER` | 指定截帧浏览器绝对路径，`VIDEO_EDGE_PATH` 优先 | Windows 先查 Edge 的 HKCU/HKLM App Paths，再查常规安装路径 |
+| `VIDEO_PYTHON` | 指定 TTS、混音、质检用的 Python 绝对路径 | 优先使用应用内运行时，源码模式可使用 kit 内 `.venv` 或本机 Python |
 | `VIDEO_PLAYWRIGHT` | 指定 playwright-core 包路径 | kit 根 `node_modules`（require.resolve） |
-| `VIDEO_SETUP_PYTHON` | setup.mjs 建 venv 用的系统 python | python / python3 |
+| `VIDEO_SETUP_PYTHON` | setup.mjs 建 venv 用的 Python 绝对路径 | 优先沿用 `VIDEO_PYTHON` 或解析本机 Python |
+
+Windows 的默认成片目录在 `%APPDATA%\Jiangjie\videos`。使用 `JIANGJIE_DATA_DIR` 和 `JIANGJIE_CACHE_DIR` 可配置项目数据与临时缓存，`JIANGJIE_APP_ROOT` 指向只读应用树。源码模式可以用 `--out` 指定成片目录。
 
 ## 8. 已知边界（如实）
 

@@ -27,7 +27,7 @@ def synth_all(segments, audio, voice, rate, ffprobe, force=False):
                 continue
         with TemporaryDirectory(dir=audio) as temp:
             aiff, sample = Path(temp) / 'speech.aiff', Path(temp) / 'speech.mp3'
-            subprocess.run(['say', '-v', name, '-o', str(aiff), narration], check=True)
+            subprocess.run(['/usr/bin/say', '-v', name, '-o', str(aiff), narration], check=True)
             subprocess.run([os.environ.get('VIDEO_FFMPEG', 'ffmpeg'), '-v', 'error', '-y', '-i', str(aiff), '-codec:a', 'libmp3lame', str(sample)], check=True)
             probe = subprocess.run([ffprobe, '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', str(sample)], check=True, capture_output=True, text=True)
             duration = float(json.loads(probe.stdout)['format']['duration'])

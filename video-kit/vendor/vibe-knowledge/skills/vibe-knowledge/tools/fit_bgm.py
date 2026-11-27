@@ -8,11 +8,12 @@
   片子长于原曲：在 loop_bars 区间里按 8 小节一段循环补长。
   接缝等功率交叉淡化 80 毫秒；总长差的零头在末尾裁掉或补静音（结尾本来就在淡出）。
 输出：<输出.wav>（48 kHz 立体声）+ <输出>.beats.json（成片里每一拍 / 每一小节的时间，film.js 卡点用）。"""
-import json, subprocess, sys
+import json, os, subprocess, sys
 from pathlib import Path
 import numpy as np
 
 SR = 48000
+FFMPEG = os.environ.get("VIDEO_FFMPEG") or "ffmpeg"
 SK = Path(__file__).resolve().parents[1]
 args = sys.argv[1:]
 opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
@@ -25,7 +26,9 @@ else:
     L = float(opt("--seconds"))
 xf = float(opt("--xfade", 0.08))
 
-raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-f", "f32le", "-ac", "2", "-ar", str(SR), "-"], capture_output=True, check=True).stdout
+flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+raw = subprocess.run([FFMPEG, "-v", "error", "-i", str(src), "-f", "f32le", "-ac", "2", "-ar", str(SR), "-"],
+                     capture_output=True, check=True, creationflags=flags).stdout
 y = np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).copy()
 bar = meta["beat"] * meta["beats_per_bar"]
 bt = lambda b: meta["t0"] + b * bar                      # 第 b 小节起点（秒，原曲）
@@ -66,7 +69,8 @@ else:
     mix = np.concatenate([mix, np.zeros((n - len(mix), 2), np.float32)])
 out.parent.mkdir(parents=True, exist_ok=True)
 pcm = (np.clip(mix, -1, 1) * 32767).astype("<i2").tobytes()
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-", str(out)], input=pcm, check=True)
+subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-", str(out)],
+               input=pcm, check=True, creationflags=flags)
 bars = [round(t, 3) for t, _ in grid if t < L]
 beats = sorted({round(t + k * meta["beat"], 3) for t in bars for k in range(meta["beats_per_bar"]) if t + k * meta["beat"] < L})
 out.with_suffix(".beats.json").write_text(json.dumps({"src": src.name, "bpm": meta["bpm"], "length": round(L, 3), "bars": bars, "beats": beats}, ensure_ascii=False), encoding="utf-8")

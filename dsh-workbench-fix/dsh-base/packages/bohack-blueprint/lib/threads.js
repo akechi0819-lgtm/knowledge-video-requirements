@@ -116,5 +116,13 @@ export function createThreads(ctx, config, legacyService, legacyEngine) {
     await writeFile(path.join(threadDir(id), 'thread.json'), JSON.stringify(thread, null, 2) + '\n')
   }
   function reset() { for (const instance of instances.values()) instance.then(({ engine }) => engine.reset(), () => {}) }
-  return { create, list, get, metadata, touch, reset, ...(config.desktop ? { importProject: snapshot => create({}, snapshot) } : {}) }
+  async function hasActiveProduction() {
+    if (legacyService?.production?.isActive?.()) return true
+    for (const pending of instances.values()) {
+      const instance = await pending.catch(() => null)
+      if (instance?.service?.production?.isActive?.()) return true
+    }
+    return false
+  }
+  return { create, list, get, metadata, touch, reset, hasActiveProduction, ...(config.desktop ? { importProject: snapshot => create({}, snapshot) } : {}) }
 }

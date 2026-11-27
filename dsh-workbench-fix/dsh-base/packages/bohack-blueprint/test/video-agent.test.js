@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { runVideoAgent } from '../lib/video-agent.js'
 
 function host(run, whenIdle = () => new Promise(() => {})) {
@@ -54,7 +55,7 @@ test('mounts video preset, isolates tools and returns a successful submit', asyn
   const { ctx, state } = host(async registered => { await registered.get('submit').execute({ file: 'film.mp4' }) })
   const result = await runVideoAgent({ ctx, sessionId: 'test', cwd: '/tmp/film', model: 'm', provider: 'p', prompt: 'make', tools })
   assert.equal(state.preset, 'bohack-video')
-  assert.equal(state.options.meta.cwd, '/tmp/film')
+  assert.equal(state.options.meta.cwd, path.resolve('/tmp/film'))
   assert.deepEqual(state.options.agentOptions, { provider: 'p', model: 'm' })
   assert.equal(state.guard({ name: 'submit' }), undefined)
   assert.ok(state.guard({ name: 'skill' }))

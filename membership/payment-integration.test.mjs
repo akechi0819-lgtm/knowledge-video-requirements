@@ -25,11 +25,11 @@ async function listen(server, port = 0) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-const close = server => new Promise(resolve => server.close(resolve));
+const close = server => new Promise(resolve => { server.close(resolve); server.closeAllConnections?.(); });
 
 test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase', async t => {
   const directory=mkdtempSync(join(tmpdir(),'jiangjie-payment-'));
-  t.after(() => rmSync(directory,{recursive:true,force:true}));
+  let svc=null;
   const database=join(directory,'member.sqlite');
   const merchantOrders=new Map();
   const queryResponses=new Map();
@@ -83,9 +83,13 @@ test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase'
   const origin=base+prefix;
   const serviceConfig={database,baseURL:base,pathPrefix:prefix,secret:randomBytes(32).toString('hex'),
     chat:{baseURL:gatewayBase+'/relay',key:randomBytes(16).toString('hex'),model:'fixture-text'}};
-  const svc=await createMembershipService(serviceConfig);
+  svc=await createMembershipService(serviceConfig);
   await listen(svc.server,port);
-  t.after(async () => { await close(svc.server); svc.db.close(); });
+  t.after(async () => {
+    await close(svc.server);
+    svc.db.close();
+    rmSync(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  });
   const fetchApi=(path,{token,body,method=body?'POST':'GET',headers={}}={})=>fetch(origin+path,{
     method,headers:{origin:base,...(token&&{authorization:'Bearer '+token}),...(body&&{'content-type':'application/json'}),...headers},
     body:body===undefined?undefined:typeof body==='string'?body:JSON.stringify(body),
@@ -144,7 +148,7 @@ test('mock Ouyun checkout, verification, reconciliation, and desktop repurchase'
     assert.equal(Date.parse(first.expiresAt)-Date.parse(svc.db.prepare('SELECT created_at FROM payment_order WHERE id=?').get(first.orderId).created_at),15*60000);
     assert.equal((await request('/api/orders/'+first.orderId,undefined,other.token)).status,404);
     assert.equal(queryCount,0);
-    assert.equal(statSync(join(directory,'desktop','membership','account.json')).mode & 0o777,0o600);
+    if (process.platform !== 'win32') assert.equal(statSync(join(directory,'desktop','membership','account.json')).mode & 0o777,0o600);
   });
   await t.test('switching to the Ouyun cashier keeps an existing QR order and signs the redirect',async () => {
     const config=readEpayConfig({...process.env,EPAY_MODE:'submit'},{baseUrl:base,pathPrefix:prefix});

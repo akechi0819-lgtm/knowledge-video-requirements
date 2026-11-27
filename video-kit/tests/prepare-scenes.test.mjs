@@ -250,8 +250,7 @@ test('DSH mode reads a completed native final event', async () => {
     await writeFile(fakeJs, `let data='';process.stdin.on('data', x=>data+=x);process.stdin.on('end', () => {require('fs').writeFileSync(${JSON.stringify(join(dir, 'request.txt'))},data);console.log(${JSON.stringify(JSON.stringify({type:'final',reason:{kind:'completed'},text:JSON.stringify(scene)}))})});\n`);
     let cli;
     if (process.platform === 'win32') {
-      cli = join(dir, 'dsh.cmd');
-      await writeFile(cli, `@echo off\r\nnode "${fakeJs}" %*\r\n`);
+      cli = fakeJs;
     } else {
       cli = join(dir, 'dsh');
       await writeFile(cli, `#!/usr/bin/env node\nrequire(${JSON.stringify(fakeJs)});\n`);

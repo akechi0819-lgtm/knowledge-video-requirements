@@ -3,6 +3,7 @@
 import { readFile, writeFile, mkdir, copyFile, unlink } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { callDsh } from './dsh-model.mjs';
+import { writablePath } from '../WORK/modules/video/runtime.mjs';
 
 const args = process.argv.slice(2);
 if (args[0] !== '--input' || args[2] !== '--output' || !((args.length === 5 && args[4] === '--dsh') || (args.length === 8 && args[4] === '--endpoint' && args[6] === '--model'))) {
@@ -13,7 +14,7 @@ function normalizeChatEndpoint(value) {
   const trimmed = value.replace(/\/+$/, '');
   return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`;
 }
-const input = resolve(args[1]), output = resolve(args[3]), model = args[7];
+const input = resolve(args[1]), output = writablePath(resolve(args[3]), process.env.JIANGJIE_APP_ROOT), model = args[7];
 const dsh = args[4] === '--dsh';
 const endpoint = dsh ? undefined : normalizeChatEndpoint(args[5]);
 const key = process.env.SCENE_API_KEY;

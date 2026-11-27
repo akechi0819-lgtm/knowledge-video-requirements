@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import STYLE from './style.mjs';
 import { FF, probeDuration, probeStreams, runRetry } from './ffmpeg.mjs';
+import { runtimePaths, writablePath } from './runtime.mjs';
 
 async function meanVolume(file, start, dur) {
   const { stderr } = await runRetry(FF, [
@@ -108,7 +109,8 @@ async function verifyManaged(mapPath, timingsPath) {
 async function main() {
   const mapPath = path.resolve(process.argv[2]);
   const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-  const dir = path.dirname(mapPath);
+  const app = process.env.JIANGJIE_APP_ROOT && runtimePaths().app;
+  const dir = writablePath(path.dirname(mapPath), app);
   const final = path.join(dir, map.final_video);
   const voiceOnly = path.join(dir, 'final_voice_only.mp4');
   const narrationTrack = fs.existsSync(voiceOnly) ? voiceOnly : final;
@@ -144,7 +146,7 @@ async function main() {
     if (vLead != null && vLead > -50) issues.push(`lead-in not silent (${vLead} dB)`);
 
     // decodable frames at both boundaries and the middle
-    const checksDir = path.join(dir, 'checks');
+    const checksDir = writablePath(path.join(dir, 'checks'), app);
     fs.mkdirSync(checksDir, { recursive: true });
     for (const [label, t] of [['start', s.start_sec + 0.05], ['mid', (s.start_sec + s.end_sec) / 2], ['end', s.end_sec - 0.08]]) {
       if (t < 0 || t >= total) continue;

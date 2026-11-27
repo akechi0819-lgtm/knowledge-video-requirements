@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { childEnvironment, resolveTool } from './runtime.js'
 import { promisify } from 'node:util'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -24,7 +25,8 @@ export async function analyzeVideo({ videoPath, outputDir, projectModel }) {
   if (!stat.isFile() || !stat.size || stat.size > LIMIT) throw new Error('视频为空或超过 500 MB。')
   let probe
   try {
-    const result = await exec(process.env.VIDEO_FFPROBE || 'ffprobe', ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', videoPath], { timeout: 30000, maxBuffer: 1024 * 1024 })
+    const ffprobe = resolveTool('ffprobe')
+    const result = await exec(ffprobe, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', videoPath], { env: childEnvironment(process.env, [ffprobe]), timeout: 30000, maxBuffer: 1024 * 1024 })
     probe = JSON.parse(result.stdout)
   } catch { throw new Error('无法读取视频，请检查 ffprobe 和文件格式。') }
   const duration = Number(probe.format?.duration)
@@ -36,7 +38,8 @@ export async function analyzeVideo({ videoPath, outputDir, projectModel }) {
     const seconds = Number((duration * (i + 0.5) / count).toFixed(3))
     const framePath = path.resolve(outputDir, `frame-${String(i + 1).padStart(2, '0')}.jpg`)
     try {
-      await exec(process.env.VIDEO_FFMPEG || 'ffmpeg', ['-v', 'error', '-ss', String(seconds), '-i', videoPath, '-frames:v', '1', '-vf', 'scale=768:768:force_original_aspect_ratio=decrease', '-y', framePath], { timeout: 30000 })
+      const ffmpeg = resolveTool('ffmpeg')
+      await exec(ffmpeg, ['-v', 'error', '-ss', String(seconds), '-i', videoPath, '-frames:v', '1', '-vf', 'scale=768:768:force_original_aspect_ratio=decrease', '-y', framePath], { env: childEnvironment(process.env, [ffmpeg]), timeout: 30000 })
     } catch { throw new Error(`无法提取 ${seconds} 秒的画面，请检查视频和 ffmpeg。`) }
     frames.push({ seconds, path: framePath })
   }

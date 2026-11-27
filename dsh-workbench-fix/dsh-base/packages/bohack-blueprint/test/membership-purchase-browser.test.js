@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
+import style from '../../../../../video-kit/WORK/modules/video/style.mjs'
 const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_CORE_PATH || '/Users/akechi/Desktop/hackson/video-kit/node_modules/playwright-core')
-const chrome = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const { chromium } = require(process.env.PLAYWRIGHT_CORE_PATH || style.paths.playwright)
+const chrome = process.env.CHROME_PATH || style.paths.edge
 
 test('account checkout renders a local QR and restores paid order until fulfilled', async t => {
   const accountScript = (await readFile(new URL('../web/settings.js', import.meta.url), 'utf8')).split('// 会员账号与模式由服务端保存，刷新后以服务端状态为准。')[1]

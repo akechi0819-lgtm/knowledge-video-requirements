@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
+from media_process import run_media
 from pathlib import Path
 
 import edge_tts
@@ -17,7 +17,7 @@ FALLBACK_VOICES = ["zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural", "zh-CN-liaoning-Xi
 
 
 def ffprobe_duration(ffprobe: str, media: Path) -> float:
-    out = subprocess.run(
+    out = run_media(
         [ffprobe, "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(media)],
         capture_output=True, text=True, check=True,

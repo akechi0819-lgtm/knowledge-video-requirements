@@ -1,5 +1,20 @@
 import { readdir, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
+import { runtimePaths } from './runtime.js'
+
+const projectAliases = {
+  'ai-teardown': 'andy-vibe-knowledge/skills/ai-teardown',
+  'andy-vibe-knowledge': 'andy-vibe-knowledge/skills/vibe-knowledge',
+  'motion-design-prompt-generator': 'deepseek-opus-motion-skill/motion-design-prompt-generator',
+}
+
+async function skillFolders(root, aliases = {}) {
+  try {
+    const entries = await readdir(root, { withFileTypes: true })
+    return [...entries.filter(entry => entry.isDirectory() || entry.isSymbolicLink()).sort((a, b) => a.name.localeCompare(b.name)).map(entry => [entry.name, path.join(root, entry.name)]),
+      ...Object.entries(aliases).map(([name, location]) => [name, path.join(root, location)])]
+  } catch (error) { if (error.code === 'ENOENT') return []; throw error }
+}
 
 // A package belongs to the host; `skill` names an unchanged project Skill.
 export async function discoverSkillPackages(kit) {
@@ -23,10 +38,8 @@ export async function discoverSkillPackages(kit) {
 }
 
 export async function resolveSkillDir(name, repo, desktopWorkspace = process.env.JIANGJIE_DESKTOP_WORKSPACE) {
-  for (const root of [desktopWorkspace, repo].filter(Boolean)) {
-    try { return await realpath(path.join(root, '.agents', 'skills', name)) }
-    catch (error) { if (error.code !== 'ENOENT') throw error }
-  }
+  const skill = (await discoverInstalledSkills({ repo, workspace: desktopWorkspace })).find(item => item.folder === name)
+  if (skill) return skill.dir
   throw new Error(`原版 Skill 未安装：${name}；请按项目安装说明安装上游资源。`)
 }
 
@@ -111,24 +124,30 @@ export async function readSkillMetadata(document, folder) {
 // repository folder with the same name, matching resolveSkillDir's precedence.
 export async function discoverInstalledSkills({ repo, workspace } = {}) {
   const found = new Map()
-  for (const base of [repo, workspace].filter(Boolean)) {
-    const root = path.join(base, '.agents/skills')
-    let entries
-    try { entries = await readdir(root, { withFileTypes: true }) }
-    catch (error) { if (error.code === 'ENOENT') continue; throw error }
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-      const folder = entry.name
+  const roots = []
+  const projectRoot = { root: runtimePaths(process.env, repo).skills, aliases: projectAliases }
+  if (repo && !process.env.JIANGJIE_SKILLS_DIR) roots.push(projectRoot)
+  if (repo) roots.push({ root: path.join(repo, '.agents/skills') })
+  if (process.env.JIANGJIE_SKILLS_DIR) roots.push(projectRoot)
+  if (workspace) {
+    const realWorkspace = await realpath(workspace).catch(error => { if (error.code !== 'ENOENT') throw error })
+    roots.push({ root: path.join(workspace, '.agents/skills'), storage: realWorkspace && path.join(realWorkspace, '.agents/.github-skill-checkouts') })
+  }
+  for (const { root, aliases, storage } of roots) {
+    for (const [folder, directory] of await skillFolders(root, aliases)) {
       if (!/^[\w-]+$/.test(folder)) continue
       let dir, document
       try {
-        dir = await realpath(path.join(root, folder))
+        dir = await realpath(directory)
+        const pointer = storage && await readFile(path.join(dir, '.jiangjie-checkout'), 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error })
+        if (pointer) {
+          dir = await realpath(path.resolve(storage, pointer))
+          if (!dir.startsWith(storage + path.sep)) throw new Error('Skill checkout path escapes its storage directory')
+        }
         document = await readFile(path.join(dir, 'SKILL.md'), 'utf8')
       } catch (error) { if (error.code === 'ENOENT') continue; throw error }
       const { name, description } = await readSkillMetadata(document, folder)
       let source, checkoutDir
-      const workspaceRoot = workspace && await realpath(workspace).catch(error => { if (error.code !== 'ENOENT') throw error })
-      const storage = workspaceRoot && path.join(workspaceRoot, '.agents', '.github-skill-checkouts')
       if (storage && dir.startsWith(storage + path.sep)) {
         const [installation, checkout] = path.relative(storage, dir).split(path.sep)
         if (checkout === 'repo') {

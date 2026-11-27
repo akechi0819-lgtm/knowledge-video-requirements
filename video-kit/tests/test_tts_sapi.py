@@ -15,7 +15,7 @@ def fake_run(mp3, payload):
     wav = mp3.with_suffix(".wav")
 
     def run(command, **kwargs):
-        if command[0] == "powershell.exe":
+        if Path(command[0]).name == "powershell.exe":
             wav.write_bytes(b"wav")
             meta.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         else:
@@ -29,7 +29,7 @@ class SapiWordsTest(unittest.TestCase):
         payload = {"ok": True, "voice": "Microsoft Huihui Desktop"}
         if words is not None:
             payload["words"] = words
-        with patch.object(tts_sapi.subprocess, "run", side_effect=fake_run(mp3, payload)), \
+        with patch.object(tts_sapi, "run_media", side_effect=fake_run(mp3, payload)), \
                 patch("tts.ffprobe_duration", return_value=3.0):
             return tts_sapi.synth_segment("你好", mp3, "sapi:Microsoft Huihui Desktop", ffprobe)
 
@@ -49,7 +49,7 @@ class SapiWordsTest(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             mp3 = Path(tmp) / "S1.mp3"
             payload = {"ok": True, "voice": "Microsoft Huihui Desktop"}
-            with patch.object(tts_sapi.subprocess, "run", side_effect=fake_run(mp3, payload)), \
+            with patch.object(tts_sapi, "run_media", side_effect=fake_run(mp3, payload)), \
                     patch("tts.ffprobe_duration", return_value=3.0):
                 info = tts_sapi.synth_segment("你好", mp3, "sapi", "ffprobe")
             self.assertEqual(info["words"], [])
@@ -70,7 +70,7 @@ class SapiCacheTest(unittest.TestCase):
             mp3 = audio / "S1.mp3"
             payload = {"ok": True, "voice": "Microsoft Yaoyao Desktop", "words": []}
             segments = [{"id": "S1", "narration": "你好"}]
-            with patch.object(tts_sapi.subprocess, "run", side_effect=fake_run(mp3, payload)) as call, \
+            with patch.object(tts_sapi, "run_media", side_effect=fake_run(mp3, payload)) as call, \
                     patch("tts.ffprobe_duration", return_value=3.0):
                 results = tts_sapi.synth_all(segments, audio, "sapi:Microsoft Huihui Desktop", "+0%", "ffprobe")
                 self.assertEqual(results[0]["voice"], "sapi:Microsoft Yaoyao Desktop")
@@ -91,7 +91,7 @@ class SapiCacheTest(unittest.TestCase):
                       "words": [], "word_boundary_available": False}
             (audio / "S1.json").write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
             segments = [{"id": "S1", "narration": "你好"}]
-            with patch.object(tts_sapi.subprocess, "run") as call, \
+            with patch.object(tts_sapi, "run_media") as call, \
                     patch("tts.ffprobe_duration", return_value=3.0):
                 results = tts_sapi.synth_all(segments, audio, "sapi:Microsoft Huihui Desktop", "+0%", "ffprobe")
                 call.assert_not_called()
@@ -103,10 +103,10 @@ class SapiFfmpegPathTest(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch.dict(os.environ, {"VIDEO_FFMPEG": "C:/tools/ffmpeg.exe"}):
             mp3 = Path(tmp) / "S1.mp3"
             payload = {"ok": True, "voice": "Microsoft Huihui Desktop", "words": []}
-            with patch.object(tts_sapi.subprocess, "run", side_effect=fake_run(mp3, payload)) as call, \
+            with patch.object(tts_sapi, "run_media", side_effect=fake_run(mp3, payload)) as call, \
                     patch("tts.ffprobe_duration", return_value=3.0):
                 tts_sapi.synth_segment("你好", mp3, "sapi", "ffprobe")
-            ffmpeg_commands = [c.args[0] for c in call.call_args_list if c.args[0][0] != "powershell.exe"]
+            ffmpeg_commands = [c.args[0] for c in call.call_args_list if Path(c.args[0][0]).name != "powershell.exe"]
             self.assertEqual(len(ffmpeg_commands), 1)
             self.assertEqual(ffmpeg_commands[0][0], "C:/tools/ffmpeg.exe")
 
@@ -116,10 +116,10 @@ class SapiFfmpegPathTest(unittest.TestCase):
             mp3 = Path(tmp) / "S1.mp3"
             payload = {"ok": True, "voice": "Microsoft Huihui Desktop", "words": []}
             ffprobe = "C:/bin/ffprobe.exe"
-            with patch.object(tts_sapi.subprocess, "run", side_effect=fake_run(mp3, payload)) as call, \
+            with patch.object(tts_sapi, "run_media", side_effect=fake_run(mp3, payload)) as call, \
                     patch("tts.ffprobe_duration", return_value=3.0):
                 tts_sapi.synth_segment("你好", mp3, "sapi", ffprobe)
-            ffmpeg_commands = [c.args[0] for c in call.call_args_list if c.args[0][0] != "powershell.exe"]
+            ffmpeg_commands = [c.args[0] for c in call.call_args_list if Path(c.args[0][0]).name != "powershell.exe"]
             self.assertEqual(ffmpeg_commands[0][0], str(Path(ffprobe).with_name("ffmpeg.exe")))
 
 

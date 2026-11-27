@@ -1,8 +1,10 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { createCredentialStore, credentialScope, desktopCredentialHelper } from './credential-store.js'
 import { spawn } from 'node:child_process'
-import { checkCloudEndpoint, mimoBaseUrl } from './models.js'
+import { childEnvironment } from './runtime.js'
+import { checkCloudEndpoint, desktopModelRoute, mimoBaseUrl, missingCredential } from './models.js'
 
 const queues = new Map()
 async function exclusive(key, task) {
@@ -44,11 +46,41 @@ export function createSettings(workspace, config = {}) {
   // A server session can share this map between its service and engines while
   // keeping credentials out of the persistent settings file.
   const temporaryKeys = config.temporaryKeys
-  const keychainHelper = !temporaryKeys && process.env.BOHACK_DESKTOP_KEYCHAIN_HELPER
+  const windowsHelper = !temporaryKeys && (config.credentialHelper ?? desktopCredentialHelper())
+  const keychainHelper = !temporaryKeys && !windowsHelper && process.env.BOHACK_DESKTOP_KEYCHAIN_HELPER
   const keychainScope = createHash('sha256').update(settingsRoot).digest('hex')
+  const scopedStore = revision => createCredentialStore(windowsHelper, revision === true ? keychainScope : credentialScope('settings', settingsRoot, revision))
+  const windowsTransaction = async task => {
+    const { withFileLock } = await import('@deepseek-ai/dsh-atomic-write')
+    await mkdir(settingsRoot, { recursive: true })
+    return withFileLock(file, task)
+  }
+  async function saveProtected(settings, previousRevision) {
+    const { writeFileAtomic } = await import('@deepseek-ai/dsh-atomic-write')
+    const persisted = structuredClone(settings)
+    const keys = Object.create(null)
+    for (const [kind, value] of Object.entries(persisted)) {
+      if (!value || typeof value !== 'object' || !Object.hasOwn(value, 'apiKey')) continue
+      if (value.apiKey && !(kind === 'tts' && value.useTextKey)) keys[kind] = value.apiKey
+      delete value.apiKey
+    }
+    delete persisted.keychainCredentials
+    const revision = Object.keys(keys).length ? randomUUID() : null
+    if (revision) {
+      await scopedStore(revision).write(keys)
+      persisted.keychainCredentials = revision
+    }
+    try { await writeFileAtomic(file, JSON.stringify(persisted, null, 2) + '\n', { mode: 0o600 }) }
+    catch (error) {
+      if (revision) await scopedStore(revision).write({}).catch(() => {})
+      throw error
+    }
+    if (previousRevision) await scopedStore(previousRevision).write({}).catch(() => {})
+    return revision
+  }
   function keychain(action, keys) {
     return new Promise((resolve, reject) => {
-      const child = spawn(keychainHelper, ['--desktop-settings-keychain'], { stdio: ['pipe', 'pipe', 'pipe'] })
+      const child = spawn(keychainHelper, ['--desktop-settings-keychain'], { env: childEnvironment(process.env, [keychainHelper]), stdio: ['pipe', 'pipe', 'pipe'] })
       let output = '', error = ''
       child.stdout.setEncoding('utf8').on('data', chunk => { output += chunk })
       child.stderr.setEncoding('utf8').on('data', chunk => { error += chunk })
@@ -68,14 +100,18 @@ export function createSettings(workspace, config = {}) {
       const raw = await readFile(file, 'utf8')
       let settings
       try { settings = JSON.parse(raw) } catch (e) { warn('settings.json 不是有效 JSON，按空设置处理：', String(e.message)); return {} }
-      if (keychainHelper && settings.keychainCredentials) {
-        const keys = await keychain('read')
+      const revision = settings.keychainCredentials
+      const plainKeys = windowsHelper && Object.values(settings).some(value => value && typeof value === 'object' && Object.hasOwn(value, 'apiKey'))
+      if ((keychainHelper || windowsHelper) && revision) {
+        const keys = windowsHelper ? await scopedStore(revision).read() : await keychain('read')
         for (const [kind, apiKey] of Object.entries(keys)) {
+          if (windowsHelper && (!Object.hasOwn(settings, kind) || Object.hasOwn(settings[kind] || {}, 'apiKey'))) continue
           settings[kind] ||= {}
           settings[kind].apiKey = apiKey
         }
       }
-      delete settings.keychainCredentials
+      if (plainKeys) settings.keychainCredentials = await saveProtected(settings, revision)
+      if (!windowsHelper) delete settings.keychainCredentials
       if (temporaryKeys) {
         for (const [kind, value] of Object.entries(settings)) {
           if (value && typeof value === 'object') {
@@ -91,8 +127,8 @@ export function createSettings(workspace, config = {}) {
       throw e
     }
   }
-  async function load() {
-    const settings = await readSettings()
+  async function load(inTransaction = false) {
+    const settings = await (windowsHelper && !inTransaction ? windowsTransaction(readSettings) : readSettings())
     const model = process.env.BOHACK_CLOUD_MODEL
     if (model) {
       const baseUrl = process.env.BOHACK_CLOUD_BASE_URL
@@ -113,7 +149,11 @@ export function createSettings(workspace, config = {}) {
   }
   async function forCall(auth = undefined) {
     if (auth === undefined) auth = await config.memberProject?.lease()
-    if (!auth) return load()
+    if (!auth) {
+      const settings = await load()
+      if (windowsHelper && (!settings.model?.baseUrl || !settings.model.model || !settings.model.apiKey)) throw missingCredential()
+      return settings
+    }
     const model = { baseUrl: auth.baseUrl, model: 'jiangjie', apiKey: auth.token }
     return {
       model, assetModel: model, previewModel: model, styleAnalysisModel: model,
@@ -126,12 +166,13 @@ export function createSettings(workspace, config = {}) {
   }
   async function update(input = {}) {
     if ('skills' in input) throw new Error('通用制作方法已默认启用，无需设置技能开关。')
-    return exclusive(file, async () => {
-      const settings = await load()
+    const save = async () => {
+      const settings = await load(Boolean(windowsHelper))
       const hadKeychainKeys = keychainHelper && Object.values(settings).some(value => value && typeof value === 'object' && value.apiKey)
       for (const k of ['model', 'tts', 'image', 'requirementAgent', 'blueprintAgent', 'videoAgent', 'assetModel', 'previewModel', 'styleAnalysisModel']) {
         if (!input[k]) continue
         checkCloudEndpoint(input[k].baseUrl, k)
+        if (windowsHelper && input[k].baseUrl) desktopModelRoute(input[k].baseUrl)
         if (process.env.BOHACK_CLOUD_MODEL && k === 'model' && input[k].model && input[k].model !== process.env.BOHACK_CLOUD_MODEL) throw new Error('云工作台当前模型为 ' + process.env.BOHACK_CLOUD_MODEL)
         const previous = settings[k] || {}
         const fields = k.endsWith('Agent') ? ['provider', 'model'] : k === 'tts' ? ['baseUrl', 'model', 'voice', 'protocol', 'provider'] : ['baseUrl', 'model']
@@ -147,6 +188,10 @@ export function createSettings(workspace, config = {}) {
         if (k === 'tts' && settings[k].protocol && !['speech', 'mimo'].includes(settings[k].protocol)) throw new Error('不支持的配音协议')
       }
       applyTtsKey(settings)
+      if (windowsHelper) {
+        await saveProtected(settings, settings.keychainCredentials)
+        return
+      }
       await mkdir(settingsRoot, { recursive: true })
       const persisted = structuredClone(settings)
       if (persisted.tts?.useTextKey) delete persisted.tts.apiKey
@@ -185,6 +230,9 @@ export function createSettings(workspace, config = {}) {
       }
       // mode only applies when the file is created, so an existing settings.json needs an explicit chmod.
       await chmod(file, 0o600).catch(() => {})
+    }
+    return exclusive(file, async () => {
+      await (windowsHelper ? windowsTransaction(save) : save())
       return get()
     })
   }

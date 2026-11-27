@@ -6,12 +6,13 @@ import path from 'node:path'
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { createMultiuserHandler } from '../lib/multiuser.js'
+import style from '../../../../../video-kit/WORK/modules/video/style.mjs'
 
 // Run with: node --test test/multiuser-browser.test.js
 // Override these paths when Chrome or the existing playwright-core is elsewhere.
 const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_CORE_PATH || '/Users/akechi/Desktop/hackson/video-kit/node_modules/playwright-core')
-const chrome = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const { chromium } = require(process.env.PLAYWRIGHT_CORE_PATH || style.paths.playwright)
+const chrome = process.env.CHROME_PATH || style.paths.edge
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const close = server => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
 

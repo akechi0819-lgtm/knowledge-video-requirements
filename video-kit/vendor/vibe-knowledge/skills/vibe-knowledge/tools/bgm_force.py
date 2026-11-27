@@ -10,6 +10,7 @@
   3. 写 build/bgm.json（有没有 BGM、校准前后的人声比），qa.py 会读它，没有就报警。
 手动打补丁：python3 bgm_force.py --patch <系列目录>（例：~/Desktop/vibe-knowledge/examples/vk）"""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -51,8 +52,10 @@ def prepare(info, total, B, py=sys.executable):
     auto = False
     if not any(m.get("_bgm") for m in keep):
         out = Path(B) / "bgm_auto.wav"
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+        env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
         subprocess.run([py, str(SK / "tools/fit_bgm.py"), str(out), "--seconds", f"{total:.3f}"], check=True,
-                       stdout=subprocess.DEVNULL)
+                       env=env, stdout=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         keep.insert(0, {"src": str(out), "from": 0, "at": 0, "dur": total, "gain": 0, "fade_in": 0.3, "fade_out": 1.8, "_bgm": True})
         auto = True
     if user:

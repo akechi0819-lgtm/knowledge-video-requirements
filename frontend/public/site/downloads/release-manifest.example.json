@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-26T04:00:00Z",
+  "defaultChannel": "stable",
+  "channels": {
+    "stable": {
+      "version": "0.2.1",
+      "releaseSequence": 2,
+      "rolloutPercentage": 100,
+      "publishedAt": "2026-11-26T04:00:00Z",
+      "releaseNotesUrl": "https://jiangjie.gingers.cloud/#downloads",
+      "platforms": {
+        "windows-x64": {
+          "label": "Windows 11 / 10 (64 位)",
+          "requirements": "Windows 11 x64（兼容 Windows 10 22H2 x64）· 免管理员权限",
+          "feedUrl": "https://jiangjie.gingers.cloud/downloads/windows/x64/stable/feed.json",
+          "online": {
+            "fileName": "Jiangjie-Setup-Online-x64.exe",
+            "url": "https://jiangjie.gingers.cloud/downloads/windows/x64/stable/2/Jiangjie-Setup-Online-x64.exe",
+            "sizeBytes": 425984,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "offline": {
+            "fileName": "Jiangjie-Setup-Offline-x64.exe",
+            "url": "https://jiangjie.gingers.cloud/downloads/windows/x64/stable/2/Jiangjie-Setup-Offline-x64.exe",
+            "sizeBytes": 545259520,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "blockmapUrl": "https://jiangjie.gingers.cloud/downloads/windows/x64/stable/2/Jiangjie-Setup-Offline-x64.exe.blockmap"
+          }
+        },
+        "macos-arm64": {
+          "version": "0.2.1",
+          "publishedAt": "2026-11-26T04:00:00Z",
+          "minOs": "macOS 14.0+ (Apple Silicon)",
+          "installer": {
+            "fileName": "Jiangjie-macOS-arm64.dmg",
+            "url": "https://jiangjie.gingers.cloud/downloads/macos/arm64/stable/Jiangjie-macOS-arm64.dmg",
+            "sizeBytes": 629145600,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    }
+  }
+}

@@ -3,16 +3,14 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { appendJsonl } from './skill-runtime.js'
 import { resolveAgent } from './settings.js'
 import { resolveProductionSkill } from './skill-packages.js'
 import { assetStageRetired, productionErrorMessage, receiptMessage } from './production-error.js'
 import { assetFile, readAssetManifest } from './generated-assets.js'
 import { exportProduction } from '../scripts/export-production.js'
+import { appRoot as repo, childEnvironment, defaultKit, resolveTool, systemTool } from './runtime.js'
 
-const repo = fileURLToPath(new URL('../../../../../', import.meta.url))
-const defaultKit = fileURLToPath(new URL('../../../../../video-kit/', import.meta.url))
 
 function normalizeEndpoint(baseUrl, suffix) {
   const trimmed = String(baseUrl).replace(/\/+$/, '')
@@ -173,29 +171,32 @@ export function createProduction(workspace, config = {}) {
   function run(dir, script, args, env = process.env) {
     const start = Date.now()
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [path.join(kit, script), ...args], { cwd: kit, env, stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = spawn(process.execPath, [path.join(kit, script), ...args], { cwd: dir, env: childEnvironment(env), windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
       let errors = ''
       let timedOut = false
       let killTimer = null
       const timeoutMs = Number(process.env.VIDEO_PRODUCTION_TIMEOUT_MS) || 30 * 60 * 1000
       const watchdog = setTimeout(() => {
         timedOut = true
+        if (process.platform === 'win32') {
+          const kill = spawn(systemTool('taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { env: childEnvironment(), windowsHide: true, stdio: 'ignore' })
+          kill.once('error', () => child.kill())
+          kill.once('exit', code => { if (code !== 0) child.kill() })
+          return
+        }
         child.kill('SIGTERM')
         killTimer = setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) {
-            if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-            else child.kill('SIGKILL')
-          }
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
         }, 5000)
       }, timeoutMs)
-      child.stderr.on('data', chunk => { errors = (errors + chunk.toString()).slice(-4000) })
+      child.stderr.setEncoding('utf8').on('data', chunk => { errors = (errors + chunk).slice(-4000) })
       child.on('error', error => { clearTimeout(watchdog); if (killTimer) clearTimeout(killTimer); reject(error) })
       child.on('close', code => {
         const end = Date.now()
         let stderrHead = errors.trim()
         for (const key of [env.SCENE_API_KEY, env.VIDEO_TTS_KEY].filter(Boolean)) stderrHead = stderrHead.replaceAll(key, '[REDACTED]')
         try {
-          appendJsonl(dir, 'commands.jsonl', { ts: new Date(start).toISOString(), cmd: [process.execPath, path.join(kit, script), ...args].map(arg => JSON.stringify(arg)).join(' '), exitCode: code, durationMs: end - start, stderrHead: stderrHead.slice(0, 1000), cwd: kit })
+          appendJsonl(dir, 'commands.jsonl', { ts: new Date(start).toISOString(), cmd: [process.execPath, path.join(kit, script), ...args].map(arg => JSON.stringify(arg)).join(' '), exitCode: code, durationMs: end - start, stderrHead: stderrHead.slice(0, 1000), cwd: dir })
           appendJsonl(dir, 'timings.jsonl', { type: 'phase', phase: script, start, end, elapsed: end - start, ok: code === 0 })
         } catch (error) { reject(error) }
         clearTimeout(watchdog)
@@ -447,7 +448,7 @@ export function createProduction(workspace, config = {}) {
               state.reusedScenesFrom = reused.id; state.reusedSceneSections = reused.sections; await save(state)
             }
             const dshBase = path.resolve(kit, '..', 'dsh-workbench-fix', 'dsh-base')
-            const dshCli = process.env.DSH_CLI || path.join(dshBase, process.platform === 'win32' ? 'dsh.cmd' : 'dsh.sh')
+            const dshCli = process.env.DSH_CLI || path.join(dshBase, process.platform === 'win32' ? 'node_modules/@deepseek-ai/dsh/lib/bin.js' : 'dsh.sh')
             await run(dir, 'scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', normalizeEndpoint(endpoint, '/chat/completions'), '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir, VIDEO_RESUME: resume ? '1' : '', DSH_CLI: dshCli })
           }
           await onProgress('配音与渲染')
@@ -654,27 +655,40 @@ export function createProduction(workspace, config = {}) {
   return { start, abandon, status, file, isActive: () => active }
 }
 
+const archives = new Map()
+function sourceArchive(dir, kit) {
+  if (archives.has(dir)) return archives.get(dir)
+  const pending = writeSourceArchive(dir, kit).finally(() => archives.delete(dir))
+  archives.set(dir, pending)
+  return pending
+}
+
 // Archive only editable scenes, their declared images and timing data.
-async function sourceArchive(dir, kit) {
+async function writeSourceArchive(dir, kit) {
   const temporary = path.join(dir, `.source-${randomUUID()}.zip.tmp`)
   const script = [
     'import pathlib, sys, zipfile',
     'root = pathlib.Path(sys.argv[1])',
+    'seen = set()',
     "with zipfile.ZipFile(sys.argv[2], 'w', compression=zipfile.ZIP_DEFLATED) as archive:",
     "    for relative in ('production.json', 'brief.json', 'decisions.json', 'scenes', 'scenes/assets', 'assets', 'images', '现成素材', 'audio-cache', 'film/audio', 'timings.json', 'film/mapping.json'):",
     '        source = root / relative',
     '        for file in (source.rglob("*") if source.is_dir() else [source]):',
-    '            if file.is_file() and file.resolve().is_relative_to(root.resolve()): archive.write(file, file.relative_to(root))',
+    '            name = file.relative_to(root)',
+    '            if name not in seen and file.is_file() and file.resolve().is_relative_to(root.resolve()):',
+    '                archive.write(file, name)',
+    '                seen.add(name)',
   ].join('\n')
   try {
-  await new Promise((resolve, reject) => {
-    const python = process.env.VIDEO_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
-    const child = spawn(python, ['-c', script, dir, temporary], {cwd:kit, stdio:['ignore','ignore','pipe']})
-    let error = ''
-    child.stderr.on('data', chunk => { error += chunk })
-    child.once('error', reject)
-    child.once('close', code => code === 0 ? resolve() : reject(new Error('源码归档失败：'+error.trim())))
-  })
-  await rename(temporary, path.join(dir, 'source.zip'))
+    await new Promise((resolve, reject) => {
+      const python = resolveTool('python', process.env, kit)
+      const child = spawn(python, ['-c', script, dir, temporary], { cwd: dir, env: childEnvironment(process.env, [python]), windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      let error = ''
+      child.stderr.setEncoding('utf8')
+      child.stderr.on('data', chunk => { error += chunk })
+      child.once('error', reject)
+      child.once('close', code => code === 0 ? resolve() : reject(new Error('源码归档失败：' + error.trim())))
+    })
+    await rename(temporary, path.join(dir, 'source.zip'))
   } finally { await rm(temporary, {force:true}) }
 }

@@ -14,9 +14,9 @@ class SayTest(unittest.TestCase):
     def test_segment_and_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             def run(command, **kwargs):
-                if command[0] == 'say':
+                if Path(command[0]).name == 'say':
                     Path(command[command.index('-o') + 1]).write_bytes(b'aiff')
-                elif command[0] == 'ffmpeg':
+                elif command[0] == (os.environ.get('VIDEO_FFMPEG') or 'ffmpeg'):
                     Path(command[-1]).write_bytes(b'mp3')
                 else:
                     class Result:
@@ -35,7 +35,7 @@ class SayTest(unittest.TestCase):
     def test_rate_downgraded_at_entry_and_cache_signature(self):
         with tempfile.TemporaryDirectory() as directory:
             def run(command, **kwargs):
-                if command[0] == 'say':
+                if Path(command[0]).name == 'say':
                     Path(command[command.index('-o') + 1]).write_bytes(b'aiff')
                 elif command[0] == 'ffmpeg':
                     Path(command[-1]).write_bytes(b'mp3')

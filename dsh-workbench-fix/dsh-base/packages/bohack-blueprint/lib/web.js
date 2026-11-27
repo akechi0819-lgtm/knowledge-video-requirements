@@ -3,20 +3,21 @@
  * lifecycle. A handler (not a WebResourceRoute.resource) is required because
  * `resource` answers only GET/HEAD and 405s everything else; the workbench has
  * POST write actions. These HTTP endpoints are a thin transport adapter over
- * the in-process capability service — they are NOT a team contract and carry
- * no authentication (bound to 127.0.0.1 by the shipped webserver config).
+ * the in-process capability service.
  */
-import { readFile, stat, mkdtemp, open, rm, realpath } from 'node:fs/promises'
+import { readFile, stat, mkdir, mkdtemp, open, rm, realpath } from 'node:fs/promises'
+import { timingSafeEqual } from 'node:crypto'
 import os from 'node:os'
 import { analyzeVideo } from './video-style.js'
 import { generatePreview } from './preview.js'
-import { listModels } from './models.js'
+import { listModels, testDesktopModel } from './models.js'
 import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import { createGithubInstaller } from './github-style.js'
 import { fileURLToPath } from 'node:url'
 import { assetMime } from './generated-assets.js'
 import { productionErrorMessage } from './production-error.js'
+import { runtimePaths, writablePath } from './runtime.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const HTML_FILE = path.resolve(HERE, '..', 'web', 'index.html')
@@ -57,6 +58,9 @@ function errorBody(e) {
 export function createWebHandler(legacyService, legacyEngine, ctx, threads, videoAnalyzer = analyzeVideo, allowedOrigin = origin => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin), membership) {
   const queues = new WeakMap()
   const githubInstallers = new Map()
+  const token = process.env.DSH_INTERNAL_TOKEN
+  const readyId = process.env.JIANGJIE_READY_ID
+  const runtime = runtimePaths()
   async function runTurn(engine, task) {
     const previous = queues.get(engine) || Promise.resolve()
     const current = previous.catch(() => {}).then(task)
@@ -68,10 +72,33 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
     try { pathname = new URL(req.url || '/', 'http://localhost').pathname } catch { /* keep default */ }
     const method = (req.method || 'GET').toUpperCase()
 
-    // CSRF gate: this API has no authentication, so only loopback pages may call
-    // it, and POSTs must carry a custom header cross-origin simple requests cannot set.
     const origin = req.headers.origin
-    if (origin && !allowedOrigin(origin)) { text(res, 403, 'Forbidden'); return }
+    const health = pathname === '/bohack/api/health' && ['GET', 'HEAD'].includes(method)
+    if (readyId || token) {
+      let local
+      try { local = new URL(ctx.webServer.getOrigin()) } catch { /* fail closed */ }
+      const peer = req.socket?.remoteAddress
+      if (!local || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer)
+        || req.headers.host !== local.host || (origin && origin !== local.origin)
+        || ['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'])) {
+        text(res, 403, 'Forbidden'); return
+      }
+      res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+      res.setHeader('X-Frame-Options', 'DENY')
+      if (health && readyId && req.headers['x-jiangjie-ready-id'] === readyId) res.setHeader('X-Jiangjie-Ready-Id', readyId)
+      if (token && !health) {
+        const received = Buffer.from(req.headers['x-dsh-internal-token'] || '')
+        const expected = Buffer.from(token)
+        if (received.length !== expected.length || !timingSafeEqual(received, expected)) {
+          text(res, 401, 'Unauthorized'); return
+        }
+      }
+    } else if (origin && !allowedOrigin(origin)) { text(res, 403, 'Forbidden'); return }
+    if (health && (token || method === 'HEAD')) {
+      if (method === 'HEAD') { res.writeHead(200, { 'cache-control': 'no-store' }); res.end() }
+      else json(res, 200, { ok: true, plugin: '@bohack/blueprint' })
+      return
+    }
     if (method === 'POST' && !req.headers['x-bohack-client']) { text(res, 403, 'Forbidden'); return }
 
     try {
@@ -79,6 +106,12 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
         if (!membership && method === 'POST') throw new Error('此工作台不支持会员账号。')
         const result = !membership ? { enabled: false } : method === 'GET' ? await membership.view() : await membership.update(await readBody(req))
         json(res, 200, result); return
+      }
+      if (pathname === '/bohack/api/desktop/busy' && method === 'GET') {
+        const rendering = threads?.hasActiveProduction
+          ? await threads.hasActiveProduction()
+          : Boolean(legacyService?.production?.isActive?.())
+        json(res, 200, { ok: true, busy: rendering, reason: rendering ? 'video_production_running' : null }); return
       }
       const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'qrcode.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
       const asset = pathname.slice('/bohack/'.length)
@@ -174,6 +207,9 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       if (pathname === '/bohack/api/blueprint-skill' && method === 'GET') { json(res, 200, {ok:true, skill:await service.styles.blueprintSkill()}); return }
       if (pathname === '/bohack/api/blueprint-skill' && method === 'POST') { json(res, 200, await service.chooseBlueprintSkill(await readBody(req))); return }
       if (pathname === '/bohack/api/models' && method === 'POST') { json(res, 200, await listModels(await readBody(req), await service.settings.load())); return }
+      if (pathname === '/bohack/api/model-connectivity' && method === 'POST' && membership?.credentialWizard) {
+        json(res, 200, await testDesktopModel(await readBody(req))); return
+      }
       if (pathname === '/bohack/api/settings' && method === 'GET') { json(res, 200, await service.settings.get()); return }
       if (pathname === '/bohack/api/settings' && method === 'POST') { json(res, 200, await service.settings.update(await readBody(req))); return }
       if (pathname === '/bohack/api/thread' && method === 'GET') {
@@ -218,7 +254,9 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       if (pathname === '/bohack/api/style-video' && method === 'POST') {
         const extension = String(req.headers['x-video-extension'] || '').toLowerCase()
         if (!['mp4', 'mov', 'webm'].includes(extension)) throw new Error('请选择 MP4、MOV 或 WebM 视频。')
-        const dir = await mkdtemp(path.join(os.tmpdir(), 'bohack-style-video-'))
+        const tmp = runtime.cache ? path.join(runtime.cache, 'tmp') : os.tmpdir()
+        await mkdir(writablePath(tmp, process.env.JIANGJIE_APP_ROOT && runtime.app), { recursive: true })
+        const dir = await mkdtemp(path.join(tmp, 'bohack-style-video-'))
         let result
         try {
           const videoPath = path.join(dir, `reference.${extension}`)
@@ -390,7 +428,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       try { ctx.logger?.warn?.('[bohack/web]', String(e?.stack || e)) } catch { /* ignore */ }
       if (!res.headersSent) json(res, 400, pathname === '/bohack/api/production'
         ? { ...errorBody(e), error: productionErrorMessage(e) } : errorBody(e))
-      else { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify({ type: 'error', message: String(e?.message || e) }) + '\n'); res.end() }
+      else { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify({ type: 'error', code: e?.code, message: String(e?.message || e) }) + '\n'); res.end() }
     }
   }
 }

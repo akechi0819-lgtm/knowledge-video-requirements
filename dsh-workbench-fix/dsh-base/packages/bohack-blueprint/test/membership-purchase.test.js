@@ -27,7 +27,7 @@ test('purchase resumes after restart with private credentials, and logout clears
   assert.equal(created.pendingOrderId,'order-1')
   assert.deepEqual(requests.find(call => call.route === '/api/orders').body, {plan:'weekly_6'})
   const accountFile = path.join(home,'membership','account.json')
-  assert.equal((await stat(accountFile)).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') assert.equal((await stat(accountFile)).mode & 0o777, 0o600)
   assert.equal(JSON.parse(await readFile(accountFile,'utf8')).token,'test-token')
   let restarted = connect()
   assert.equal((await restarted.view()).pendingOrderId,'order-1')

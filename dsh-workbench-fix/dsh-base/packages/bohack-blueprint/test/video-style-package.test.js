@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { discoverSkillPackages, resolveProductionSkill, resolveSkillDir } from '../lib/skill-packages.js'
@@ -29,7 +29,7 @@ test('desktop installed skills take precedence and missing skills report install
     const installed = path.join(desktop, '.agents', 'skills', 'film')
     await mkdir(installed, { recursive: true })
     await writeFile(path.join(installed, 'SKILL.md'), 'installed upstream')
-    assert.match(await resolveSkillDir('film', repo, desktop), /desktop\/\.agents\/skills\/film$/)
+    assert.equal(await resolveSkillDir('film', repo, desktop), await realpath(installed))
     await assert.rejects(resolveSkillDir('absent', repo, desktop), /原版 Skill 未安装：absent/)
   } finally { await rm(temp, { recursive: true, force: true }) }
 })

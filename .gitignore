@@ -10,6 +10,12 @@ __pycache__/
 node_modules/
 .venv/
 .runtime/
+/build/win-runtime/
+/build/.win-runtime-*
+/build/win-desktop/
+/build/.win-desktop-*
+/build/win-release/
+/build/e2e-report/
 
 project-model.private.json
 .project-model-*.tmp

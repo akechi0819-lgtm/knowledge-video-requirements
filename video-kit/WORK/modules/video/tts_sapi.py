@@ -7,40 +7,40 @@ boundary; quality is robotic next to edge-tts neural voices — fallback only.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
 from pathlib import Path
+from media_process import run_media
 
 DEFAULT_SAPI_VOICE = "Microsoft Huihui Desktop"
 
-# Executed via -Command (execution policy stays untouched); tokens replaced per call.
+# Narration and filenames travel as data in the child environment.
 _PS = r"""
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$want = '__VOICE__'
-$pick = $synth.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Name -eq $want } | Select-Object -First 1
-if (-not $pick) { $pick = $synth.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -like 'zh*' } | Select-Object -First 1 }
+$want = $env:JIANGJIE_SAPI_VOICE
+$voices = $synth.GetInstalledVoices() | Where-Object { $_.Enabled }
+$pick = $voices | Where-Object { $_.VoiceInfo.Name -eq $want } | Select-Object -First 1
+if (-not $pick) { $pick = $voices | Where-Object { $_.VoiceInfo.Culture.Name -like 'zh*' } | Select-Object -First 1 }
 if (-not $pick) { Write-Output '{"ok":false,"reason":"no zh-CN SAPI voice installed"}'; exit 3 }
-$synth.SelectVoice($pick.VoiceInfo.Name)
+try { $synth.SelectVoice($pick.VoiceInfo.Name) } catch { exit 3 }
 $words = [System.Collections.Generic.List[object]]::new()
 $handler = [System.EventHandler[System.Speech.Synthesis.SpeakProgressEventArgs]] {
   param($sender, $e)
   $words.Add([pscustomobject]@{ text = $e.Text; audioMs = [math]::Round($e.AudioPosition.TotalMilliseconds, 1) })
 }
 $synth.add_SpeakProgress($handler)
-$synth.SetOutputToWaveFile('__WAV__')
-$synth.Speak('__TEXT__')
+$synth.SetOutputToWaveFile($env:JIANGJIE_SAPI_WAV)
+$synth.Speak($env:JIANGJIE_SAPI_TEXT)
 $synth.SetOutputToNull()
 $synth.Dispose()
 @{ ok = $true; voice = $pick.VoiceInfo.Name; words = $words } | ConvertTo-Json -Depth 5 |
-  Set-Content -Path '__JSON__' -Encoding UTF8
+  Set-Content -LiteralPath $env:JIANGJIE_SAPI_JSON -Encoding UTF8
 """
-
-
-def _ps_quote(s: str) -> str:
-    return s.replace("'", "''")
 
 
 def synth_segment(text: str, mp3_path: Path, voice: str, ffprobe: str) -> dict:
@@ -50,18 +50,23 @@ def synth_segment(text: str, mp3_path: Path, voice: str, ffprobe: str) -> dict:
     wav = mp3_path.with_suffix(".wav")
     meta = mp3_path.with_suffix(".sapi.json")
     want = voice.split(":", 1)[1] if ":" in voice else DEFAULT_SAPI_VOICE
-    ps = (_PS.replace("__VOICE__", _ps_quote(want))
-             .replace("__WAV__", _ps_quote(str(wav)))
-             .replace("__JSON__", _ps_quote(str(meta)))
-             .replace("__TEXT__", _ps_quote(text)))
-    subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", ps],
-        capture_output=True, text=True, encoding="utf-8", check=True,
-    )
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    env = dict(os.environ, JIANGJIE_SAPI_VOICE=want, JIANGJIE_SAPI_WAV=str(wav),
+               JIANGJIE_SAPI_JSON=str(meta), JIANGJIE_SAPI_TEXT=text)
+    try:
+        run_media(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand",
+             base64.b64encode(_PS.encode("utf-16-le")).decode("ascii")],
+            env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        if error.returncode == 3:
+            raise RuntimeError("当前 Windows 环境无法使用选定的中文系统音色。请在系统设置中检查中文语音，或选择已配置的配音服务。") from None
+        raise RuntimeError("Windows 系统配音未能启动。请检查系统音色和 Windows PowerShell。") from None
     info = json.loads(meta.read_text(encoding="utf-8-sig"))
     meta.unlink()
     ffmpeg = os.environ.get("VIDEO_FFMPEG") or str(Path(ffprobe).with_name("ffmpeg.exe"))
-    subprocess.run(
+    run_media(
         [ffmpeg, "-y", "-v", "error", "-i", str(wav),
          "-codec:a", "libmp3lame", "-q:a", "2", str(mp3_path)],
         check=True,
