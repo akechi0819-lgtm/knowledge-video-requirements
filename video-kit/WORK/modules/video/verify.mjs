@@ -1,5 +1,5 @@
 // Acceptance checks for a rendered film.
-//   node WORK/modules/video/verify.mjs <mapping.json>
+//   node WORK/modules/video/verify.mjs <mapping.json> [timings.json]
 // Verifies: every segment id maps to a playable, contiguous interval inside the
 // final video; narration audio is actually present in each segment's window and
 // absent in the lead-in; frames can be decoded at interval boundaries.
@@ -22,6 +22,88 @@ async function meanVolume(file, start, dur) {
 async function frameAt(file, t, out) {
   await runRetry(FF, ['-y', '-v', 'error', '-ss', String(t), '-i', file, '-frames:v', '1', out]);
   return fs.existsSync(out) && fs.statSync(out).size > 0;
+}
+
+// Managed mode treats timings as the authoritative timeline. Warnings do not
+// decide acceptance; missing evidence, mismatched intervals or frames do.
+async function verifyManaged(mapPath, timingsPath) {
+  const dir = path.dirname(mapPath);
+  const report = { final: null, totalDuration: null, segments: [], problems: [], hardErrors: [], pass: false };
+  const fail = message => report.hardErrors.push(message);
+  const readJson = (file, label) => {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+    catch (error) { fail(`${label}: ${error.message}`); return null; }
+  };
+  try {
+    const timings = readJson(timingsPath, 'timings');
+    const map = readJson(mapPath, 'mapping');
+    const beats = timings?.beats;
+    const segments = map?.segments;
+    if (!Array.isArray(beats) || !beats.length) fail('timings.beats must be a non-empty array');
+    if (!Array.isArray(segments) || !segments.length) fail('mapping.segments must be a non-empty array');
+    if (map?.final_video !== 'final.mp4') fail('mapping.final_video must be final.mp4');
+    let total = null;
+    if (map?.final_video === 'final.mp4') {
+      const final = path.join(dir, map.final_video);
+      report.final = map.final_video;
+      try {
+        total = await probeDuration(final);
+        report.totalDuration = total;
+        const stage = beats?.[0]?.stage;
+        const crop = stage ? `crop=${stage.width}:${stage.height}:0:${stage.top},` : '';
+        const { stdout, stderr } = await runRetry(FF, [
+          '-v', 'info', '-xerror', '-i', final, '-map', '0:v:0', '-vf', crop + 'blackframe=amount=100:threshold=17',
+          '-an', '-f', 'null', '-', '-progress', 'pipe:1', '-nostats',
+        ], { maxBuffer: 32 * 1024 * 1024 });
+        if (!/^frame=\s*[1-9]\d*\s*$/m.test(stdout)) fail('final video contains no decoded frames');
+        const black = /frame:(\d+) pblack:100/.exec(stderr);
+        if (black) fail(`final video frame ${black[1]} is fully black`);
+      } catch (error) { fail(`final video decode/probe failed: ${error.message}`); }
+    }
+    if (Array.isArray(beats) && Array.isArray(segments)) {
+      const seenIds = new Set(), seenBeats = new Set();
+      let previousEnd = 0;
+      for (const beat of beats) {
+        const { id, beatId, start, end } = beat ?? {};
+        if (typeof id !== 'string' || !id || typeof beatId !== 'string' || !beatId || seenIds.has(id) || seenBeats.has(beatId) || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
+          fail(`invalid timing beat ${id ?? '(missing id)'}`); continue;
+        }
+        seenIds.add(id);
+        seenBeats.add(beatId);
+        if (Math.abs(start - previousEnd) > 0.001) fail(`${id}: timing gap or overlap`);
+        previousEnd = end;
+        const matches = segments.filter(s => s?.id === id);
+        if (matches.length !== 1) { fail(`${id}: expected exactly one mapping segment`); continue; }
+        const segment = matches[0];
+        const row = { id, beatId, start, end, samples: segment.samples, issues: [] };
+        const issue = message => { row.issues.push(message); fail(`${id}: ${message}`); };
+        if (segment.blueprint_id !== beatId) issue('blueprint_id does not match timing beatId');
+        if (!Number.isFinite(segment.start_sec) || !Number.isFinite(segment.end_sec) || segment.end_sec <= segment.start_sec || Math.abs(segment.start_sec - start) > 0.001 || Math.abs(segment.end_sec - end) > 0.001) issue('mapping interval does not match timing');
+        for (const fraction of [0.25, 0.75]) {
+          const expected = start + (end - start) * fraction;
+          const samples = Array.isArray(segment.samples) ? segment.samples.filter(sample => sample?.fraction === fraction) : [];
+          if (samples.length !== 1) { issue(`missing or duplicate ${fraction} sample`); continue; }
+          const sample = samples[0];
+          if (!Number.isFinite(sample.time) || Math.abs(sample.time - expected) > 0.001) issue(`sample ${fraction} time mismatch`);
+          if (sample.shotId !== beatId) issue(`sample ${fraction} shotId ${String(sample.shotId)} != ${beatId}`);
+          if (total !== null && expected >= total) issue(`sample ${fraction} outside final video`);
+        }
+        report.segments.push(row);
+      }
+      for (const segment of segments) if (!seenIds.has(segment?.id)) fail(`unexpected mapping segment ${segment?.id}`);
+      if (total !== null && Math.abs(previousEnd - total) > 0.1) fail(`timings end ${previousEnd} != final duration ${total}`);
+    }
+    const notesFile = path.join(dir, 'quality-notes.json');
+    if (fs.existsSync(notesFile)) {
+      try { const notes = JSON.parse(fs.readFileSync(notesFile, 'utf8')); if (Array.isArray(notes)) report.problems.push(...notes); }
+      catch (error) { report.problems.push(`quality notes: ${error.message}`); }
+    }
+  } catch (error) { fail(`verification failed: ${error.message}`); }
+  report.pass = report.hardErrors.length === 0;
+  fs.writeFileSync(path.join(dir, 'verify-report.json'), JSON.stringify(report, null, 2), 'utf8');
+  if (report.pass) console.log('VERIFY PASS');
+  else console.error(`VERIFY FAIL:\n${report.hardErrors.join('\n')}`);
+  if (!report.pass) process.exitCode = 1;
 }
 
 async function main() {
@@ -86,4 +168,8 @@ async function main() {
   process.exit(hardErrors.length ? 1 : 0);
 }
 
-main().catch((e) => { console.error(`[FAIL] ${e.message}`); process.exit(1); });
+if (process.argv[3]) {
+  verifyManaged(path.resolve(process.argv[2]), path.resolve(process.argv[3])).catch((e) => { console.error(`[FAIL] ${e.message}`); process.exit(1); });
+} else {
+  main().catch((e) => { console.error(`[FAIL] ${e.message}`); process.exit(1); });
+}

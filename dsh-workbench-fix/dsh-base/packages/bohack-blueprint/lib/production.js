@@ -6,9 +6,8 @@ import path from 'node:path'
 import { appendJsonl } from './skill-runtime.js'
 import { resolveAgent } from './settings.js'
 import { resolveProductionSkill } from './skill-packages.js'
-import { productionErrorMessage, receiptMessage } from './production-error.js'
-import { assetFile, copyAssetPool, readAssetManifest } from './generated-assets.js'
-import { runAssetAgentJob } from './asset-agent-job.js'
+import { assetStageRetired, productionErrorMessage, receiptMessage } from './production-error.js'
+import { assetFile, readAssetManifest } from './generated-assets.js'
 import { exportProduction } from '../scripts/export-production.js'
 import { appRoot as repo, childEnvironment, defaultKit, resolveTool, systemTool } from './runtime.js'
 
@@ -16,6 +15,17 @@ import { appRoot as repo, childEnvironment, defaultKit, resolveTool, systemTool 
 function normalizeEndpoint(baseUrl, suffix) {
   const trimmed = String(baseUrl).replace(/\/+$/, '')
   return trimmed.endsWith(suffix) ? trimmed : trimmed + suffix
+}
+
+function fillNarration(production) {
+  let changed = false
+  for (const section of production.sections) {
+    if (section.narration?.trim()) continue
+    section.narration = section.intent
+    section.gaps = (section.gaps || []).filter(gap => gap !== '旁白未提供')
+    changed = true
+  }
+  return changed
 }
 
 export function createProduction(workspace, config = {}) {
@@ -27,6 +37,7 @@ export function createProduction(workspace, config = {}) {
   let active = false
   let generation = 0
   let waitMessage = ''
+  let activity = ''
   const memberProject = config.memberProject
   const jobIdPattern = /^[0-9a-f-]{36}$/
   async function readState() {
@@ -129,6 +140,7 @@ export function createProduction(workspace, config = {}) {
       ...(state.error && { error: productionErrorMessage(state.error, state.phase) }),
       ...(state.membershipError && { membershipError: receiptMessage }),
       ...(state.status === 'running' && waitMessage && { waitMessage }),
+      ...(state.status === 'running' && activity && { activity }),
       sections,
       pixelAssets: await pixelLibrary(dir),
       assets: (await readAssetManifest(dir))?.assets.map(asset => ({
@@ -190,7 +202,7 @@ export function createProduction(workspace, config = {}) {
         clearTimeout(watchdog)
         if (killTimer) clearTimeout(killTimer)
         if (timedOut) return reject(new Error(`${script} 制作超时（${Math.round(timeoutMs / 60000)} 分钟），已终止子进程。`))
-        code === 0 ? resolve() : reject(new Error(`${script} 退出码 ${code}：${errors.trim()}`))
+        code === 0 ? resolve() : reject(Object.assign(new Error(`${script} 退出码 ${code}：${stderrHead}`), { code }))
       })
     })
   }
@@ -262,11 +274,10 @@ export function createProduction(workspace, config = {}) {
     try { raw = await readFile(path.join(workspace, 'assets.jsonl'), 'utf8') }
     catch (e) { if (e.code === 'ENOENT') raw = ''; else throw e }
     const ledger = raw.split('\n').filter(Boolean).map(line => JSON.parse(line))
-    const remaining = []
     for (const declaration of pending) {
-      if (!declaration.ledgerId) { remaining.push(declaration); continue }
+      if (!declaration.ledgerId) continue
       const asset = ledger.find(a => a.id === declaration.ledgerId && a.trust === 'vetted' && !a.declared && !a.generatedAssetId && a.path && (a.side === 'videomake' || (!a.side && a.type === 'image')))
-      if (!asset) { remaining.push(declaration); continue }
+      if (!asset) continue
       if (!/^sources\/[^/\\]+$/.test(asset.path)) throw new Error(`素材「${declaration.name}」路径不在本创作上传目录。`)
       const source = await realpath(path.join(workspace, asset.path))
       if (path.dirname(source) !== await realpath(path.join(workspace, 'sources'))) throw new Error(`素材「${declaration.name}」不在本创作上传目录。`)
@@ -282,7 +293,6 @@ export function createProduction(workspace, config = {}) {
         ;(section.assets ||= []).push({ id: declaration.id, name: declaration.name, type: declaration.type, image })
       }
     }
-    return remaining
   }
   /**
    * 随行搬运层：凡「素材分身」且 vetted 的素材全部随片搬进视频工作区的
@@ -355,13 +365,16 @@ export function createProduction(workspace, config = {}) {
     await save(state)
     return state
   }
-  async function restoreFilm(film, production, executable) {
+  async function restoreFilm(film, mode) {
     const mapping = path.join(film, 'mapping.json')
     if (!await exists(path.join(film, 'final.mp4'))) return false
-    if (executable) {
-      const { verifyOriginalFilm } = await import('./original-video-job.js')
-      try { await verifyOriginalFilm(film, production, kit); return true }
-      catch (error) { if (error.code === 'INVALID_FILM') return false; throw error }
+    if (mode === 'agent') {
+      const dir = path.dirname(film), timings = path.join(dir, 'timings.json')
+      if (!await exists(timings)) return false
+      try { await run(dir, 'WORK/modules/video/verify.mjs', [mapping, timings]) }
+      catch (error) { if (error.code === 1) return false; throw error }
+      const report = JSON.parse(await readFile(path.join(film, 'verify-report.json'), 'utf8'))
+      return report.pass === true && Array.isArray(report.hardErrors) && !report.hardErrors.length
     }
     if (!await exists(mapping)) return false
     const report = path.join(film, 'verify-report.json')
@@ -377,81 +390,45 @@ export function createProduction(workspace, config = {}) {
   const routeFor = async saved => await memberProject?.route(() => saved) ||
     resolveAgent(saved, 'videoAgent', { provider: config.provider || 'deepseek-official', model: config.model || 'deepseek-v4-pro' })
 
-  async function assetReferences(dir) {
-    try {
-      const folder = path.join(dir, '现成素材')
-      return (await readdir(folder)).filter(name => /\.(png|jpe?g|webp|svg)$/i.test(name)).map(name => path.join(folder, name))
-    } catch (error) { if (error.code === 'ENOENT') return []; throw error }
-  }
-
-  async function prepareProductionAssets(state, production, dir, saved, previousDir, withProductionSession, onProgress, selectedPackage) {
-    let manifest = await readAssetManifest(dir)
-    if (!manifest) {
-      const planned = production.assetPlan || []
-      const auto = state.mode === 'agent' && Boolean(selectedPackage) && !production.assets?.length
-      const previousInput = previousDir && JSON.parse(await readFile(path.join(previousDir, 'production.json'), 'utf8'))
-      const previousManifest = previousInput?.version === production.version && await readAssetManifest(previousDir)
-      const previous = previousManifest?.styleId === (production.style?.id || 'general')
-        ? previousManifest.assets.map(asset => ({ asset, root: previousDir })) : []
-      if (planned.length || auto) {
-        if (config.multiuser) throw new Error('多人工作台尚未配置编码素材的单任务运行环境。')
-        await onProgress('准备编码素材')
-        const route = await routeFor(saved)
-        const sessionId = 'bohack-assets-' + randomUUID()
-        const references = await assetReferences(dir)
-        const { pool, build } = await config.generatedAssets.prepare({
-          version: Number(production.version.slice(1)), doc: production, style: production.style,
-          planned, auto, previous, regenerateAssetId: state.regenerateAssetId, assetFeedback: state.assetFeedback,
-          run: options => withProductionSession(sessionId, () => runAssetAgentJob({
-            ctx: config.ctx, sessionId, kit, repo, workspace: skillsRoot,
-            selectedPackage, settings: saved, ...route, production, references, onProgress, ...options,
-          })),
-        })
-        manifest = await copyAssetPool(dir, production.style, pool)
-        if (build) state.assetBuild = build
-      }
-    }
-    if (!manifest) return
-    production.assetManifest = 'assets/manifest.json'
-    for (const asset of manifest.assets) {
-      const image = asset.files[0].path
-      for (const section of production.sections.filter(section => asset.sections.includes(section.blueprintId) || asset.sections.includes(section.id))) {
-        if (!section.assets?.some(entry => entry.id === asset.id)) {
-          ;(section.assets ||= []).push({ id: asset.id, name: asset.name, type: asset.type, image, variants: asset.files })
-        }
-      }
-    }
-    await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
-  }
-
   async function runJob(state, production, dir, saved, auth, prior, resume, release, executable) {
     const { mode, sceneConfig, previousJobId, feedback = '' } = state
-    const previousDir = (feedback || state.regenerateAssetId) && previousJobId ? path.join(root, previousJobId) : null
+    const previousDir = feedback && previousJobId ? path.join(root, previousJobId) : null
     await save(state)
     void (async () => {
       try {
         const film = path.join(dir, 'film')
         const onProgress = async event => {
           if (event?.type === 'wait') { waitMessage = event.text; return }
+          if (event?.type === 'activity') { activity = event.text; return }
           const phase = typeof event === 'string' ? event : event?.type === 'status' ? event.text : null
-          if (phase && state.phase !== phase) { state.phase = phase; await save(state) }
+          if (phase && state.phase !== phase) {
+            activity = ''
+            state.phase = phase
+            await save(state)
+          }
         }
         const withProductionSession = async (sessionId, run) => {
-          memberProject?.bind(sessionId, config.settings.load, auth?.id, !state.membershipAuthorizationId)
-          try { return await run() } finally { memberProject?.unbind(sessionId) }
+          memberProject?.bind(sessionId, config.settings.load, auth, !state.membershipAuthorizationId)
+          try {
+            const result = await run()
+            const providerError = memberProject?.error(sessionId)
+            if (providerError) throw providerError
+            return result
+          } catch (error) { throw memberProject?.error(sessionId) || error }
+          finally { memberProject?.unbind(sessionId) }
         }
-        await prepareProductionAssets(state, production, dir, saved, previousDir, withProductionSession, onProgress, executable)
         if (mode === 'agent') {
+          await onProgress('启动视频制作 Agent')
           const { runVideoJob } = await import('./video-job.js')
           const agentRoute = await routeFor(saved)
-          const filmFeedback = [feedback, state.regenerateAssetId && '本次只返工素材。优先复用上一版已通过自检的场景源码与镜头编排，按新素材清单替换目标主体的变体。保留其他素材、镜头时间和音频安排，再重新渲染、自检并提交。'].filter(Boolean).join('\n')
           await withProductionSession(state.sessionId, () => runVideoJob({
             ctx: config.ctx, sessionId: state.sessionId, dir, production, kit, settings: saved, ...agentRoute,
-            feedback: filmFeedback, previousDir, onProgress, resume, multiuser: !!config.multiuser, skillsRoot, executable,
+            feedback, previousDir, onProgress, resume, skillsRoot, executable,
           }))
+          activity = ''
           await sourceArchive(dir, kit)
         } else {
-          state.phase = '生成画面'; await save(state)
+          await onProgress('生成画面')
           const scenes = path.join(dir, 'scenes')
           const { sceneMode, endpoint, model, key } = sceneSettings(saved, sceneConfig)
           const sceneArgs = ['--input', path.join(dir, 'production.json'), '--output', scenes]
@@ -474,23 +451,24 @@ export function createProduction(workspace, config = {}) {
             const dshCli = process.env.DSH_CLI || path.join(dshBase, process.platform === 'win32' ? 'node_modules/@deepseek-ai/dsh/lib/bin.js' : 'dsh.sh')
             await run(dir, 'scripts/prepare-scenes.mjs', sceneMode === 'dsh' ? [...sceneArgs, '--dsh'] : [...sceneArgs, '--endpoint', normalizeEndpoint(endpoint, '/chat/completions'), '--model', model], { ...process.env, SCENE_API_KEY: key || '', VIDEO_SCENE_REUSE_DIR: reuseDir, VIDEO_RESUME: resume ? '1' : '', DSH_CLI: dshCli })
           }
-          state.phase = '配音与渲染'; await save(state)
+          await onProgress('配音与渲染')
           const audio = await reusableAudio(production, prior)
           const args = ['--prepared', path.join(scenes, 'production.json'), '--out', film]
           if (saved.tts?.voice) args.push('--voice', `api:${saved.tts.voice}`)
           else if (process.env.VIDEO_VOICE) args.push('--voice', process.env.VIDEO_VOICE)
           else if (process.env.VOICE_NAME) args.push('--voice', `api:${process.env.VOICE_NAME}`)
           await run(dir, 'WORK/modules/video/pipeline.mjs', args, { ...process.env, VIDEO_RESUME: resume ? '1' : '', VIDEO_TTS_CACHE_DIR: audio?.audio || '', ...(saved.tts?.baseUrl ? { VIDEO_TTS_ENDPOINT: normalizeEndpoint(saved.tts.baseUrl, saved.tts.protocol === 'mimo' ? '/chat/completions' : '/audio/speech') } : {}), ...(saved.tts?.model ? { VIDEO_TTS_MODEL: saved.tts.model } : {}), ...(saved.tts?.baseUrl ? { VIDEO_TTS_KEY: saved.tts.apiKey || '' } : {}), ...(saved.tts?.protocol ? { VIDEO_TTS_PROTOCOL: saved.tts.protocol } : {}) })
-          state.phase = '自动质检'; await save(state)
+          await onProgress('自动质检')
           await run(dir, 'WORK/modules/video/verify.mjs', [path.join(film, 'mapping.json')])
         }
         await stat(path.join(film, 'final.mp4'))
-        if (!executable) await readFile(path.join(film, 'mapping.json'), 'utf8').then(JSON.parse)
+        await readFile(path.join(film, 'mapping.json'), 'utf8').then(JSON.parse)
         state.status = 'completed'; state.phase = '制作完成'; state.completedAt = new Date().toISOString()
         if (auth) state.membershipPending = true
       } catch (e) { state.status = 'failed'; state.error = String(e.message || e); state.completedAt = new Date().toISOString() }
       finally {
         waitMessage = ''
+        activity = ''
         if (state.sessionId) config.memberProject?.unbind(state.sessionId)
         try {
           await save(state)
@@ -502,7 +480,7 @@ export function createProduction(workspace, config = {}) {
   async function start({ mode = config.productionMode || 'agent', feedback = '', regenerateAssetId, assetFeedback = '', jobId } = {}) {
     if (!['agent', 'structured'].includes(mode)) throw new Error('未知的视频制作方式。')
     if (typeof feedback !== 'string' || (feedback.trim() && mode !== 'agent')) throw new Error('返工意见需提交给视频制作 Agent。')
-    if (typeof assetFeedback !== 'string' || (assetFeedback.trim() && !regenerateAssetId)) throw new Error('素材返工意见需要指定单件素材。')
+    if (regenerateAssetId !== undefined || assetFeedback) throw new Error(assetStageRetired)
     if (active) throw new Error('本创作已有制作任务正在运行')
     const release = config.memberProject?.hold()
     active = true
@@ -527,7 +505,7 @@ export function createProduction(workspace, config = {}) {
         const dir = path.join(root, prior.id)
         const production = JSON.parse(await readFile(path.join(dir, 'production.json'), 'utf8'))
         const executable = prior.mode === 'agent' ? await executableFor(production.style) : null
-        if (await restoreFilm(path.join(dir, 'film'), production, executable)) {
+        if (await restoreFilm(path.join(dir, 'film'), prior.mode)) {
           if (prior.mode === 'agent') await sourceArchive(dir, kit)
           const state = { ...prior, status: 'completed', phase: '制作完成', completedAt: new Date().toISOString(), ...(prior.membershipAuthorizationId && { membershipPending: true }) }
           delete state.error
@@ -540,9 +518,22 @@ export function createProduction(workspace, config = {}) {
         delete state.error
         delete state.completedAt
         if (state.mode === 'agent') state.sessionId = 'bohack-video-' + randomUUID()
-        const auth = state.membershipAuthorizationId ? await memberProject.lease({ id: state.membershipAuthorizationId }) : null
+        let auth = null
+        if (state.membershipAuthorizationId) {
+          const id = state.membershipAuthorizationId
+          const replace = /quota_circuit_broken|本周卡额度已用尽|HTTP\s+402\b|\b402\s*[:：]/i.test(String(prior.error || ''))
+          try { auth = await memberProject.lease({ id, replace }) }
+          catch (error) {
+            if (replace || error.code !== 'quota_circuit_broken' || error.status !== 402) throw error
+            auth = await memberProject.lease({ id, replace: true })
+          }
+        }
+        if (auth) state.membershipAuthorizationId = auth.id
         const saved = auth ? await config.settings.forCall(auth) : await config.settings?.load() || {}
-        if (!executable) validateVoice(saved)
+        validateVoice(saved)
+        if (state.mode === 'agent' && fillNarration(production)) {
+          await writeFile(path.join(dir, 'production.json'), JSON.stringify(production, null, 2) + '\n')
+        }
         await runJob(state, production, dir, saved, auth, prior, true, release, executable)
         return state
       }
@@ -555,32 +546,14 @@ export function createProduction(workspace, config = {}) {
       const production = await exportProduction(workspace)
       const original = await executableFor(production.style)
       if (original) mode = 'agent'
-      if (original && config.multiuser) throw new Error('多人工作台尚未配置单任务进程沙箱，无法运行原版制作脚本。')
-      if (!original) {
-        for (const section of production.sections) {
-          if (!section.narration?.trim()) {
-            section.narration = section.intent
-            section.gaps = section.gaps.filter(gap => gap !== '旁白未提供')
-          }
-        }
-        if (!config.memberProject) validateVoice(saved)
-      }
+      fillNarration(production)
+      if (!config.memberProject) validateVoice(saved)
       const previousJobId = prior?.status === 'completed' ? prior.id : prior?.previousJobId || null
       if (feedback.trim() && !previousJobId) throw new Error('尚无已完成的成片可以返工。')
-      if (regenerateAssetId !== undefined) {
-        if (prior?.status !== 'completed' || prior.version !== production.version || prior.styleId !== (production.style?.id || null)) {
-          throw new Error('请在当前成片对应的蓝图和风格下重做素材。')
-        }
-        const previous = await readAssetManifest(path.join(root, previousJobId))
-        const listed = production.assets?.some(asset => asset.id === regenerateAssetId)
-        if (!listed && !(!production.assets?.length && previous?.styleId === (production.style?.id || 'general') && previous.assets.some(asset => asset.id === regenerateAssetId))) {
-          throw new Error('要重做的素材不存在。')
-        }
-      }
       const auth = await memberProject?.lease()
       if (config.memberProject) {
         saved = await config.settings.forCall(auth)
-        if (!original) validateVoice(saved)
+        validateVoice(saved)
       }
       let sceneConfig = null
       try { sceneConfig = JSON.parse(await readFile(path.join(workspace, 'hotpot-demo-scene.json'), 'utf8')) }
@@ -590,14 +563,10 @@ export function createProduction(workspace, config = {}) {
       await mkdir(root, { recursive: true })
       const id = randomUUID(), dir = path.join(root, id)
       await mkdir(dir)
-      production.assetPlan = await bindDeclaredAssets(production, production.assets || [], dir)
-      if (regenerateAssetId && production.assets?.length && !production.assetPlan.some(asset => asset.id === regenerateAssetId)) {
-        throw new Error('请在资料库更换用户上传的实物。')
-      }
+      await bindDeclaredAssets(production, production.assets || [], dir)
       if (mode === 'structured') sceneSettings(saved, sceneConfig)
       await bindReadyAssets(dir)
       const state = { id, mode, previousJobId, ...(mode === 'agent' ? {sessionId:'bohack-video-'+id, feedback:feedback.trim()} : {}),
-        ...(regenerateAssetId && { regenerateAssetId, assetFeedback: assetFeedback.trim() }),
         ...(auth && { membershipAuthorizationId: auth.id }), status: 'running',
         phase: '准备制作', version: production.version, ...(sceneConfig && { sceneConfig }),
         startedAt: new Date().toISOString(), styleId: production.style?.id || null, styleName: production.style?.name || null }
@@ -683,26 +652,7 @@ export function createProduction(workspace, config = {}) {
     if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) throw new Error('成片尚不可用')
     return resolved
   }
-  async function generateAsset({ version, doc, style, id, feedback }) {
-    if (active || config.multiuser) throw new Error('当前创作无法单独编码素材，请等待制作完成。')
-    const target = doc.assets.find(item => item.id === id)
-    if (!target) throw new Error('要制作的素材不存在。')
-    const saved = await config.settings.load()
-    const auth = await memberProject?.lease()
-    const settings = auth ? await config.settings.forCall(auth) : saved
-    const route = await routeFor(settings)
-    const sessionId = 'bohack-assets-' + randomUUID()
-    memberProject?.bind(sessionId, config.settings.load, auth?.id, !auth)
-    try {
-      const selectedPackage = await executableFor(style)
-      await config.generatedAssets.prepare({ version, doc, style, planned: [target], regenerateAssetId: id, assetFeedback: feedback,
-        run: options => runAssetAgentJob({ ctx: config.ctx, sessionId, kit, repo, workspace: skillsRoot,
-          selectedPackage, settings, ...route, production: doc, ...options }),
-      })
-      return config.generatedAssets.status({ version, doc, style })
-    } finally { memberProject?.unbind(sessionId) }
-  }
-  return { start, abandon, status, file, generateAsset, isActive: () => active }
+  return { start, abandon, status, file, isActive: () => active }
 }
 
 const archives = new Map()
@@ -721,7 +671,7 @@ async function writeSourceArchive(dir, kit) {
     'root = pathlib.Path(sys.argv[1])',
     'seen = set()',
     "with zipfile.ZipFile(sys.argv[2], 'w', compression=zipfile.ZIP_DEFLATED) as archive:",
-    "    for relative in ('production.json', 'brief.json', 'decisions.json', 'scenes', 'scenes/assets', 'assets', 'images', '现成素材', 'audio-cache', 'film/audio', 'film/mapping.json'):",
+    "    for relative in ('production.json', 'brief.json', 'decisions.json', 'scenes', 'scenes/assets', 'assets', 'images', '现成素材', 'audio-cache', 'film/audio', 'timings.json', 'film/mapping.json'):",
     '        source = root / relative',
     '        for file in (source.rglob("*") if source.is_dir() else [source]):',
     '            name = file.relative_to(root)',

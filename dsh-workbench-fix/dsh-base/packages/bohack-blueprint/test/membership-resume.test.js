@@ -6,9 +6,64 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
-import { createMembership } from '../lib/membership.js'
+import { createMembership, desktopAgentOrigin } from '../lib/membership.js'
 import { createProduction } from '../lib/production.js'
 import { createWebHandler } from '../lib/web.js'
+
+test('desktop retries the same lease once and reuses it while preserving model transport failures', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-agent-transport-'))
+  t.after(() => rm(home, { recursive:true, force:true }))
+  const root = path.join(home, 'workspace')
+  const starts = []
+  let proxyRequests = 0, startFailures = 1, proxyStatus = 200
+  const connectionError = () => new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code:'UND_ERR_SOCKET' }) })
+  const client = createMembership({ on() {} }, root, {
+    url:'http://127.0.0.1:8765',
+    request: async (url, options) => {
+      const route = new URL(url).pathname
+      if (route === '/api/auth/sign-in/email') return Response.json({ user:{id:'owner',email:'owner@example.test'} }, {headers:{'set-auth-token':'fixture'}})
+      if (route === '/api/member') return Response.json({})
+      if (route === '/api/productions/start') {
+        starts.push(JSON.parse(options.body))
+        if (startFailures > 0) { startFailures--; throw connectionError() }
+        return Response.json({ status:'active' })
+      }
+      assert.equal(options.headers.authorization, 'Bearer fixture')
+      assert.equal(route, '/api/proxy/' + starts[0].productionId + '/chat/completions')
+      proxyRequests++
+      if (proxyStatus === 0) throw connectionError()
+      return Response.json(proxyStatus === 402 ? {error:'quota_circuit_broken'} : {}, {status:proxyStatus})
+    },
+  })
+  await client.update({action:'login',email:'owner@example.test',password:'fixture'})
+  const project = client.project(path.join(root, 'film'))
+  const auth = await project.lease()
+  assert.deepEqual(starts, [{productionId:auth.id}, {productionId:auth.id}])
+  project.bind('film', () => assert.fail('member requests should use the acquired authorization'), auth)
+  const uninstall = client.install()
+  const call = () => fetch(desktopAgentOrigin + '/chat/completions', {
+    method:'POST',headers:{'x-jiangjie-session':'film'},body:'{}',
+  })
+  try {
+    assert.equal((await call()).status, 200)
+    assert.equal((await call()).status, 200)
+    proxyStatus = 0
+    await assert.rejects(call, error => /会员模型代理请求.*UND_ERR_SOCKET/.test(error.message) && error.cause.cause.code === 'UND_ERR_SOCKET')
+    assert.equal(proxyRequests, 3)
+    assert.equal(starts.length, 2)
+    proxyStatus = 402
+    assert.equal((await call()).status, 402)
+    assert.equal(project.error('film').code, 'quota_circuit_broken')
+    proxyStatus = 403
+    assert.equal((await call()).status, 403)
+
+    project.bind('film', () => assert.fail('member leases should not load BYOK'))
+    startFailures = 2
+    await assert.rejects(call, /会员开片请求.*UND_ERR_SOCKET/)
+    assert.equal(starts.length, 4)
+    assert.equal(proxyRequests, 5)
+  } finally { uninstall() }
+})
 
 test('desktop restart resumes the same authorization and recovers a lost finish receipt without rerendering', async t => {
   const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-resume-'))
@@ -31,7 +86,7 @@ test('desktop restart resumes the same authorization and recovers a lost finish 
     if (route === '/api/auth/sign-in/email') {
       return Response.json({ user:{id:'owner',email:'owner@example.test'} }, { headers:{'set-auth-token':'local-fixture-token'} })
     }
-    if (route === '/api/member') return Response.json({ giftRemaining:remaining, monthlyExpiresAt, monthlyStatus:'active', monthlyTokens:25, purchaseAvailable:false, activeProductionId:[...authorized].find(([, state]) => state === 'active')?.[0] })
+    if (route === '/api/member') return Response.json({ giftRemaining:remaining, plan:'weekly_6', expiresAt:monthlyExpiresAt, passStatus:'active', remainingPercent:25, canPurchase:false, purchaseAvailable:false, activeProductionId:[...authorized].find(([, state]) => state === 'active')?.[0] })
     if (route === '/api/productions/start') {
       if (!authorized.has(productionId)) {
         if ([...authorized.values()].includes('active')) return Response.json({error:'active_production'}, {status:409})
@@ -58,7 +113,7 @@ test('desktop restart resumes the same authorization and recovers a lost finish 
   }
   const client = connect(), memberProject = client.project(workspace)
   const accountView = await client.update({action:'login',email:'owner@example.test',password:'test-password'})
-  assert.deepEqual(accountView.account, {email:'owner@example.test',gifts:3,monthly:{expiresAt:monthlyExpiresAt},monthlyBalance:25,monthlyStatus:'active'})
+  assert.deepEqual(accountView.account, {email:'owner@example.test',gifts:3,plan:'weekly_6',expiresAt:monthlyExpiresAt,passStatus:'active',remainingPercent:25,canPurchase:false,purchaseAvailable:false,activeProductionId:undefined})
   const { id:authorizationId } = await memberProject.lease()
   await mkdir(audio, {recursive:true})
   await mkdir(path.join(job, 'scenes'), {recursive:true})
@@ -210,4 +265,101 @@ test('BYOK resumes the original failed job without leasing or settling membershi
   assert.equal(result.status, 'completed', result.error); assert.equal(result.id, jobId)
   assert.equal(result.membershipAuthorizationId, undefined)
   assert.deepEqual(calls, [])
+})
+
+test('explicit continuation replaces an exhausted authorization once even when the reply is lost', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-replace-'))
+  t.after(() => rm(home, {recursive:true,force:true}))
+  const root = path.join(home, 'projects'), workspace = path.join(root, 'film')
+  let oldId, newId, lost = true
+  const calls = []
+  const request = async (url, options) => {
+    const route = new URL(url).pathname, body = JSON.parse(options.body || '{}')
+    if (route === '/api/auth/sign-in/email') return Response.json({user:{id:'owner',email:'owner@example.test'}}, {headers:{'set-auth-token':'token'}})
+    if (route === '/api/member') return Response.json({giftRemaining:0,plan:'weekly_6',passStatus:'active',remainingPercent:100,canPurchase:false,purchaseAvailable:false})
+    if (route === '/api/productions/start') {
+      calls.push(body)
+      if (!body.replacesProductionId) { oldId = body.productionId; return Response.json({status:'active'}) }
+      assert.equal(body.replacesProductionId, oldId)
+      if (newId) assert.equal(body.productionId, newId)
+      else newId = body.productionId
+      if (lost) { lost = false; throw Error('response lost') }
+      return Response.json({status:'active'})
+    }
+    throw Error('unexpected route ' + route)
+  }
+  const connect = () => createMembership({}, root, {url:'http://localhost:8765',request})
+  const client = connect()
+  await client.update({action:'login',email:'owner@example.test',password:'test'})
+  const old = await client.project(workspace).lease()
+  await assert.rejects(client.project(workspace).lease({id:old.id,replace:true}), /response lost/)
+  const resumed = await connect().project(workspace).lease({id:old.id,replace:true})
+  assert.notEqual(resumed.id, old.id)
+  assert.equal(resumed.id, newId)
+  assert.equal(calls[1].productionId, calls[2].productionId)
+  assert.equal((await connect().project(workspace).lease({id:resumed.id})).id, resumed.id)
+})
+
+test('explicit continuation replaces an authorization that expired after interruption', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-expired-resume-'))
+  t.after(() => rm(home, {recursive:true,force:true}))
+  const workspace = path.join(home, 'project'), kit = path.join(home, 'kit')
+  const jobId = 'de0caa3e-9518-45b3-92c2-2a5a5fdb319d'
+  const job = path.join(workspace, 'production', jobId), scripts = path.join(kit, 'WORK/modules/video')
+  await mkdir(path.join(job, 'scenes'), {recursive:true})
+  await mkdir(path.join(job, 'film'), {recursive:true})
+  await mkdir(scripts, {recursive:true})
+  await writeFile(path.join(job, 'scenes', 'production.json'), '{}')
+  await writeFile(path.join(job, 'production.json'), JSON.stringify({version:'v1',sections:[{id:'S01',narration:'旁白'}]}))
+  await writeFile(path.join(workspace, 'production/status.json'), JSON.stringify({id:jobId,mode:'structured',version:'v1',status:'interrupted',membershipAuthorizationId:'old',error:'工作台已重启'}))
+  await writeFile(path.join(scripts, 'pipeline.mjs'), `import {writeFile} from 'node:fs/promises'; const out=process.argv[process.argv.indexOf('--out')+1]; await writeFile(out+'/mapping.json','{}'); await writeFile(out+'/final.mp4','fixture')`)
+  await writeFile(path.join(scripts, 'verify.mjs'), `import {writeFile} from 'node:fs/promises'; await writeFile(new URL('./verify-report.json', 'file://'+process.argv[2]), '{"hardErrors":[]}')`)
+  const calls = []
+  const memberProject = {
+    hold:()=>()=>{}, current:async()=>({id:'old'}),
+    lease:async options=>{ calls.push(options); if (!options.replace) throw Object.assign(Error('expired'), {code:'quota_circuit_broken',status:402}); return {id:'new'} },
+    close:async(_action,id)=>{ assert.equal(id,'new'); return 'finished' },
+  }
+  const app = createProduction(workspace, {desktop:true,videoKitDir:kit,memberProject,settings:{forCall:async()=>({model:{baseUrl:'https://example.invalid',model:'test',apiKey:'test'},tts:{baseUrl:'https://example.invalid',model:'test',voice:'test',apiKey:'test'}})}})
+  const resumed = await app.start({jobId})
+  assert.equal(resumed.membershipAuthorizationId, 'new')
+  assert.deepEqual(calls, [{id:'old',replace:false},{id:'old',replace:true}])
+  for (let i=0; app.isActive() && i<100; i++) await delay(20)
+  const final = await app.status()
+  assert.equal(final.status, 'completed', final.error)
+})
+
+test('abandon tombstones a pending replacement and closes the original with retry', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'jiangjie-replace-abandon-'))
+  t.after(() => rm(home, {recursive:true,force:true}))
+  const root = path.join(home, 'projects'), workspace = path.join(root, 'film')
+  let oldId, candidateId, failOld = true
+  const calls = []
+  const request = async (url, options) => {
+    const route = new URL(url).pathname, body = JSON.parse(options.body || '{}')
+    if (route === '/api/auth/sign-in/email') return Response.json({user:{id:'owner',email:'owner@example.test'}}, {headers:{'set-auth-token':'token'}})
+    if (route === '/api/member') return Response.json({giftRemaining:0,passStatus:'exhausted'})
+    if (route === '/api/productions/start') {
+      if (!body.replacesProductionId) { oldId = body.productionId; return Response.json({status:'active'}) }
+      candidateId = body.productionId
+      return Response.json({error:'quota_exhausted'}, {status:403})
+    }
+    if (route === '/api/productions/abandon') {
+      calls.push(body.productionId)
+      if (body.productionId === oldId && failOld) { failOld = false; throw Error('response lost') }
+      return Response.json({status:'abandoned'})
+    }
+    throw Error('unexpected route')
+  }
+  const connect = () => createMembership({}, root, {url:'http://localhost:8765',request})
+  const client = connect()
+  await client.update({action:'login',email:'owner@example.test',password:'test'})
+  const old = await client.project(workspace).lease()
+  await assert.rejects(client.project(workspace).lease({id:old.id,replace:true}), /额度已用完/)
+  await assert.rejects(client.project(workspace).close('abandon', old.id), /response lost/)
+  const project = connect().project(workspace)
+  await assert.rejects(project.lease({id:old.id,replace:true}), /重试放弃/)
+  assert.equal(await project.close('abandon',old.id), 'abandoned')
+  assert.deepEqual(calls, [candidateId, oldId, candidateId, oldId])
+  assert.deepEqual(await project.current(), {id:old.id,closing:null,terminal:'abandoned'})
 })

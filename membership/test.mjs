@@ -6,16 +6,20 @@ import { once } from 'node:events';
 import { copyFileSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { promisify } from 'node:util';
 import { createMembershipService } from './server.mjs';
-import { initializeMonthly } from './monthly.mjs';
+import { initializeMonthly, issuePass, passStatus, transaction } from './monthly.mjs';
+
+function fixturePass(db, userId) {
+  return transaction(db, () => issuePass(db,userId,Date.now(),'fixture-'+userId+'-'+db.prepare('SELECT COUNT(*) AS n FROM monthly_pass').get().n,
+    {budgetMicroCny:51000,durationDays:7}));
+}
 
 test('the service entry point starts from a path containing spaces and Chinese characters', { timeout: 10000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), '讲界 内测-'));
-  for (const file of ['server.mjs', 'monthly.mjs']) copyFileSync(join(import.meta.dirname, file), join(dir, file));
+  for (const file of ['server.mjs', 'monthly.mjs', 'billing.mjs', 'epay.mjs', 'payment-orders.mjs', 'payment-http.mjs']) copyFileSync(join(import.meta.dirname, file), join(dir, file));
   symlinkSync(join(import.meta.dirname, 'node_modules'), join(dir, 'node_modules'), 'dir');
   const child = spawn(process.execPath, [join(dir, 'server.mjs')], {
     cwd: dir,
@@ -32,25 +36,57 @@ test('the service entry point starts from a path containing spaces and Chinese c
   }
 });
 
-test('real HTTP auth, quota, concurrent authorization, proxy and accounting', async () => {
+test('real HTTP auth, quota, concurrent authorization, proxy and accounting', async t => {
   const dir=mkdtempSync(join(tmpdir(),'member-'));
   const seen=[];
+  const largeAudio=Buffer.alloc(300*1024,1);
   const delayed = Promise.withResolvers(), release = Promise.withResolvers();
+  const lateStarted = Promise.withResolvers(), lateRelease = Promise.withResolvers();
+  const cancelledUpstream = Promise.withResolvers();
   const mock=createServer(async(req,res)=>{
     const body=JSON.parse(await new Response(req).text()); seen.push({url:req.url,authorization:req.headers.authorization,body});
     if(body.delay_test) { delayed.resolve(); await release.promise; }
+    if(body.late_test) { lateStarted.resolve(); await lateRelease.promise; }
     if(body.fail_test) { res.writeHead(503,{'content-type':'application/json'}); return res.end(JSON.stringify({error:'temporary_failure'})); }
     if(body.redirect_test) { res.writeHead(302,{location:'http://127.0.0.1:1/'}); return res.end(); }
-    if(body.audio) { res.writeHead(200,{'content-type':'application/json'}); return res.end(JSON.stringify({choices:[{message:{audio:{data:Buffer.from([4,5,6]).toString('base64')}}}]})); }
-    if(req.url.endsWith('/audio/speech')) { res.writeHead(200,{'content-type':'audio/mpeg'}); return res.end(Buffer.from([1,2,3])); }
-    if(body.stream) { res.writeHead(200,{'content-type':'text/event-stream'}); return res.end('data: {\"choices\":[],\"usage\":{\"total_tokens\":7}}\n\ndata: [DONE]\n\n'); }
-    res.writeHead(200,{'content-type':'application/json'}); res.end(JSON.stringify({usage:{total_tokens:7},choices:[]}));
+    if(body.audio) {
+      const data=body.messages[0].content==='invalid audio'?'not-base64!':Buffer.from([4,5,6]).toString('base64');
+      res.writeHead(200,{'content-type':'application/json'});
+      return res.end(JSON.stringify({choices:[{message:{audio:{data}}}],usage:{input_tokens:30,output_tokens:50}}));
+    }
+    if(req.url.endsWith('/audio/speech')) {
+      res.writeHead(200,{'content-type':'audio/mpeg'});
+      return res.end(body.input==='large audio'?largeAudio:Buffer.from([1,2,3]));
+    }
+    const usage=body.break_test ? {input_tokens:0,output_tokens:3517240}
+      : {input_tokens:5,output_tokens:2,input_tokens_details:{cached_tokens:3}};
+    if(body.cancel_test) {
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.write('data: {"type":"response.output_text.delta","delta":"部分响应"}\n\n');
+      res.on('close',()=>cancelledUpstream.resolve());
+      return;
+    }
+    if(body.interrupt_test) {
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.write('data: {"type":"response.output_text.delta","delta":"部分响应"}\n\n');
+      await new Promise(resolve => setTimeout(resolve,20));
+      return res.destroy();
+    }
+    if(body.stream) {
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      const event=req.url.endsWith('/responses')
+        ? {type:'response.completed',response:{usage}}
+        : {usage:{prompt_tokens:5,completion_tokens:2,prompt_tokens_details:{cached_tokens:3}}};
+      return res.end(`data: ${JSON.stringify(event)}\r\n\r\ndata: [DONE]\n\n`);
+    }
+    res.writeHead(200,{'content-type':'application/json'});
+    res.end(JSON.stringify({usage:body.missing_usage?undefined:usage,choices:[]}));
   });
   mock.listen(0,'127.0.0.1'); await once(mock,'listening');
   const upstream=`http://127.0.0.1:${mock.address().port}/v1`;
   const portServer=createServer(); portServer.listen(0,'127.0.0.1'); await once(portServer,'listening'); const port=portServer.address().port; await new Promise(r=>portServer.close(r));
   const baseURL=`http://127.0.0.1:${port}`;
-  const config={database:join(dir,'test.sqlite'),baseURL,secret:'AnActualRandomSecretForTestingOnly987654321',chat:{baseURL:upstream,key:'server-secret',model:'paid-model'},tts:{baseURL:upstream,key:'tts-secret',model:'tts-model',voice:'voice'}};
+  const config={localTestUnlimited:true,database:join(dir,'test.sqlite'),baseURL,secret:'AnActualRandomSecretForTestingOnly987654321',chat:{baseURL:upstream,key:'server-secret',model:'paid-model'},tts:{baseURL:upstream,key:'tts-secret',model:'tts-model',voice:'voice'}};
   const svc=await createMembershipService(config);
   svc.server.listen(port,'127.0.0.1'); await once(svc.server,'listening');
   try {
@@ -67,7 +103,7 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
     assert.equal(signup.status,200,JSON.stringify(signup.value)); const token=signup.headers.get('set-auth-token'); assert.ok(token);
     assert.equal((await request('/api/member',null,token)).value.giftRemaining,3);
     assert.equal((await request('/api/member',null,token)).value.purchaseAvailable,false);
-    assert.equal((await request('/api/member',null,token)).value.monthlyStatus,'none');
+    assert.equal((await request('/api/member',null,token)).value.passStatus,'none');
     assert.equal((await request('/api/orders',{tokens:999},token)).value.error,'payment_unconfigured');
     const login=await request('/api/auth/sign-in/email',{email:'test@example.com',password:'some-password-123'});
     assert.equal(login.status,200); const token2=login.headers.get('set-auth-token'); assert.ok(token2);
@@ -106,70 +142,185 @@ test('real HTTP auth, quota, concurrent authorization, proxy and accounting', as
     assert.equal((await request(`/api/proxy/${pid}/chat/completions`,{messages:[]},token)).value.error,'production_not_active');
     const email = 'test@example.com';
     const expire = id => svc.db.prepare('UPDATE monthly_pass SET expires_at=? WHERE id=?').run(new Date(Date.now()-86400000).toISOString(),id);
-    const oldOrder = run('test-order',email,'20');
-    assert.equal(oldOrder.pass_id,null);
-    assert.equal(run('test-order',email,'20').id,oldOrder.id);
-    assert.equal((await request('/api/member',null,token)).value.monthlyStatus,'none');
-    const fulfill = async () => JSON.parse((await promisify(execFile)(process.execPath,[cli,config.database,'test-fulfill',oldOrder.id])).stdout);
-    const [first, duplicate] = await Promise.all([fulfill(),fulfill()]);
-    const oldPass = first.pass_id;
-    assert.ok(oldPass);
-    assert.equal(duplicate.pass_id,oldPass);
-    assert.equal((await request('/api/member',null,token)).value.monthlyTokens,20);
-    assert.throws(() => run('test-order',email,'40'),/暂不接受提前下单/);
-    assert.throws(() => run('open',email,'40',new Date(Date.now()+86400000).toISOString()),/暂不叠加/);
-    assert.equal((await request('/api/productions/start',{productionId:'monthly'},token)).status,200);
-    const lateUsage = request('/api/proxy/monthly/responses',{delay_test:true},token);
+    const memberView = async () => (await request('/api/member',null,token)).value;
+    const start = (productionId, replacesProductionId) => request('/api/productions/start',{productionId,replacesProductionId},token);
+    const pass = id => svc.db.prepare('SELECT * FROM monthly_pass WHERE id=?').get(id);
+    assert.equal((await memberView()).passStatus,'none');
+    const oldPass=fixturePass(svc.db,signup.value.user.id).id;
+    assert.equal(Date.parse(pass(oldPass).expires_at)-Date.parse(pass(oldPass).starts_at),7*86400000);
+    assert.equal(pass(oldPass).budget_micro_cny,51000);
+    const active = await memberView();
+    assert.equal(active.plan,'weekly_6');
+    assert.equal(active.remainingPercent,100);
+    assert.equal(active.canPurchase,false);
+    assert.doesNotMatch(JSON.stringify(active), /0\.04|micro_cny|monthlyTokens|unlimitedProduction|relayRate/);
+    assert.throws(() => fixturePass(svc.db,signup.value.user.id),/暂不叠加/);
+    assert.throws(() => run('open-weekly',email),/用法/);
+    assert.throws(() => run('test-fulfill','fake'),/用法/);
+    assert.equal((await start('weekly')).status,200);
+
+    const firstResponse = request('/api/proxy/weekly/responses',{break_test:true,delay_test:true,stream:true},token);
     await delayed.promise;
-    expire(oldPass);
-    assert.equal((await request('/api/member',null,token)).value.monthlyTokens,0);
-    assert.equal((await request('/api/member',null,token)).value.monthlyStatus,'expired');
-    assert.equal((await request('/api/proxy/monthly/responses',{fail_test:true},token)).status,503);
-    assert.equal((await request('/api/productions/start',{productionId:'monthly'},token)).status,200);
-    assert.equal((await request('/api/productions/finish',{productionId:'monthly'},token)).status,200);
-    const newOrder = run('test-order',email,'6');
-    const newPass = run('test-fulfill',newOrder.id).pass_id;
-    assert.notEqual(newPass,oldPass);
+    const before = seen.length;
+    const concurrentResponse = request('/api/proxy/weekly/responses',{stream:true},token);
     release.resolve();
-    assert.equal((await lateUsage).status,200);
-    assert.equal(run('test-fulfill',oldOrder.id).pass_id,oldPass);
-    assert.equal((await request('/api/member',null,token)).value.monthlyTokens,6);
-    assert.equal((await request('/api/productions/start',{productionId:'new-monthly'},token)).status,200);
-    assert.equal((await request('/api/proxy/new-monthly/chat/completions',{messages:[],stream:true},token)).status,200);
-    assert.equal(run('test-fulfill',newOrder.id).pass_id,newPass);
-    assert.equal((await request('/api/member',null,token)).value.monthlyTokens,0);
-    assert.equal((await request('/api/productions/finish',{productionId:'new-monthly'},token)).status,200);
-    assert.equal((await request('/api/productions/start',{productionId:'blocked'},token)).value.error,'quota_exhausted');
+    assert.equal((await firstResponse).status,200);
+    const broken = await concurrentResponse;
+    assert.equal(broken.status,402);
+    assert.equal(broken.value.error,'quota_circuit_broken');
+    assert.equal(seen.length,before);
+    assert.equal(pass(oldPass).used_micro_cny,51000);
+    assert.ok(pass(oldPass).circuit_broken_at);
+    assert.equal((await request('/api/proxy/responses',{stream:true},token,{'x-production-id':'weekly'})).status,402);
+    assert.equal(seen.length,before);
+    const exhausted = await memberView();
+    assert.equal(exhausted.passStatus,'exhausted');
+    assert.equal(exhausted.remainingPercent,0);
+    assert.equal(exhausted.canPurchase,true);
+    assert.ok(Date.parse(exhausted.expiresAt) > Date.now()+6*86400000);
+    assert.equal((await start('replacement','weekly')).status,402);
+    assert.equal((await memberView()).activeProductionId,'weekly');
+    assert.equal((await request('/api/orders',{plan:'weekly_6',amount:1},token)).status,503);
+
+    const newPass=fixturePass(svc.db,signup.value.user.id).id;
+    assert.notEqual(newPass,oldPass);
+    assert.equal((await memberView()).remainingPercent,100);
+    assert.equal((await request('/api/proxy/weekly/responses',{stream:true},token)).status,402);
+    assert.equal(seen.length,before);
+    assert.equal((await start('replacement','not-owned')).status,409);
+    assert.equal((await start('replacement','weekly')).status,200);
+    assert.equal((await start('replacement','weekly')).status,200);
+    assert.equal((await request('/api/proxy/weekly/responses',{stream:true},token)).status,403);
+    assert.equal((await request('/api/proxy/replacement/chat/completions',{messages:[],stream:true},token)).status,200);
+    assert.equal((await request('/api/proxy/replacement/responses',{missing_usage:true},token)).status,200);
+    assert.equal(pass(oldPass).used_micro_cny,51000);
+    assert.equal(pass(newPass).used_micro_cny,2);
+    await assert.rejects(request('/api/proxy/replacement/responses',{interrupt_test:true,stream:true},token));
+    assert.equal(pass(newPass).used_micro_cny,3);
+    await t.test('disconnecting a streamed response aborts upstream and releases the pass queue', async () => {
+      const controller=new AbortController();
+      const response=await fetch(baseURL+'/api/proxy/replacement/responses',{
+        method:'POST',headers:{origin:baseURL,'content-type':'application/json',authorization:`Bearer ${token}`},
+        body:JSON.stringify({cancel_test:true,stream:true}),signal:controller.signal,
+      });
+      const reader=response.body.getReader();
+      assert.equal((await reader.read()).done,false);
+      const next=request('/api/proxy/replacement/responses',{stream:true},token);
+      controller.abort();
+      await Promise.race([cancelledUpstream.promise, new Promise((_,reject)=>setTimeout(()=>reject(new Error('upstream was not cancelled')),2000))]);
+      assert.equal((await Promise.race([next,new Promise((_,reject)=>setTimeout(()=>reject(new Error('pass queue remained blocked')),2000))])).status,200);
+      assert.equal(pass(newPass).used_micro_cny,5);
+    });
+    const ttsLedger = svc.db.prepare(`SELECT kind,amount,cost_micro_cny,estimated,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens
+      FROM usage WHERE production_id='replacement' AND kind='tts'`);
+    await t.test('300 KiB speech on an active pass records characters without debiting it', async () => {
+      config.tts.protocol='speech';
+      const audio=await request('/api/proxy/replacement/audio/speech',{input:'large audio'},token);
+      assert.equal(audio.status,200);
+      assert.deepEqual(audio.value,largeAudio);
+      assert.deepEqual(ttsLedger.all().map(row=>({...row})),[{
+        kind:'tts',amount:'large audio'.length,cost_micro_cny:0,estimated:0,
+        input_tokens:null,cache_read_tokens:null,cache_write_tokens:null,output_tokens:null,
+      }]);
+      assert.equal(pass(newPass).used_micro_cny,5);
+    });
+    await t.test('invalid MiMo audio returns 502 without recording usage or debiting the pass', async () => {
+      config.tts.protocol='mimo';
+      const count=svc.db.prepare("SELECT COUNT(*) AS count FROM usage").get().count;
+      const audio=await request('/api/proxy/replacement/audio/speech',{input:'invalid audio'},token);
+      assert.equal(audio.status,502);
+      assert.equal(audio.value.error,'invalid_tts_response');
+      assert.equal(svc.db.prepare("SELECT COUNT(*) AS count FROM usage").get().count,count);
+      assert.equal(pass(newPass).used_micro_cny,5);
+    });
+    assert.equal((await memberView()).remainingPercent,99);
     assert.equal(run('stop',email).id,newPass);
     assert.equal(run('stop',email).id,newPass);
-    assert.equal((await request('/api/member',null,token)).value.monthlyStatus,'stopped');
-    const manualPass = run('open',email,'15',new Date(Date.now()+86400000).toISOString());
-    assert.equal((await request('/api/member',null,token)).value.monthlyTokens,15);
-    assert.equal(run('stop',email).id,manualPass.id);
-    const stopped = (await request('/api/member',null,token)).value;
-    assert.equal(stopped.monthlyTokens,0);
-    assert.equal(stopped.monthlyExpiresAt,manualPass.expires_at);
-    assert.equal((await request('/api/productions/start',{productionId:'stopped'},token)).value.error,'quota_exhausted');
-    assert.equal((await request('/api/member',null,otherToken)).value.monthlyStatus,'none');
+    assert.equal((await memberView()).passStatus,'stopped');
+    assert.equal((await request('/api/proxy/replacement/responses',{stream:true},token)).status,402);
+    assert.equal((await request('/api/productions/finish',{productionId:'replacement'},token)).status,200);
+    const manualPass = fixturePass(svc.db,signup.value.user.id);
+    assert.equal((await memberView()).remainingPercent,100);
+    assert.equal((await start('expired')).status,200);
+    const late = request('/api/proxy/expired/responses',{late_test:true},token);
+    await lateStarted.promise;
+    expire(manualPass.id);
+    assert.equal((await request('/api/proxy/expired/responses',{stream:true},token)).status,402);
+    assert.equal((await memberView()).passStatus,'expired');
+    assert.equal((await memberView()).canPurchase,true);
+    const afterExpiry = fixturePass(svc.db,signup.value.user.id);
+    assert.equal((await start('after-expiry','expired')).status,200);
+    lateRelease.resolve();
+    assert.equal((await late).status,200);
+    assert.equal(pass(manualPass.id).used_micro_cny,1);
+    assert.equal(pass(afterExpiry.id).used_micro_cny,0);
+    assert.equal((await request('/api/productions/finish',{productionId:'after-expiry'},token)).status,200);
+    assert.equal(run('stop',email).id,afterExpiry.id);
+    assert.equal((await start('blocked')).value.error,'quota_exhausted');
+    assert.equal((await request('/api/member',null,otherToken)).value.passStatus,'none');
+
+    assert.equal(run('unlimited',email).unlimitedProduction,true);
+    assert.equal((await request('/api/unlimited',{},token)).status,404);
+    assert.ok(!Object.hasOwn(await memberView(),'unlimitedProduction'));
+    for (const productionId of ['unlimited-1','unlimited-2']) {
+      assert.equal((await start(productionId)).status,200);
+      assert.equal((await request(`/api/proxy/${productionId}/responses`,{fail_test:productionId==='unlimited-2'},token)).status,productionId==='unlimited-2'?503:200);
+      assert.equal((await request('/api/productions/finish',{productionId},token)).status,200);
+    }
+    assert.equal(run('metered',email).unlimitedProduction,false);
+    assert.equal((await start('metered')).value.error,'quota_exhausted');
     const audit = run('inspect',email);
-    assert.deepEqual(audit.testOrders.map(order=>order.pass_id),[newPass,oldPass]);
-    assert.deepEqual(audit.passes.map(pass=>[pass.id,pass.tokens]),[[manualPass.id,15],[newPass,0],[oldPass,13]]);
-    assert.ok(audit.usage.some(row=>row.production_id==='monthly' && row.pass_id===oldPass && row.amount===7));
-    assert.equal(svc.db.prepare("SELECT COUNT(*) AS n FROM usage WHERE kind='tts'").get().n,2);
-    assert.equal(svc.db.prepare("SELECT COUNT(*) AS n FROM usage WHERE kind='text'").get().n,3);
-  } finally { release.resolve(); await new Promise(r=>svc.server.close(r)); await new Promise(r=>mock.close(r)); svc.db.close(); rmSync(dir,{recursive:true,force:true}); }
+    assert.deepEqual(audit.orders,[]);
+    const exhaustedAudit = audit.passes.find(p=>p.id===oldPass);
+    assert.equal(exhaustedAudit.usedYuan,5.10);
+    assert.equal(exhaustedAudit.usedPercent,100);
+    assert.ok(exhaustedAudit.circuitBroken);
+    assert.deepEqual(exhaustedAudit.tokenTotals,{inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:3517240});
+    assert.ok(audit.usage.some(row=>row.production_id==='replacement' && row.pass_id===newPass && row.estimated===1 && row.cost_micro_cny>0));
+    assert.equal(audit.usage.filter(row=>row.production_id==='replacement' && row.estimated===1).length,3);
+    assert.ok(audit.usage.some(row=>row.funding==='unlimited' && !row.pass_id && row.cost_micro_cny>0));
+    const giftUsage=audit.usage.filter(row=>row.funding==='gift');
+    assert.equal(giftUsage.length,3);
+    assert.ok(giftUsage.every(row=>!row.pass_id && (row.kind==='tts' ? row.cost_micro_cny===0 && row.amount===5 && row.input_tokens===null : row.cost_micro_cny>0)));
+  } finally { release.resolve(); lateRelease.resolve(); await new Promise(r=>svc.server.close(r)); await new Promise(r=>mock.close(r)); svc.db.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
 test('legacy balances migrate once without guessing a period for existing productions', () => {
   const db = new DatabaseSync(':memory:');
   try {
     db.exec(`CREATE TABLE member(user_id TEXT PRIMARY KEY,gifts INTEGER,tokens INTEGER,expires_at TEXT);
+      CREATE TABLE monthly_pass(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,tokens INTEGER NOT NULL,starts_at TEXT,expires_at TEXT NOT NULL,stopped_at TEXT);
+      INSERT INTO monthly_pass(id,user_id,tokens,expires_at) VALUES ('spent-card','spent',0,'2099-01-01T00:00:00Z');
       CREATE TABLE production(user_id TEXT,id TEXT,status TEXT,funding TEXT,PRIMARY KEY(user_id,id));
+      CREATE TABLE usage(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,production_id TEXT NOT NULL,kind TEXT NOT NULL,amount INTEGER,created_at TEXT NOT NULL);
+      INSERT INTO usage VALUES ('historical','account','old','text',42,'2026-01-01T00:00:00Z');
       INSERT INTO member VALUES ('account', 0, 55, '2099-01-01T00:00:00Z');
+      INSERT INTO member VALUES ('spent-member',0,0,'2099-01-01T00:00:00Z');
       INSERT INTO production VALUES ('account', 'old', 'active', 'monthly');`);
     initializeMonthly(db);
+    const pass = userId => db.prepare('SELECT * FROM monthly_pass WHERE user_id=? ORDER BY rowid DESC LIMIT 1').get(userId);
+    const spent = ['spent','spent-member'].map(pass);
+    for (const card of spent) {
+      assert.equal(card.tokens,0);
+      assert.equal(card.budget_micro_cny,51000);
+      assert.equal(card.used_micro_cny,51000);
+      assert.ok(card.circuit_broken_at);
+      assert.equal(passStatus(card),'exhausted');
+    }
+    assert.equal(pass('account').tokens,55);
+    assert.equal(pass('account').plan_code,'weekly_6');
+    assert.equal(pass('account').used_micro_cny,0);
+    assert.equal(passStatus(pass('account')),'active');
+    const newCard = fixturePass(db,'spent');
+    assert.equal(newCard.tokens,0);
     initializeMonthly(db);
-    assert.deepEqual(db.prepare('SELECT tokens FROM monthly_pass').all().map(pass=>pass.tokens),[55]);
+    assert.deepEqual(db.prepare('SELECT * FROM monthly_pass WHERE id=?').get(spent[0].id),spent[0]);
+    assert.deepEqual(pass('spent-member'),spent[1]);
+    assert.equal(pass('spent').id,newCard.id);
+    assert.equal(pass('spent').used_micro_cny,0);
+    assert.equal(passStatus(pass('spent')),'active');
+    assert.deepEqual({...db.prepare('SELECT amount,cost_micro_cny,estimated,input_tokens FROM usage').get()},
+      {amount:42,cost_micro_cny:null,estimated:0,input_tokens:null});
     assert.equal(db.prepare('SELECT pass_id FROM production').get().pass_id,null);
   } finally { db.close(); }
 });
@@ -184,7 +335,7 @@ test('invitation registration is single use, releases on failure and honors the 
   const origin = `http://127.0.0.1:${port}`;
   const prefix = '/desktop-membership';
   const database = join(dir, 'member.sqlite');
-  const svc = await createMembershipService({ database, baseURL: origin, pathPrefix: prefix, secret: 'local-test-only-32-character-secret' });
+  const svc = await createMembershipService({ database, baseURL: origin, pathPrefix: prefix, localTestUnlimited: true, secret: 'local-test-only-32-character-secret' });
   svc.server.listen(port, '127.0.0.1');
   await once(svc.server, 'listening');
   const cli = fileURLToPath(new URL('./invite.mjs', import.meta.url));
@@ -212,6 +363,12 @@ test('invitation registration is single use, releases on failure and honors the 
     const created = pair.find(result => result.status === 200);
     assert.ok(created.token);
     assert.equal((await request('/api/member', null, null, created.token)).data.giftRemaining, 3);
+    svc.db.prepare('INSERT INTO unlimited_production(user_id) VALUES (?)').run(created.data.user.id);
+    svc.db.prepare('UPDATE member SET gifts=0 WHERE user_id=?').run(created.data.user.id);
+    const publicMember = await request('/api/member', null, null, created.token);
+    assert.ok(!Object.hasOwn(publicMember.data,'unlimitedProduction'));
+    assert.equal((await request('/api/productions/start',{productionId:'public-bypass'},null,created.token)).data.error,'quota_exhausted');
+    svc.db.prepare('UPDATE member SET gifts=3 WHERE user_id=?').run(created.data.user.id);
     assert.equal((await request('/api/auth/sign-up/email', credentials('third@example.com'), code)).status, 403);
     const login = await request('/api/auth/sign-in/email', credentials(created.data.user.email));
     assert.equal(login.status, 200);
@@ -226,7 +383,7 @@ test('invitation registration is single use, releases on failure and honors the 
     const reserve = svc.db.prepare('UPDATE invite_code SET reservation=?,reserved_email=? WHERE hash=?');
     reserve.run('crash-after-account', created.data.user.email, digest(recoveryUsed));
     reserve.run('crash-before-account', 'absent@example.com', digest(recoveryFree));
-    const restarted = await createMembershipService({ database, baseURL: origin, pathPrefix: prefix, secret: 'local-test-only-32-character-secret' });
+    const restarted = await createMembershipService({ database, baseURL: origin, pathPrefix: prefix, localTestUnlimited: true, secret: 'local-test-only-32-character-secret' });
     try {
       assert.ok(restarted.db.prepare('SELECT used_at FROM invite_code WHERE hash=?').get(digest(recoveryUsed)).used_at);
       assert.deepEqual({ ...restarted.db.prepare('SELECT used_at,reservation FROM invite_code WHERE hash=?').get(digest(recoveryFree)) }, { used_at: null, reservation: null });

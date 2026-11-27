@@ -82,7 +82,6 @@ test('asset endpoints retain thread, revision, variant and selected style', asyn
       status: async args => {calls.push(['status',args]); return {assets:[{previewUrl:'/bohack/api/generated-asset-file?version=1&id=guide&rev=r1',variants:[{variant:'walk',previewUrl:'/bohack/api/generated-asset-file?version=1&id=guide&rev=r1&variant=walk'}]}]}},
       file: async args => {calls.push(['file',args]); return file},
     },
-    production: {generateAsset:async args => {calls.push(['generate',args]); return {assets:[]}}},
   }
   const threads = {get:async id=>{assert.equal(id,'example');return {service}},touch:async()=>{}}
   const server = http.createServer(createWebHandler(null,null,{},threads))
@@ -97,8 +96,9 @@ test('asset endpoints retain thread, revision, variant and selected style', asyn
     assert.equal(preview.headers.get('content-type'),'image/png')
     assert.deepEqual(calls.find(c=>c[0]==='file')[1],{...context,id:'guide',revision:'r1',variant:'walk'})
     const generated=await fetch(url+'-generate?threadId=example',{method:'POST',headers:{'content-type':'application/json','x-bohack-client':'1'},body:JSON.stringify({version:1,id:'guide',feedback:'换红帽子'})})
-    assert.equal(generated.status,200)
-    assert.deepEqual(calls.find(c=>c[0]==='generate')[1],{...context,id:'guide',feedback:'换红帽子'})
+    assert.equal(generated.status,400)
+    assert.match((await generated.json()).error, /已取消独立编码素材阶段/)
+    assert.equal(calls.some(c=>c[0]==='generate'), false)
     const wrong=await fetch(url+'?version=2&threadId=example')
     assert.equal(wrong.status,400)
   } finally {await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true})}

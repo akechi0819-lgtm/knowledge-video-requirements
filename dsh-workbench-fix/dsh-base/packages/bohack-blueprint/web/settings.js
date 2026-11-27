@@ -419,14 +419,21 @@ document.querySelector('#styleImport').addEventListener('click',async()=>{
   dialog.innerHTML = `<div class="ws-inner"><div class="ws-head"><h2 id="account-title">账号与使用模式</h2><button class="ws-close" type="button" aria-label="关闭账号"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></div><section class="ws-section"><p class="account-info"></p><form class="account-form"><label class="ws-field">邮箱<input name="email" type="email" autocomplete="email" required></label><label class="ws-field">密码<input name="password" type="password" autocomplete="current-password" required></label><label class="ws-field">邀请码（注册时填写）<input name="inviteCode" autocomplete="off"></label><div class="ws-actions"><button type="submit" name="action" value="register" class="ghost">注册</button><button type="submit" name="action" value="login" class="primary">登录</button></div></form><button class="account-logout ghost" type="button">退出登录</button></section><section class="ws-section"><h3>使用模式</h3><label class="ws-field">当前模式<select class="account-mode"><option value="member">会员模式（无需配置模型密钥）</option><option value="byok">高级模式（使用自己的密钥）</option></select></label><p class="ws-help">高级模式的密钥在工作台设置中配置。</p></section><p class="ws-status" role="status" aria-live="polite"></p></div>`
   const card = document.createElement('section')
   card.className = 'ws-section'
-  card.innerHTML = '<h3>月卡</h3><p class="ws-help">单月购买，手动购买，不自动续费。</p><button class="ghost account-purchase" type="button" disabled>购买月卡（暂无购买渠道）</button><p class="ws-help">目前暂无购买渠道，暂不能购买。</p>'
+  card.innerHTML = '<h3>6 元周卡</h3><p class="ws-help">有效期 7 天，手动购买，不自动续费。</p><button class="ghost account-purchase" type="button" disabled>购买 6 元周卡（7 天）</button><p class="account-purchase-help ws-help"></p><div class="account-payment" hidden><canvas class="account-qr" aria-label="支付宝支付二维码"></canvas><p><a class="account-pay-link" target="_blank" rel="noopener noreferrer">在浏览器打开支付宝支付</a></p><p class="account-payment-status" role="status"></p></div>'
   dialog.querySelector('.account-mode').closest('section').before(card)
   const form = dialog.querySelector('.account-form')
   const info = dialog.querySelector('.account-info')
   const mode = dialog.querySelector('.account-mode')
   const logout = dialog.querySelector('.account-logout')
   const status = dialog.querySelector('.ws-status')
-  let state = null
+  const purchase = card.querySelector('.account-purchase'), help = card.querySelector('.account-purchase-help')
+  const payment = card.querySelector('.account-payment'), qr = card.querySelector('.account-qr'), link = card.querySelector('.account-pay-link'), paymentStatus = card.querySelector('.account-payment-status')
+  let state = null, timer = null, pollGeneration = 0, busy = false
+  function stopPolling() { clearTimeout(timer); timer = null; pollGeneration++ }
+  function purchaseEnabled() {
+    purchase.textContent = state?.pendingOrderId ? '查询待处理订单' : '购买 6 元周卡（7 天）'
+    purchase.disabled = busy || !state?.account || (!state.pendingOrderId && (!state.account.purchaseAvailable || !state.account.canPurchase))
+  }
   async function request(body) {
     const response = await fetch('/bohack/api/membership', body ? {method:'POST', headers:{'content-type':'application/json','x-bohack-client':'1'}, body:JSON.stringify(body)} : {headers:{'x-bohack-client':'1'}})
     const result = await response.json()
@@ -443,16 +450,18 @@ document.querySelector('#styleImport').addEventListener('click',async()=>{
     form.hidden = !!result.account
     logout.hidden = !result.account
     mode.value = result.mode
+    help.textContent = !result.account ? '登录后可购买周卡。' : !result.account.purchaseAvailable ? '购买渠道暂未开放。' : !result.account.canPurchase ? '当前周卡仍有效。' : ''
+    purchaseEnabled()
     if (!result.account) info.textContent = '尚未登录。注册或登录后可使用会员额度。'
     else {
-      const monthly = result.account.monthly
-      const monthlyStatus = {active:'有效', expired:'已过期', stopped:'已停用', none:'未开通'}[result.account.monthlyStatus] || '状态未知'
-      const balance = ['expired', 'stopped'].includes(result.account.monthlyStatus) ? 0 : result.account.monthlyBalance
-      info.textContent = `${result.account.email} · 赠送剩余 ${result.account.gifts} 次 · 月卡${monthlyStatus}` + (balance == null ? '' : ` · 有效余额 ${balance} tokens`) + (monthly ? ` · 到期时间 ${new Date(monthly.expiresAt).toLocaleString('zh-CN', {year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}` : '')
+      const account = result.account
+      const passStatus = {active:'有效', exhausted:'额度已用尽，可重新购买', expired:'已过期', stopped:'已停用', none:'未开通'}[account.passStatus] || '状态未知'
+      info.textContent = `${account.email} · 赠送剩余 ${account.gifts} 次 · 6 元周卡${passStatus}` + (account.remainingPercent == null ? '' : ` · 剩余额度 ${account.remainingPercent}%`) + (account.expiresAt ? ` · 到期时间 ${new Date(account.expiresAt).toLocaleString('zh-CN', {year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}` : '')
     }
   }
   async function update(body) {
     status.textContent = '正在处理…'
+    busy = true
     dialog.querySelectorAll('button, input, select').forEach(el => el.disabled = true)
     try {
       render(await request(body))
@@ -464,13 +473,15 @@ document.querySelector('#styleImport').addEventListener('click',async()=>{
       }
     }
     catch (error) { status.textContent = `操作失败：${error.message}`; if (state) mode.value = state.mode }
-    finally { dialog.querySelectorAll('button, input, select').forEach(el => el.disabled = el.classList.contains('account-purchase')) }
+    finally { busy = false; dialog.querySelectorAll('button, input, select').forEach(el => el.disabled = false); purchaseEnabled() }
   }
   button.onclick = () => {
     if (!dialog.isConnected) document.body.append(dialog)
+    payment.hidden = true
     dialog.showModal()
-    update()
+    update().then(() => { if (dialog.open && state?.pendingOrderId) pollOrder() })
   }
+  dialog.addEventListener('close', stopPolling)
   dialog.querySelector('.ws-close').onclick = () => dialog.close()
   form.onsubmit = async event => {
     event.preventDefault()
@@ -478,7 +489,67 @@ document.querySelector('#styleImport').addEventListener('click',async()=>{
     form.elements.password.value = ''
     form.elements.inviteCode.value = ''
   }
-  logout.onclick = () => update({action:'logout'})
+  logout.onclick = () => { stopPolling(); payment.hidden = true; update({action:'logout'}) }
+  function showOrder(order) {
+    payment.hidden = false
+    if (order.status === 'paid') {
+      qr.hidden = true; link.hidden = true; link.removeAttribute('href'); paymentStatus.textContent = '已付款，待生效。'; return
+    }
+    const safeUrl = value => {
+      try { const url = new URL(value); return !url.username && !url.password && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) ? url.href : null } catch { return null }
+    }
+    const payUrl = safeUrl(order.payUrl)
+    link.hidden = !payUrl
+    if (payUrl) link.href = payUrl
+    else link.removeAttribute('href')
+    qr.hidden = !order.qrCode
+    if (order.qrCode) {
+      qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8']
+      const code = qrcode(0, 'M'); code.addData(order.qrCode); code.make()
+      const n = code.getModuleCount(), scale = 4, margin = 4
+      qr.width = qr.height = (n + margin * 2) * scale
+      const ctx = qr.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, qr.width, qr.height); ctx.fillStyle = '#000'
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (code.isDark(y, x)) ctx.fillRect((x + margin) * scale, (y + margin) * scale, scale, scale)
+    }
+    paymentStatus.textContent = '请使用支付宝完成支付，支付结果会自动刷新。'
+  }
+  async function pollOrder() {
+    stopPolling()
+    const generation = pollGeneration, deadline = Date.now() + 15 * 60 * 1000
+    async function check() {
+      if (Date.now() >= deadline) { paymentStatus.textContent = '自动查询已暂停，可重新打开账号或点击查询待处理订单。'; return }
+      try {
+        const result = await request({action:'order-check'})
+        if (generation !== pollGeneration) return
+        render(result)
+        const order = result.order
+        if (order.status === 'fulfilled') {
+          payment.hidden = true; status.textContent = '购买成功，可以开始或继续制作。'; await refresh(); return
+        }
+        if (['expired','failed'].includes(order.status) || (order.status === 'pending' && order.expiresAt && Date.parse(order.expiresAt) <= Date.now())) {
+          payment.hidden = true; status.textContent = '订单已结束，请重新购买。'; return
+        }
+        showOrder(order)
+        timer = setTimeout(check, Math.min(2500, Math.max(0, deadline - Date.now())))
+      } catch (error) {
+        if (generation !== pollGeneration) return
+        paymentStatus.textContent = '查询订单失败：' + error.message + '。请重新打开账号重试。'
+      }
+    }
+    await check()
+  }
+  purchase.onclick = async () => {
+    if (state?.pendingOrderId) { await pollOrder(); return }
+    stopPolling(); const generation = pollGeneration; busy = true; purchaseEnabled(); status.textContent = '正在创建订单…'
+    try {
+      const result = await request({action:'order-create'})
+      if (generation !== pollGeneration) return
+      render(result); status.textContent = ''
+      if (result.order.status === 'fulfilled') { payment.hidden = true; status.textContent = '购买成功，可以开始或继续制作。'; await refresh() }
+      else { showOrder(result.order); await pollOrder() }
+    } catch (error) { status.textContent = '操作失败：' + error.message }
+    finally { busy = false; purchaseEnabled() }
+  }
   mode.onchange = () => update({action:'mode', mode:mode.value})
   request().then(result => {
     render(result)

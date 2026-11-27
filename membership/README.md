@@ -7,29 +7,43 @@ Node.js 24.15 或更新版本。`npm ci` 后设置以下环境变量并运行 `n
 - `MEMBER_CHAT_BASE_URL`、`MEMBER_CHAT_API_KEY`、`MEMBER_CHAT_MODEL`：OpenAI 兼容文本供应商的 API 根地址（例如以 `/v1` 结尾）、密钥和固定模型。
 - `MEMBER_TTS_BASE_URL`、`MEMBER_TTS_API_KEY`、`MEMBER_TTS_MODEL`、`MEMBER_TTS_VOICE`：标准 `/audio/speech` 供应商的 API 根地址、密钥、固定模型和音色。`MEMBER_TTS_PROTOCOL` 可选 `speech`（默认）或 `mimo`；后者由服务端转换为 MiMo 聊天配音并返回 MP3。
 
-注册使用受邀入口 `/api/auth/sign-up/email`，请求头 `X-Invite-Code` 携带一次性邀请码。登录使用 Better Auth 的 `/api/auth/sign-in/email`；客户端 POST 应带服务地址对应的 `Origin`。从 `set-auth-token` 取得令牌并在后续请求带 `Authorization: Bearer ...`。上线前须使用 HTTPS、持久备份数据库及妥善保存密钥；当前交付用于测试联调。
+注册使用受邀入口 `/api/auth/sign-up/email`，请求头 `X-Invite-Code` 携带一次性邀请码。登录使用 Better Auth 的 `/api/auth/sign-in/email`；客户端 POST 应带服务地址对应的 `Origin`。从 `set-auth-token` 取得令牌并在后续请求带 `Authorization: Bearer ...`。公网服务使用 HTTPS、持久 SQLite 数据库和服务端私有凭据。
 
-`GET /api/member` 返回赠片、有效月卡余额、到期时间、月卡状态和活动制作 ID。已过期或停用的月卡不计入可用余额。`POST /api/productions/start`、`/finish` 和 `/abandon` 接受 `{ "productionId": "客户端持久化的唯一标识" }`。重复开始相同活动制作会继续同一条片，即使此时月卡过期、停用或余额归零；停卡只影响新开片资格。完成和主动放弃都释放活动名额，重复请求返回原有终态。放弃后已用赠片和额度不退回，已结束的 ID 不能再开片。开片先消耗赠片，否则检查有效月卡和正余额，并将制作固定到该次月卡。旧制作迟到的用量仍记入旧卡，不扣新卡；迁移前已开片的制作无法确认原周期，后续用量只记账、不扣新月卡。余额最低为 0，赠片制作仍记录用量。配音单独记录输入字符数，不折算 token。上游不返回用量时账本记为未知，不应视为零成本。
+`GET /api/member` 返回赠片、`weekly_6` 周卡状态、剩余额度百分比、到期时间、复购资格及活动制作 ID。状态包括 `none`、`active`、`exhausted`、`expired`、`stopped`。底价、账本金额和内部无限制片开关只在本机运营侧可见。
 
-代理路径为 `/api/proxy/<productionId>/chat/completions`、`/responses`、`/audio/speech`，也可以在路径省略制作 ID 并用 `X-Production-Id` 指定。客户端模型和音色会被服务端配置覆盖，不能传供应商地址或密钥。兼容文本流的 usage 事件；供应商必须提供实际 usage 才能计量。配音面向客户端使用标准二进制响应，MiMo 协议可由服务端转换。只允许已登录账号的活动制作调用。代理会把本次请求内容发送给配置的供应商。
+`POST /api/productions/start`、`/finish` 和 `/abandon` 接受 `{ "productionId": "客户端持久化的唯一标识" }`。同一账号同时只有一条活动制作。普通开片先使用赠片，再检查当前周卡。活动制作绑定开片时的周卡，迟到的用量仍归原卡。迁移前开片且无法确认所属周期的制作只记录用量。复购后点击「继续制作」时，桌面端通过 `/api/productions/start` 提交新的 `productionId` 和 `replacesProductionId`，原子换发授权并复用原任务的断点。重复提交新 ID 可恢复丢失的回执。完成或放弃后，原 ID 保留终态。
 
-## 月卡与本地运营
+代理路径为 `/api/proxy/<productionId>/chat/completions`、`/responses`、`/audio/speech`，也可以在路径省略制作 ID 并用 `X-Production-Id` 指定。服务端覆盖模型和音色。周卡代理在转发前检查绑定卡，已用尽、过期或停用时返回 `402 quota_circuit_broken`。同卡请求依次入账，本次请求跨过上限后，下一笔请求即被拦截。赠片和本地无限制片也记录文本成本。
 
-产品只保留单档、用户主动购买的月卡，不自动续费。收款渠道尚未开通：购买入口提示暂不可购买，`GET /api/member` 返回 `purchaseAvailable: false`，`POST /api/orders` 返回 `503 payment_unconfigured`，不创建订单。真实收款还需要确认渠道、商户凭据、正式价格和 Token 额度，并接入可信支付确认。提前购卡规则尚未定；本地流程暂不允许有效卡叠加或提前更换，即使余额已经用完。测试履约使用 30 天，仅用于验证周期归属，不承诺正式月卡的到期计算方式。
+文本代理识别 Chat Completions、Responses 和对应的 SSE 用量。上游接受请求后缺少完整用量，包括中途断流，按请求及已收到的响应字节估算并标记 `estimated`。标准及 MiMo 配音成功后仅记录输入字符数，成本字段为零，周卡余额不变。MiMo 音频校验失败返回 502，账本不新增记录。供应商明确返回失败状态的请求保留原响应。账本每笔按加权成本向上取整，10,000 微元等于 ¥1.00。
 
-先启动会员服务初始化数据库，再在有数据库文件访问权的机器运行以下命令；没有面向登录用户的管理接口。`./membership.sqlite` 换为实际数据库文件，测试命令只用于隔离的联调数据库：
+- `MEMBER_PRICE_INPUT_USD`、`MEMBER_PRICE_CACHE_READ_USD`、`MEMBER_PRICE_CACHE_WRITE_USD`、`MEMBER_PRICE_OUTPUT_USD` 为每百万 token 美元价，默认分别为 1.00、0.05、1.25、5.00。
+- `MEMBER_RELAY_RATE`、`MEMBER_USD_CNY` 默认分别为 0.04、7.25。中转的输入总量不含缓存时，设置 `MEMBER_INPUT_INCLUDES_CACHED=false`。
+- `MEMBER_LONG_CONTEXT_ENABLED` 默认开启，输入超过 `MEMBER_LONG_CONTEXT_THRESHOLD`（默认 272,000）时，输入与缓存按 2 倍、输出按 1.5 倍计价。
+- 服务端从 `MEMBER_WEEKLY_PRICE_CENTS`（默认 600）和 `MEMBER_CIRCUIT_RATIO`（默认 0.85）计算签发时锁定的微元预算。
 
-- `node grant.mjs ./membership.sqlite inspect test@example.com`：查账号、赠片、月卡历史、测试订单、用量及归属周期。
-- `node grant.mjs ./membership.sqlite open test@example.com 10000 2026-12-20T00:00:00Z`：手动开卡，指定额度和未来的到期日，不记录收款。不会覆盖有效卡。
-- `node grant.mjs ./membership.sqlite stop test@example.com`：停用当前月卡，不删除余额与用量历史，不撤销已经开片的授权。
-- `node grant.mjs ./membership.sqlite test-order test@example.com 10000`：创建待履约测试订单；同账号同额度重复调用返回未履约的原单。
-- `node grant.mjs ./membership.sqlite test-fulfill ORDER_ID`：本地模拟履约；重复调用同一订单返回原发放记录，不续期或补发。测试订单不是已支付凭证。
+## 周卡支付与运营
 
-运行 `npm test` 验证本地 HTTP 注册登录、竞争开片、续用、用尽后的拦截、购买未开通、运营 CLI、测试订单幂等履约、旧制作跨月卡迟到用量、旧库迁移，以及模拟上游的文本、流式用量及标准与 MiMo 配音。测试供应商是本地模拟服务，不能证明真实供应商兼容性或实际成本；数据库账本目前是单机 SQLite，不代表多机部署已验证。真实支付与正式上线不在本地验收范围。
+商品为 6 元周卡，签发后有效 7 天，默认熔断预算 ¥5.10。金额与权益在服务端下单时写入订单。迁移旧库时保留已耗尽的卡状态。当前卡仍有效且额度未用尽时禁止叠加，额度用尽、到期或停用后可复购。
 
-桌面成片页可继续原制作、补交完成回执或放弃本片授权。画面模型暂时不可用时，成片页显示中文原因和续作提示；可点击「继续制作」，也可在左侧对话说「继续制作」或「重试」。续作沿用原账号、授权、任务目录，复用完整场景和匹配的配音缓存。中途写出的片段会重新渲染。已质检成片在等待回执期间可播放和下载。回执确认后再要求 AI 返工会重新检查开片资格。
+- `EPAY_API_URL`、`EPAY_PID`、`EPAY_KEY` 从服务端注入。缺任一项时 `purchaseAvailable` 为 `false`，创建订单返回 `503 payment_unconfigured`。生产凭据由运营配置到权限为 0600 的 `/etc/jiangjie-membership-beta/service.env`。
+- `EPAY_PAY_TYPE` 默认 `alipay`。 `EPAY_MODE=mapi` 默认向 `mapi.php` POST 表单，使用返回的 `qrcode` 或 `payurl`。讲界公网使用 `EPAY_MODE=submit`，浏览器打开签名的 `submit.php` 欧云收银台，由欧云显示订单金额及支付宝扫码收款码。反向代理应覆盖 `X-Real-IP` 为连接方 IP，供 `mapi.php` 的 `clientip` 使用。
+- `EPAY_NOTIFY_URL`、`EPAY_RETURN_URL` 默认分别为公网站点加服务前缀的 `/api/payments/epay/notify`、`/payment/return`。回跳页只显示静态提示。异步通知支持 GET 和 POST 表单，校验签名、商户、成功状态、订单应付金额及交易号唯一性后履约。
+- `POST /api/orders` 接受 `{ "plan": "weekly_6" }`，复用同账号 15 分钟内的待付订单。 `GET /api/orders/:id` 只允许订单所属账号读取，每单主动查单间隔至少 5 秒。已验证的晚到付款若遇上有效周卡，先记为已付款待生效，现卡结束后由有效通知或可信主动查询发卡。
+- 桌面端本地渲染支付二维码并轮询订单，每 2.5 秒刷新状态，付款后更新会员权益。Bearer 凭证和待处理订单 ID 保存于权限为 0600 的会员本地文件，退出登录清除。
+- 文本计费支持 `prompt_cache_hit_tokens` 缓存命中字段。直连供应商时按其实际用量格式和单价配置。
 
-运行 `node --test dsh-workbench-fix/dsh-base/packages/bohack-blueprint/test/membership-resume.test.js` 验证本机工作台 API、状态落盘后重开、断线、生成失败、回执丢失、放弃重试和离线成片下载。测试使用模拟平台及合成产物。
+先启动会员服务初始化数据库，再在服务本机用实际数据库路径运行运营命令：
+
+- `node grant.mjs ./membership.sqlite inspect EMAIL` 查看赠片、订单、周卡历史、消耗、熔断状态和用量明细。
+- `node grant.mjs ./membership.sqlite unlimited EMAIL` 开通内部无限制片，`metered EMAIL` 恢复计量。仅本地回环 HTTP、无公网路径前缀的测试服务可显式设置 `MEMBER_LOCAL_TEST_UNLIMITED=true` 使用该权益。
+- `node grant.mjs ./membership.sqlite stop EMAIL` 停用当前有效周卡，保留账本。
+
+运行 `npm test` 使用本地模拟网关验证下单、回调拒收、幂等、主动补单、迁移、熔断复购及续作。桌面相关验证从仓库根目录运行：
+
+```sh
+node --test dsh-workbench-fix/dsh-base/packages/bohack-blueprint/test/{membership-resume,membership-purchase,membership-purchase-browser,production-error,production}.test.js
+```
 
 安装的桌面 App 可用 `node membership/test-desktop.mjs "/path/to/讲界.app"` 运行全链路测试。它启动真正的桌面 App、DSH、会员服务和本地模拟供应商，通过工作台 API 测试需求、蓝图、素材、配音、制作 Agent、技术质检和成片下载。供应商返回的测试音频为合成音。
 
@@ -54,6 +68,8 @@ node invite.mjs /path/to/membership.sqlite 3
 ### 讲界公网内测
 
 独立的 systemd 服务 `jiangjie-membership-beta` 监听服务器的 `127.0.0.1:18787`。讲界域名的 Nginx 把 `/desktop-membership/` 转给会员服务。程序位于 `/opt/jiangjie-membership-beta`，SQLite 位于 `/var/lib/jiangjie-membership-beta/membership.sqlite`。上游和会话签名配置由 systemd 从权限为 0600 的 `/etc/jiangjie-membership-beta/service.env` 读入。
+
+旧网页工作台下线后，官网和会员服务仍分别使用 `/opt/jiangjie-preview` 下的站点、TLS 证书和 Node 运行时。
 
 在获授权的服务器终端生成一枚邀请码，并把标准输出保存在私有文件后单独发放。
 

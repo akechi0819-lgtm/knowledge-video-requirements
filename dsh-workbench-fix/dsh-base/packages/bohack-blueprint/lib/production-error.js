@@ -1,8 +1,13 @@
 export const receiptMessage = '成片已保存，平台授权回执待处理，请稍后点「补交完成回执」。'
 
+export const assetStageRetired = '当前版本已取消独立编码素材阶段，请直接提出成片返工意见，或在资料库替换上传素材。'
+
 export function productionErrorMessage(error, phase) {
   if (!error) return '制作遇到未识别的问题，请稍后重试。若反复出现，请联系支持。'
   const raw = String(error.message || error)
+  if (error.code === 'quota_circuit_broken' || /quota_circuit_broken|本周卡额度已用尽|HTTP\s+402\b|\b402\s*[:：]/i.test(raw)) return '本周卡额度已用尽，购买新周卡后点击继续制作。'
+  if (/^画面模型连接中断，已自动重试 \d+ 次。可点击「继续原制作」。原因：/.test(raw)) return raw
+  if (raw === assetStageRetired) return raw
   if (raw.startsWith('成片已保存，平台授权回执待处理')) return receiptMessage
   if (['成片文件不存在。', '成片文件为空或无效。', '成片不是有效视频', '成片没有可解码的视频帧。', '成片画面全黑。'].includes(raw)) return raw
   if (raw.startsWith('成片无法解码或检查：')) return '成片无法解码，请继续制作以重新渲染。'
@@ -10,8 +15,8 @@ export function productionErrorMessage(error, phase) {
     : ({ 生成配音:'配音服务', 生成素材:'素材服务', 预览画面:'画面预览', 配音与渲染:'配音与渲染', 自动质检:'自动质检' })[phase] || '制作服务'
   const status = error.status || /^(?:HTTP\s+)?([45]\d\d)\s*[:：\s]/m.exec(raw)?.[1]
   if (/CERTIFICATE_VERIFY_FAILED|SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED/i.test(raw)) return `${step}的安全连接校验失败，请检查服务地址或联系支持。`
-  if (/fetch failed|failed to fetch|networkerror|ECONN(?:RESET|REFUSED)|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH/i.test(raw)) return `${step}连接失败，请检查网络，或稍后重试。`
   if (/\b(?:ETIMEDOUT|UND_ERR_\w+_TIMEOUT|TimeoutError)\b|(?:request|connection) timed?\s*out/i.test(raw) || [408, 504].includes(Number(status))) return `${step}响应超时，请稍后重试。`
+  if (/fetch failed|failed to fetch|networkerror|UND_ERR_SOCKET|other side closed|ECONN(?:RESET|REFUSED)|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH/i.test(raw)) return `${step}连接失败，请检查网络，或稍后重试。`
   if (/\b(?:ENOSPC|EDQUOT)\b/.test(raw)) return '磁盘空间不足，请释放空间后再试。'
   if (/\b(?:EACCES|EPERM|EROFS)\b/.test(raw)) return '无法写入制作文件，请检查工作区的读写权限后再试。'
   if (/\bENOENT\b/.test(raw)) return '制作所需的文件或工具缺失，请检查项目素材；若问题反复出现，请联系支持。'

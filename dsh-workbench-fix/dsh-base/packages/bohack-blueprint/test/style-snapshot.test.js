@@ -172,7 +172,9 @@ test('selected visual or repository skill reaches production and scopes asset ca
       // Older versions stored the choice only in their versioned skill snapshot.
       await writeFile(path.join(workspace,'outbox/蓝图_v2.视觉选择.json'), JSON.stringify({status:'pending',style:null}))
       await writeFile(path.join(workspace,'outbox/蓝图_v2.技能.json'), JSON.stringify({id:chosen.id,name:chosen.name,content:chosen.content}))
-      await assert.rejects(service.production.start(), /多人工作台尚未配置单任务进程沙箱/)
+      const started = await service.production.start()
+      assert.equal(started.mode, 'agent')
+      while (service.production.isActive()) await new Promise(resolve => setTimeout(resolve, 10))
       assert.equal((await exportProduction(workspace)).style.id,id)
       assert.equal((await exportProduction(workspace)).style.description,chosen.content)
       assert.deepEqual((await exportProduction(workspace)).style.source,chosen.source)

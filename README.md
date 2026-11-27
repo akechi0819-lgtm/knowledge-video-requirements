@@ -2,7 +2,7 @@
 
 ## Mac 桌面工作台（邀请码内测）
 
-[下载 macOS 内测 DMG](https://github.com/akechi0819-lgtm/knowledge-video-requirements/releases/tag/v0.2.0-beta.2)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。真实支付尚未开放。
+[官网下载 macOS 内测 DMG](https://jiangjie.gingers.cloud/#downloads)。启动时会播放随包提供的介绍轮播。使用邮箱、密码和运营方私发的一次性邀请码注册。当前平台文本模型为 GPT-6.1 Terra，中文配音使用 MiMo「茉莉」。Agent 调度、素材保存、渲染和导出在用户 Mac 上完成；账号、赠片授权和模型转发由公网会员服务管理。新版桌面端已支持通过欧云收银台扫码购买 6 元周卡。[Windows x64 内测安装包](https://jiangjie.gingers.cloud/#downloads)也在官网下载。
 
 在 macOS 14 或更高版本的 Apple Silicon Mac 上挂载 DMG，把「讲界」拖到「应用程序」后打开。App 内置 DSH、Node.js、Python、Chromium、FFmpeg 和 ffprobe，中文渲染沿用 macOS 自带字体。关闭窗口或退出时，本次启动的 DSH 会一并停止。本次内测包使用临时签名，正式分发需要 Developer ID 和 Apple 公证。
 
@@ -10,28 +10,42 @@
 
 ### 会员账号与自配 API
 
-桌面版默认使用会员模式。新账号使用一次性邀请码注册后获赠 3 条。创建或打开项目时不扣额度，第一次调用平台 AI 时开片。同一条片的后续对话、素材、配音和制作共用授权，成片成功后结算。月卡按文本供应商返回的 token 记账，配音单独记录。月卡额度用尽后，已开片可继续制作。普通用户无需供应商密钥。切到高级模式后，通用模型和配音请求直接发往自配地址，密钥保存在 macOS 钥匙串。
+桌面版默认使用会员模式。新账号使用一次性邀请码注册后获赠 3 条。创建或打开项目时不扣额度，第一次调用平台 AI 时开片。同一条片的后续对话、素材、配音和制作共用授权，成片成功后结算。周卡有效期 7 天。会员服务按文本用量计费，配音单独记录。周卡额度用尽后会暂停平台制作，买新周卡后可继续原任务。普通用户无需供应商密钥。切到高级模式后，通用模型和配音请求直接发往自配地址，密钥保存在 macOS 钥匙串。
 
 画面 Agent 等待模型 2 分钟没有新的工具进展时会提示仍在等待，5 分钟时暂停；正在执行的制作工具仍使用 10 分钟上限。明确的上游报错无需等到超时，成片工作台会用中文解释并提示下一步。会员模式可在成片页点「继续制作」，也可在创作对话中说「继续制作」，继续原任务并尽量复用已保存的画面和配音。
 
-公网内测的会员地址为 `https://jiangjie.gingers.cloud/desktop-membership`，邮箱用于登录，内测暂不发送验证邮件。部署、发码和测试月卡见[会员服务说明](membership/README.md)。联调时可用 `JIANGJIE_MEMBER_URL` 指定测试地址，分发包在构建时内置公网地址。桌面 Agent 默认使用 Chat Completions，也可通过 `JIANGJIE_MEMBER_AGENT_API=openai-responses` 走 Responses。场景和视觉分析仍要求平台文本供应商支持 Chat Completions。
+公网内测的会员地址为 `https://jiangjie.gingers.cloud/desktop-membership`，邮箱用于登录，内测暂不发送验证邮件。部署、发码和周卡支付见[会员服务说明](membership/README.md)。联调时可用 `JIANGJIE_MEMBER_URL` 指定测试地址，分发包在构建时内置公网地址。桌面 Agent 默认使用 Chat Completions，也可通过 `JIANGJIE_MEMBER_AGENT_API=openai-responses` 走 Responses。场景和视觉分析仍要求平台文本供应商支持 Chat Completions。
 
 ### 构建和分发
 
 构建机需要 Apple Silicon、Xcode Command Line Tools、已检出的项目 Skill 子模块，以及下载依赖用的网络。依赖缓存写入 `.runtime/`。App 在系统临时目录组装和签名，避免桌面同步目录添加扩展属性。首次构建会编译 FFmpeg 和音视频编码依赖。DMG 内带对应源码、构建脚本和许可证。
 
 ```sh
-app="$(./scripts/build-desktop.sh)"
+app="$(JIANGJIE_MEMBER_URL=https://jiangjie.gingers.cloud/desktop-membership ./scripts/build-desktop.sh)"
 ./scripts/package-desktop.sh "$app" "$PWD/.runtime/讲界-arm64-本地验收.dmg"
 ```
 
 正式包构建和打包时使用同一个 `JIANGJIE_SIGN_IDENTITY`，值为钥匙串内有效的 Developer ID Application 签名身份。打包时同时设置 `JIANGJIE_NOTARY_PROFILE`，对应 `notarytool store-credentials` 已保存的钥匙串配置。脚本等待 Apple 接受后为 DMG 附票，并执行附票和 Gatekeeper 检查。正式验收还需要在一台干净的 Apple Silicon Mac 上从 DMG 安装并导出已有项目。
 
-## 多人网页预览
+### Windows x64 构建与发布
 
-官网入口为 https://jiangjie.gingers.cloud/ ，点击“开始创作”进入 /bohack/ 在线工作台。官网使用 PR #9 的 `frontend/public/site/` 静态页面，由讲界专用 Nginx 配置提供首页、图片和演示视频，制作请求继续交给现有网关。
+Windows 版采用原生 C++20 Win32 宿主与固定版 Microsoft Edge WebView2 运行时，内置完整 Node.js、Python、Chromium 与 FFmpeg 运行时，支持免管理员权限安装、Job Object 子进程回收、Windows DPAPI 全量加密凭据存储（含会员令牌与自配密钥）、三入口诊断包导出、以及组件级增量自动更新与启动失败自动回滚。用户数据与项目默认保存在 `%APPDATA%\Jiangjie`，程序版本树安装在 `%LOCALAPPDATA%\Programs\Jiangjie`。
 
-体验者打开网页即可使用，无需安装依赖、注册或订阅。制作在服务器运行，每个浏览器分配独立容器。通用文本、代码和看图由服务器配置的多模态模型统一处理，优先适配 GPT 6.1 Terra；配音默认使用小米 MiMo，独立填写小米 Key，也可选择其他兼容 OpenAI Speech 的服务。个人 API Key 仅保存在该实例内存中。模型费用由各自的服务商账户结算。
+本地在具备 MSVC（Visual Studio 2022/2026）、CMake、NSIS 与 PowerShell 7.2+ 的 Windows x64 构建机上执行：
+
+```powershell
+pwsh -File scripts/windows/bundle-runtime.ps1
+pwsh -File scripts/build-win-desktop.ps1 -AppVersion 0.2.1 -ReleaseSequence 2
+pwsh -File scripts/windows/build-release.ps1 -Version 0.2.1 -ReleaseSequence 2 -Channel beta
+```
+
+CI 发布门禁位于 `.github/workflows/release-windows.yml`，按「`build-windows`（运行时组装、C++ 编译与单测、双轨在线/离线安装包及组件差分包）→ `verify-clean-windows`（纯净机 PATH 清洗后安装、桌面启动、`/bohack/api/health` 与 `/bohack/api/desktop/busy` 验收、卸载回归）→ `publish-release`（上传 GitHub Release 与清单）」三阶段执行；官网 `#downloads` 由 `frontend/public/site/downloads.js` 动态读取 `/downloads/release-manifest.json`，服务器上线可使用 `scripts/deploy-win-release-server.sh`。
+
+## 旧网页预览的自托管说明
+
+[讲界官网](https://jiangjie.gingers.cloud/) 提供产品介绍、成片演示和桌面版下载。旧 `/bohack/` 链接跳转到下载区。下面是仓库保留的自托管预览实现说明。
+
+在自行部署的预览中，体验者打开网页即可使用，无需安装依赖、注册或订阅。制作在服务器运行，每个浏览器分配独立容器。通用文本、代码和看图由服务器配置的多模态模型统一处理，优先适配 GPT 6.1 Terra；配音默认使用小米 MiMo，独立填写小米 Key，也可选择其他兼容 OpenAI Speech 的服务。个人 API Key 仅保存在该实例内存中。模型费用由各自的服务商账户结算。
 
 设置页主要配置通用文本/代码、配音两类模型；同一服务商且权限通用时可共用一把 Key。音色属于配音服务：MiMo 预设使用“茉莉”，其他服务填写各自支持的音色 ID，切换服务不会沿用小米音色。独立工具路由折叠在高级设置中；生图接口暂未接入制作，无需配置。
 
@@ -39,9 +53,11 @@ app="$(./scripts/build-desktop.sh)"
 
 服务端入口为 `scripts/cloud-gateway.mjs`，每个实例运行 `scripts/cloud-worker.mjs`。运行镜像由 `preview.Dockerfile` 和 `preview-worker.Dockerfile` 构建。网关只暴露工作台路由，容器内 DSH 管理入口通过内部端口访问。
 
-视频制作接收定稿的内容蓝图和选定风格。可执行 Skill 和七个快捷预设都由 DSH 制作 Agent 加载原版正文、引用资料和脚本，自动处理编码素材与成片。已安装的独立 Skill 无需讲界专用清单即可在工作台选择。简洁知识图解和杂志式图文继续使用工作台内置流程。每次制作在任务目录记录 `timings.jsonl`（阶段和工具用时）与 `commands.jsonl`（命令、工作目录、退出码、耗时和错误摘要）。审计时可用退出码核对上游原生脚本的执行结果。
+视频制作接收定稿蓝图与选定风格。内置风格、快捷预设及独立安装的 Skill 共用讲界宿主。制作 Agent 读取选中风格的正文与资料，按蓝图段落提交局部 HTML。宿主统一负责配音、真实时长、段落顺序、字幕、可选顶栏与片尾、逐帧渲染、BGM 混音和交片验收。模型画面裁切在独立主舞台，几何检查覆盖宿主槽位和登记的关键文本。配置的配音接口失败时，宿主尝试平台备用音色，并在任务进度和运行记录中标明。
 
-原版 Skill 任务使用 DSH 原生文件工具、本地 Bash 和后台作业。文件工具检查任务与资料路径；本地 Bash 沿用宿主进程权限。受管 HOME 位于开发态 `.runtime/skill-runtime` 或桌面数据目录下的 `skill-runtime`，会按目录名和 Skill 声明的名称建立链接，并复用浏览器缓存。需要额外 Python 包时，可在受管 HOME 建立 `venv` 并在其中安装 Skill 声明的依赖。原版任务默认总预算 60 分钟、空闲预算 12 分钟，可分别用 `BOHACK_VIDEO_BUDGET_MS` 和 `BOHACK_VIDEO_IDLE_MS` 调整。暂停后从当前任务文件继续制作。
+任务目录的 `timings.json` 记录段落时间轴、旁白起止及配音后端提供的逐字边界。宿主在各段 25% 和 75% 的画面中读取可见镜头标识，生成 `film/mapping.json`，并写出 `film/verify-report.json` 与 `film/stills/index.html`。映射缺失、段落错位、视频解码失败或出现全黑帧时，成片停留在验收目录。运行用时和命令错误摘要分别见 `timings.jsonl` 和 `commands.jsonl`。
+
+定稿后直接进入配音与局部 HTML 画面制作。资料库中已确认的成片图片随片放入 `现成素材/`，显式关联蓝图段落的图片同时绑定到相应段落。制作 Agent 默认总预算 60 分钟、空闲预算 12 分钟，可分别用 `BOHACK_VIDEO_BUDGET_MS` 和 `BOHACK_VIDEO_IDLE_MS` 调整。模型流瞬断时，原会话默认自动重试两次，次数可用 `BOHACK_VIDEO_TRANSIENT_RETRIES` 调整。自动重试和手动续跑均沿用当前任务已保存的局部场景与配音缓存。
 
 首次安装风格 Skill 时，在仓库根目录运行 `git submodule update --init`。
 

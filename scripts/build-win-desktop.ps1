@@ -130,7 +130,17 @@ try {
     Invoke-Checked $stagedNode @('--input-type=module', '-e', $importCheck,
         (Join-Path $stage "$base/packages/bohack-blueprint/index.js"),
         (Join-Path $stage "$base/packages/bohack-blueprint/lib/windows-credentials.js"),
-        (Join-Path $stage "$base/packages/bohack-blueprint/lib/skill-process.js"))
+        (Join-Path $stage "$base/packages/bohack-blueprint/lib/skill-process.js"),
+        (Join-Path $stage "$base/packages/bohack-blueprint/lib/video-job.js"),
+        (Join-Path $stage "$base/packages/bohack-blueprint/lib/managed-skill-guidance.js"),
+        (Join-Path $stage 'video-kit/WORK/modules/video/captions.mjs'),
+        (Join-Path $stage 'video-kit/WORK/modules/video/managed-stage.mjs'))
+    foreach ($requiredWebAsset in @('index.html', 'settings.js', 'qrcode.js', 'film.js', 'preview.js', 'studio.css')) {
+        $assetPath = Join-Path $stage "$base/packages/bohack-blueprint/web/$requiredWebAsset"
+        if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
+            throw "Missing required staged web asset: $requiredWebAsset"
+        }
+    }
     foreach ($profile in @('workbench', 'bohack')) {
         $relative = "$base/.dsh-home/profiles/$profile"
         $null = New-Item -ItemType Directory -Force (Join-Path $stage $relative)

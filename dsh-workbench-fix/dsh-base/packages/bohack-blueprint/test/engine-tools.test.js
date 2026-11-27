@@ -118,6 +118,9 @@ test('生成与修订均只传递选中 Skill 的有界元数据', async () => {
   for (const action of ['draft', 'revise']) await engine.produce({ action, skill, requirementText: '讲火山', previousDoc: { raw: '旧蓝图' }, version: 2 })
   assert.equal(prompts.length, 2)
   for (const prompt of prompts) {
+    assert.match(prompt, /可见的具体对象及本段中对象发生什么变化/)
+    assert.match(prompt, /出处紧跟对应的关键事实，核查过程留在备注/)
+    assert.match(prompt, /必要的不确定性、准确性限定和用户要求的表述边界仍须保留/)
     assert.match(prompt, /旁白形态：无旁白/)
     assert.match(prompt, /互动形态：包含互动内容/)
     assert.match(prompt, /Skill 自有结构规划时由 Skill 决定成片结构/)
@@ -128,5 +131,19 @@ test('生成与修订均只传递选中 Skill 的有界元数据', async () => {
   assert.ok(Buffer.byteLength(selectedMediaSummary({skill:{name:quotes,description:quotes,planning:{description:quotes+'x',mode:quotes}}}), 'utf8') <= 2048)
   assert.doesNotMatch(selectedMediaSummary({style:{name:'普通',description:'清晰的视觉风格'}}), /旁白形态|互动形态/)
   assert.match(selectedMediaSummary({skill:{name:'有声',description:'有旁白的讲解短片'}}), /旁白形态：有旁白/)
+  engine.reset()
+})
+
+
+test('生成要求为有声形态写逐段口语旁白，并优先遵从创作者的无旁白要求', async () => {
+  const prompts = []
+  const mock = mockContext(['skill'], null, prompts)
+  const engine = createEngine(mock.ctx)
+  const skill = { name: '示例', description: '有旁白的知识短片' }
+  await engine.produce({ action: 'draft', skill, requirementText: '讲火山', version: 1 })
+  const prompt = prompts[0]
+  assert.match(prompt, /旁白形态：有旁白/)
+  assert.match(prompt, /明确要求无旁白时留空/)
+  assert.match(prompt, /每段写一段可直接朗读、适合目标观众的口语旁白，放入 narration/)
   engine.reset()
 })

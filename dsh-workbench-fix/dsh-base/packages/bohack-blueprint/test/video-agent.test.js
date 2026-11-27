@@ -17,7 +17,7 @@ function host(run, whenIdle = () => new Promise(() => {})) {
     create: async options => {
       state.options = options
       await options.setup(agentCtx)
-      return { agent: { followup: async message => { state.message = message; await run(registered, listeners); listeners.get('session/event')?.({id:options.sessionId},{type:'turn/end',data:{reason:{kind:'completed'}}}) }, whenIdle, cancel() {} } }
+      return { agent: { session: { id:options.sessionId }, followup: async message => { state.message = message; await run(registered, listeners); listeners.get('session/event')?.({id:options.sessionId},{type:'turn/end',data:{reason:{kind:'completed'}}}) }, whenIdle, cancel() {} } }
     },
   } }
   return { ctx, state }
@@ -63,6 +63,38 @@ test('mounts video preset, isolates tools and returns a successful submit', asyn
   assert.deepEqual(state.restriction, { deny: ['bash', 'skill'] })
   assert.equal(state.message.role, 'user')
   assert.equal(result.args.file, 'film.mp4')
+})
+
+test('concludes only a successful submit so the driver does not request another model step', async () => {
+  let attempts = 0, conclusions = 0, extraModelRequests = 0
+  const submit = {
+    name: 'submit', parameters: {},
+    execute: async () => ++attempts === 1 ? { ok: false, message: '画面需要修复' } : { ok: true },
+  }
+  const { ctx } = host(async registered => {
+    const tool = registered.get('submit')
+    let concluded = false
+    const exec = { concludeTurn() { concluded = true; conclusions++ } }
+    assert.equal((await tool.execute({}, exec)).ok, false)
+    assert.equal(concluded, false)
+    assert.equal((await tool.execute({}, exec)).ok, true)
+    if (!concluded) extraModelRequests++
+  })
+  const result = await runVideoAgent({ ctx, sessionId: 'submit-end', cwd: '/tmp', prompt: 'make', tools: [submit] })
+  assert.equal(result.ok, true)
+  assert.equal(attempts, 2)
+  assert.equal(conclusions, 1)
+  assert.equal(extraModelRequests, 0)
+})
+
+test('pins the production session title before sending the first prompt', async () => {
+  let title
+  const { ctx } = host(async registered => {
+    assert.deepEqual(title, [{ id:'production-title-fixture' }, '正在制作视频'])
+    await registered.get('submit').execute({})
+  })
+  ctx.sessionTitle = { rename(...args) { title = args } }
+  await runVideoAgent({ ctx, sessionId:'production-title-fixture', cwd:'/tmp', prompt:'make', tools })
 })
 
 test('passes an explicit reasoning effort to the host', async () => {
@@ -149,6 +181,105 @@ test('localizes a temporary upstream model failure without exposing the response
   })
 })
 
+function emitStreamError(listeners, error) {
+  listeners.get('session/event')({ id: 'retry-job' }, { type: 'turn/end', data: { reason: { kind: 'error', error } } })
+}
+
+for (const error of [
+  { code: 'UND_ERR_SOCKET', message: 'terminated: other side closed' },
+  { code: 'PI_AI_ERROR', message: 'pi-ai stream idle timeout after 300000ms' },
+]) {
+  test(`retries ${error.message} on the same video session after idle`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const timing = [], progress = []
+    let turns = 0, ready = false
+    const { ctx, state } = host(async (registered, listeners) => {
+      if (++turns === 1) emitStreamError(listeners, error)
+      else {
+        assert.equal(ready, true)
+        await registered.get('submit').execute({ file: 'finished.mp4' })
+      }
+    }, async () => { ready = true })
+    const result = runVideoAgent({
+      ctx, sessionId: 'retry-job', cwd: '/tmp/film', prompt: 'make', tools,
+      retryInstruction: async () => 'resume saved scenes',
+      onTiming: event => timing.push(event), onProgress: event => progress.push(event),
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    t.mock.timers.tick(1999)
+    assert.equal(turns, 1)
+    t.mock.timers.tick(1)
+    assert.equal((await result).args.file, 'finished.mp4')
+    assert.equal(turns, 2)
+    assert.equal(state.options.sessionId, 'retry-job')
+    assert.equal(state.message.content[0].text, 'resume saved scenes')
+    const retries = timing.filter(event => event.type === 'transient-retry')
+    assert.equal(retries.length, 1)
+    assert.equal(retries[0].attempt, 1)
+    assert.ok(error.message.endsWith(retries[0].error) || retries[0].error.includes(error.code))
+    assert.ok(progress.some(event => event.type === 'activity' && /自动重试续跑/.test(event.text)))
+  })
+}
+
+for (const error of [
+  { message: 'HTTP 401: terminated' },
+  { message: 'HTTP 402: fetch failed' },
+  { code: 'quota_circuit_broken', message: 'fetch failed' },
+  { code: 'TOOL_VALIDATION_FAILED', message: 'invalid tool argument: terminated' },
+]) {
+  test(`fails immediately without a retry for ${error.code || error.message}`, async () => {
+    const { ctx } = host(async (_registered, listeners) => emitStreamError(listeners, error), () => assert.fail('must not await idle to retry'))
+    await assert.rejects(runVideoAgent({
+      ctx, sessionId: 'retry-job', cwd: '/tmp', prompt: 'make', tools,
+      onTiming: event => assert.notEqual(event.type, 'transient-retry'),
+    }), { message: error.message })
+  })
+}
+
+test('stops after two transient retries and surfaces the disconnect summary', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let turns = 0
+  const retries = []
+  const { ctx } = host(async (_registered, listeners) => {
+    turns++
+    emitStreamError(listeners, { code: 'ECONNRESET', message: 'socket hang up' })
+  }, async () => {})
+  const result = runVideoAgent({
+    ctx, sessionId: 'retry-job', cwd: '/tmp', prompt: 'make', tools,
+    onTiming: event => { if (event.type === 'transient-retry') retries.push(event.attempt) },
+  })
+  const rejected = assert.rejects(result, /已自动重试 2 次.*继续原制作.*socket hang up.*ECONNRESET/)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(2000)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(5000)
+  await rejected
+  assert.equal(turns, 3)
+  assert.deepEqual(retries, [1, 2])
+})
+
+test('does not start a retry after the total production budget expires during backoff', async t => {
+  const prior = process.env.BOHACK_VIDEO_BUDGET_MS
+  process.env.BOHACK_VIDEO_BUDGET_MS = '1000'
+  t.after(() => {
+    if (prior === undefined) delete process.env.BOHACK_VIDEO_BUDGET_MS
+    else process.env.BOHACK_VIDEO_BUDGET_MS = prior
+  })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let turns = 0
+  const { ctx } = host(async (_registered, listeners) => {
+    turns++
+    emitStreamError(listeners, { message: 'fetch failed' })
+  }, async () => {})
+  const result = runVideoAgent({ ctx, sessionId: 'retry-job', cwd: '/tmp', prompt: 'make', tools })
+  const rejected = assert.rejects(result, /达到总时间预算/)
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(1000)
+  await rejected
+  t.mock.timers.tick(5000)
+  assert.equal(turns, 1)
+})
+
 test('keeps a session alive beyond ten minutes while tools make progress', async t => {
   let now = 0
   const timers = new Set()
@@ -209,6 +340,45 @@ test('warns after two minutes and clears the warning when tool progress resumes'
   assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
   t.mock.timers.tick(600000)
   assert.deepEqual(events.at(-1), { type: 'wait', text: '' })
+})
+
+test('reports a quiet model at 25 seconds and resumes activity on streaming or tool execution', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const events = []
+  let registered, listeners
+  const { ctx } = host(async (tools, hooks) => {
+    registered = tools
+    listeners = hooks
+    await new Promise(() => {})
+  })
+  const result = runVideoAgent({ ctx, sessionId: 'live', cwd: '/tmp', prompt: 'make', tools, runtime: {}, onProgress: event => events.push(event) })
+  await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(24999)
+  assert.equal(events.some(event => event.type === 'activity'), false)
+  t.mock.timers.tick(1)
+  assert.deepEqual(events.at(-1), { type: 'activity', text: '正在等待模型生成下一步…' })
+  assert.equal(events.some(event => event.type === 'wait'), false)
+  const stream = listeners.get('agent/assistant-stream')
+  const frame = { type: 'chunk', chunk: { type: 'reasoning-delta', text: 'planning' } }
+  stream({ sessionId: 'other', frame })
+  assert.match(events.at(-1).text, /正在等待模型/)
+  stream({ sessionId: 'live', frame })
+  assert.deepEqual(events.at(-1), { type: 'activity', text: '模型正在生成下一步…' })
+  t.mock.timers.tick(25000)
+  assert.match(events.at(-1).text, /正在等待模型/)
+  await listeners.get('tools/execute')({ agent: { id: 'live' }, name: 'bash' }, async () => {
+    assert.deepEqual(events.at(-1), { type: 'activity', text: '正在运行生成或渲染脚本…' })
+    t.mock.timers.tick(25000)
+    assert.match(events.at(-1).text, /正在运行/)
+    return { isError: false }
+  })
+  t.mock.timers.tick(25000)
+  assert.match(events.at(-1).text, /正在等待模型/)
+  await registered.get('submit').execute({})
+  await result
+  const count = events.length
+  t.mock.timers.tick(120000)
+  assert.equal(events.length, count)
 })
 
 test('keeps an active tool alive until the total production budget', async t => {

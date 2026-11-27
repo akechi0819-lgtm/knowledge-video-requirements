@@ -98,26 +98,17 @@ test('素材声明合并：契约 assets 字段与 declare_asset 双通道按归
   assert.equal(order[0].name, 'std::string 字符串盒子')
 })
 
-test('implementAsset：调用素材 Agent 并将产物转正', async () => {
+test('已停用声明素材的自动编码入口，声明保持可上传状态', async () => {
   const workspace = await mkdtemp(path.join(tmpdir(), 'bohack-asset-implement-'))
   try {
     const service = createService({}, { workspace })
     await service._internal.ensureDirs()
-    const declared = await service.declareAsset({ name: '枫叶素材', note: '一片秋天的枫叶，用于转场' })
-    const rendered = path.join(workspace, 'render.svg')
-    await writeFile(rendered, '<svg/>')
-    let received
-    service.production.generateAsset = async args => { received = args }
-    service.generatedAssets.availableFiles = async () => ({ approved: [{ path: rendered }] })
-    const out = await service.implementAsset({ id: declared.asset.id })
-    assert.equal(received.id, declared.asset.id)
-    assert.equal(received.doc.assets[0].name, '枫叶素材')
-    assert.match(received.doc.assets[0].description, /枫叶/)
-    assert.match(out.asset.path, /^sources\/.+\.svg$/)
-    assert.equal(out.asset.declared, undefined)
-    assert.equal(out.asset.trust, 'unvetted')
-    assert.match(await readFile(path.join(workspace, out.asset.path), 'utf8'), /<svg/)
-    await assert.rejects(service.implementAsset({ id: declared.asset.id }), /声明态/)
+    const declared = await service.declareAsset({ name: '枫叶素材', note: '一片秋天的枫叶' })
+    await assert.rejects(service.implementAsset({ id: declared.asset.id }), /已取消独立编码素材阶段/)
+    const assets = await service.listAssets()
+    const asset = assets.assets.find(item => item.id === declared.asset.id)
+    assert.equal(asset.declared, true)
+    assert.equal(asset.path, '')
   } finally { await rm(workspace, { recursive: true, force: true }) }
 })
 

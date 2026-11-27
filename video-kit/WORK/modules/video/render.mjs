@@ -10,6 +10,7 @@ import STYLE, { MODULE_DIR } from './style.mjs';
 import { FF, assertClipPlayable, runRetry } from './ffmpeg.mjs';
 import { installSceneRoutes } from './isolated-page.mjs';
 import { childEnvironment, runtimePaths, writablePath } from './runtime.mjs';
+import { openManagedStage } from './managed-stage.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -61,6 +62,10 @@ async function renderToClip(plan, audioFile, outDir, framesDir) {
 
   const t0 = Date.now();
   let captured = 0;
+  const fractions = plan.beatId ? [0.25, 0.75] : [];
+  const samples = [];
+  const stillsDir = path.join(outDir, 'stills');
+  if (fractions.length) fs.mkdirSync(stillsDir, { recursive: true });
   const staticLeadFrames = plan.targetNames?.length ? Math.ceil(plan.audioStart * fps) : 0;
   try {
     const pageCount = Math.max(1, STYLE.capture.pages);
@@ -71,29 +76,40 @@ async function renderToClip(plan, audioFile, outDir, framesDir) {
         const manifest = JSON.parse(fs.readFileSync(process.env.VIDEO_ASSET_MANIFEST, 'utf8'));
         await installSceneRoutes(context, plan.scenePath, manifest.root, manifest.assets);
       }
-      const pg = await context.newPage();
-      // scene.html reads STYLE/PLAN while its own script executes, so they must
-      // exist before any page script runs — not injected after goto.
-      await pg.addInitScript(([style, pl]) => {
-        window.STYLE = style; window.__PLAN__ = pl;
-        if (pl.role === "prepared_html") { window.RTCPeerConnection = undefined; window.webkitRTCPeerConnection = undefined; }
-      }, [STYLE, plan]);
-      await pg.goto(process.env.VIDEO_ASSET_MANIFEST ? 'https://video.invalid/scenes/scene.html' : pathToFileURL(plan.scenePath || path.join(MODULE_DIR, 'scene.html')).href);
-      await pg.waitForFunction('typeof window.seek === "function" && !!window.__PLAN__ && !!window.STYLE');
-      pages.push(pg);
+      if (plan.stage) {
+        pages.push(await openManagedStage(context, STYLE, plan));
+      } else {
+        const pg = await context.newPage();
+        // scene.html needs STYLE and PLAN while its own script executes.
+        await pg.addInitScript(([style, pl]) => {
+          window.STYLE = style; window.__PLAN__ = pl;
+          if (pl.role === "prepared_html") { window.RTCPeerConnection = undefined; window.webkitRTCPeerConnection = undefined; }
+        }, [STYLE, plan]);
+        await pg.goto(process.env.VIDEO_ASSET_MANIFEST ? 'https://video.invalid/scenes/scene.html' : pathToFileURL(plan.scenePath || path.join(MODULE_DIR, 'scene.html')).href);
+        await pg.waitForFunction('typeof window.seek === "function" && !!window.__PLAN__ && !!window.STYLE');
+        pages.push({ view: pg.locator('#stage'), seek: t => pg.evaluate(seconds => window.seek(seconds), t) });
+      }
     }
 
     const ext = STYLE.capture.type === 'jpeg' ? 'jpg' : 'png';
-    await Promise.all(pages.map(async (pg, p) => {
+    await Promise.all(pages.map(async (page, p) => {
       for (let i = p; i < plan.frames; i += pageCount) {
-        await pg.evaluate((t) => window.seek(t), i / fps);
-        // The first raster of a new layer state (fractional-opacity saveLayer)
-        // races with capture and differs run-to-run; the second raster of the
-        // same state is settled and byte-stable. Discard the first.
-        await pg.locator('#stage').screenshot();
-        const opts = { path: path.join(framesDir, `f${String(i).padStart(5, '0')}.${ext}`) };
+        await page.seek(i / fps);
+        // The first raster of a new layer state can race with capture.
+        await page.view.screenshot();
+        const opts = { type: STYLE.capture.type, path: path.join(framesDir, `f${String(i).padStart(5, '0')}.${ext}`) };
         if (STYLE.capture.type === 'jpeg') opts.quality = STYLE.capture.quality;
-        await pg.locator('#stage').screenshot(opts);
+        const screenshot = await page.view.screenshot(opts);
+        const matching = fractions.filter(fraction => Math.floor(plan.frames * fraction) === i);
+        if (matching.length) {
+          // Read the active DOM of the shot that contributed to the same frame.
+          const [shotId, caption] = await Promise.all([page.shotId(), page.caption()]);
+          for (const fraction of matching) {
+            const still = `${plan.id}-${fraction * 100}.${ext}`;
+            fs.writeFileSync(path.join(stillsDir, still), screenshot);
+            samples.push({ fraction, time: plan.start + plan.duration * fraction, shotId, caption, still });
+          }
+        }
         captured++;
       }
     }));
@@ -141,5 +157,6 @@ async function renderToClip(plan, audioFile, outDir, framesDir) {
     encodeMs,
     measuredDuration: verified.duration,
     plannedDuration: plan.duration,
+    samples: samples.sort((a, b) => a.fraction - b.fraction),
   };
 }

@@ -113,7 +113,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
           : Boolean(legacyService?.production?.isActive?.())
         json(res, 200, { ok: true, busy: rendering, reason: rendering ? 'video_production_running' : null }); return
       }
-      const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
+      const assetTypes = { 'studio.css': 'text/css', 'preview.js': 'text/javascript', 'settings.js': 'text/javascript', 'qrcode.js': 'text/javascript', 'film.js': 'text/javascript', 'paper-fiber.png': 'image/png' }
       const asset = pathname.slice('/bohack/'.length)
       if (pathname.startsWith('/bohack/') && Object.hasOwn(assetTypes, asset) && (method === 'GET' || method === 'HEAD')) {
         const data = await readFile(path.join(path.dirname(HTML_FILE), asset))
@@ -370,7 +370,7 @@ export function createWebHandler(legacyService, legacyEngine, ctx, threads, vide
       }
       let out
       switch (pathname) {
-        case '/bohack/api/generated-assets-generate': out = generatedUrls(await service.production.generateAsset({ ...await generatedContext(body.version), id: body.id, feedback: body.feedback })); break
+        case '/bohack/api/generated-assets-generate': throw new Error('当前版本已取消独立编码素材阶段，请在资料库上传素材。')
         case '/bohack/api/asset-implement': out = await service.implementAsset(body); break
         case '/bohack/api/preview': {
           const current = await service.status()

@@ -1,6 +1,6 @@
 /* 讲界成片台：播放完整视频，并在有映射时提供时间跳转。 */
 window.BohackFilm = (() => {
-  const PHASES = ['编码素材', '生成画面', '配音与渲染', '自动质检', '制作完成']
+  const PHASES = ['生成画面', '配音与渲染', '自动质检', '制作完成']
 
   function qs(root, sel) { return root.querySelector(sel) }
 
@@ -48,16 +48,17 @@ window.BohackFilm = (() => {
       return mappedSections(p).length ? '成片已做好，可点击时间点跳转观看。' : '成片已做好，可以播放和下载。'
     }
     if (p.waitMessage) return p.waitMessage
+    if (p.status === 'running' && p.activity === '连接意外中断，正在自动重试续跑…') return p.activity
     const sections = p.sections || []
     const withScene = sections.filter(s => s.scene).length
     const withAudio = sections.filter(s => s.audio).length
     const withClip = sections.filter(s => s.clip).length
-    if (p.phase === '正在制作视频' || p.phase === '编写画面') {
+    if (['启动视频制作 Agent', '正在制作视频', '编写画面'].includes(p.phase)) {
       const missing = sections.filter(s => !s.scene)
       if (withScene && missing.length) return `等待 ${missing.map(s => s.id).join('、')} 的画面，已保存 ${withScene} / ${sections.length} 段。`
-      return withScene ? '各段画面已保存，正在准备预览与合成。' : '视频 Agent 正在读取蓝图和素材，设计画面。'
+      return withScene ? '各段画面已保存，正在准备预览与合成。' : (p.status === 'running' && p.activity) || '视频 Agent 正在读取蓝图和素材，设计画面。'
     }
-    if (['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)) return '素材 Agent 正在按蓝图和选定风格制作、检查素材。'
+    if (['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)) return (p.status === 'running' && p.activity) || '素材 Agent 正在按蓝图和选定风格制作、检查素材。'
     if (p.phase === '生成画面') {
       const current = sections.find(s => !s.scene)
       if (current) return withScene ? `${current.id} 正在生成画面，已完成 ${withScene} / ${sections.length} 段。` : '正在根据蓝图生成各段画面。'
@@ -75,9 +76,8 @@ window.BohackFilm = (() => {
 
   function renderPhases(rail, p) {
     if (!p || p.status === 'completed') { rail.hidden = true; rail.replaceChildren(); return }
-    const phases = p.mode === 'agent' ? ['编码素材', '启动视频制作 Agent', '生成配音', '编写画面', '预览画面', '配音与渲染', '自动质检', '制作完成'] : PHASES
-    const isAssetPhase = ['生成素材', '准备编码素材', '正在编码制作素材'].includes(p.phase)
-    const phase = isAssetPhase ? '编码素材' : p.phase === '正在制作视频' ? '编写画面' : p.phase
+    const phases = p.mode === 'agent' ? ['启动视频制作 Agent', '生成配音', '编写画面', '预览画面', '配音与渲染', '自动质检', '制作完成'] : PHASES
+    const phase = p.phase === '正在制作视频' ? '编写画面' : p.phase
     const idx = Math.max(0, phases.indexOf(phase))
     const failed = p.status === 'failed' || p.status === 'interrupted'
     rail.hidden = false
@@ -338,7 +338,7 @@ window.BohackFilm = (() => {
     root.classList.toggle('is-producing', p?.status === 'running' || p?.status === 'completed')
     root.classList.toggle('is-completed', p?.status === 'completed')
     const signature = JSON.stringify({
-      id: p?.id, status: p?.status, phase: p?.phase, error: p?.error, waitMessage: p?.waitMessage, thread: env.threadId,
+      id: p?.id, status: p?.status, phase: p?.phase, error: p?.error, waitMessage: p?.waitMessage, activity: stageMedia(env.threadId, p, player._active).kind === 'waiting' ? p?.activity : undefined, thread: env.threadId,
       artifacts: p?.artifacts, mapping:p?.mapping, duration:p?.verify?.duration, sections: (p?.sections || []).map(sec => [sec.id, sec.scene, sec.sceneKind, sec.audio, sec.clip]),
     })
     const ctl = renderPlayer(player, p, env.threadId, player._active, signature)

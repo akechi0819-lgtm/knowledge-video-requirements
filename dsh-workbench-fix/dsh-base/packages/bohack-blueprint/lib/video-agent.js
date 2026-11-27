@@ -4,9 +4,34 @@ import { isDeepStrictEqual } from 'node:util'
 import { writeFile } from 'node:fs/promises'
 import { registerSkillExecution } from './skill-process.js'
 
+const toolActivities = new Map([
+  ['skill', '正在加载风格规范…'],
+  ['read', '正在读取制作资料…'],
+  ['write', '正在编写源码…'],
+  ['apply_patch', '正在编写源码…'],
+  ['write_scene', '正在编写画面源码…'],
+  ['bash', '正在运行生成或渲染脚本…'],
+  ['preview', '正在生成画面预览…'],
+  ['view_image', '正在检查画面预览…'],
+  ['submit', '正在校验并提交成片…'],
+])
+
+const transientStreamPattern = /\b(?:UND_ERR_SOCKET|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|other side closed|terminated|fetch failed|stream idle timeout(?: after \d+ms)?)\b/i
+const continueVideo = '本次制作尚未完成。请先补写尚未保存的画面，再对尚未预览的段落各看一张代表性画面；只修复脚本或播放错误、主体缺失、严重遮挡，然后调用 submit 完成制作。已正常的段落直接沿用，静帧与审美建议不拦交片，不新增用户确认。'
+
+function isTransientStreamError(error) {
+  const { message, code, status } = error
+  const details = `${code || ''} ${message || ''}`
+  if ([400, 401, 402, 403, 404].includes(Number(status ?? code))) return false
+  if (['AUTH', 'INVALID_REQUEST', 'INVALID_TOOL_OUTPUT', 'UNKNOWN_TOOL'].includes(code)) return false
+  if (/^(?:HTTP\s+)?(?:400|401|402|403|404)\b|\bHTTP\s+(?:400|401|402|403|404)\b/i.test(message)) return false
+  if (/quota_circuit_broken|tool[_ -]?(?:activation|validation)|工具校验|总时间预算|\bbudgetMs\b|\b(?:abort(?:ed|error)?|cancel(?:led|ed)?)\b/i.test(details)) return false
+  return transientStreamPattern.test(details)
+}
+
 // Each production job gets its own host session and cwd. The caller owns the
 // actual production tools and validates their outputs.
-export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt, tools, onProgress, onTiming, preset = 'bohack-video', continuation, runtime, submitTool = 'submit', statusText = '正在制作视频' }) {
+export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reasoningEffort, prompt, tools, onProgress, onTiming, preset = 'bohack-video', continuation, retryInstruction, runtime, submitTool = 'submit', statusText = '正在制作视频' }) {
   const agents = ctx.get?.('agents') || ctx.agents
   const presets = ctx.get?.('agentPresets') || ctx.agentPresets
   if (!agents?.create || !presets?.mount) throw new Error('DSH 制作会话服务不可用')
@@ -18,27 +43,47 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
   if (names.size !== tools.length) throw new Error('制作工具名称重复')
   let submitted = false
   const activeSessionId = sessionId || `video-${randomUUID()}`
-  let modelError
   let result
   let handle
   let resolveSubmitted
   const submission = new Promise(resolve => { resolveSubmitted = resolve })
   let timer
   let warningTimer
+  let activityTimer
+  let waitingForModel = false
   let warningShown = false
   let rejectTimeout
   let stopped = false
   const toolAbort = new AbortController()
   let activeTools = 0
+  let inheritedTools = 0
   let budgetTimer
+  let retryTimer
   const budgetMs = Number(process.env.BOHACK_VIDEO_BUDGET_MS || 3600000)
   const idleMs = Number(process.env.BOHACK_VIDEO_IDLE_MS || 720000)
+  const maxRetries = Number(process.env.BOHACK_VIDEO_TRANSIENT_RETRIES || 2)
+  if (!Number.isSafeInteger(maxRetries) || maxRetries < 0) throw new Error('制作瞬断重试次数必须是非负整数。')
   if (![budgetMs, idleMs].every(ms => Number.isInteger(ms) && ms > 0 && ms <= 2147483647)) throw new Error('制作总预算和空闲预算必须是有效的毫秒数。')
   const expire = message => {
     stopped = true
     rejectTimeout(new Error(message))
   }
+  const activity = text => onProgress?.({ type: 'activity', text })
+  const armActivity = () => {
+    clearTimeout(activityTimer)
+    if (!onProgress || stopped || submitted || !rejectTimeout || activeTools || inheritedTools || waitingForModel) return
+    activityTimer = setTimeout(() => {
+      waitingForModel = true
+      activity('正在等待模型生成下一步…')
+    }, 25000)
+  }
+  const toolActivity = (name, ownTool = false) => {
+    const text = ownTool && submitTool === 'submit_assets' ? undefined : toolActivities.get(name)
+    if (text || waitingForModel) activity(text || '正在执行制作工具…')
+    waitingForModel = false
+  }
   const armWatchdog = () => {
+    armActivity()
     clearTimeout(timer)
     clearTimeout(warningTimer)
     if (warningShown) {
@@ -79,6 +124,7 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
           if (stopped) return {ok:false, message:'本次制作已暂停。'}
           if (submitted) return {ok:false, message:'本次成片已提交。'}
           activeTools++
+          toolActivity(tool.name, true)
           armWatchdog()
           const timing = onTiming && stepTiming
           const start = onTiming && Date.now()
@@ -86,7 +132,14 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
             const value = await tool.execute(args, toolAbort.signal)
             if (stopped) return {ok:false, message:'本次制作已暂停。'}
             if (value?.ok !== false) toolProgress++
-            if (tool.name === submitTool && value?.ok === true) { submitted = true; result = value; resolveSubmitted() }
+            if (tool.name === submitTool && value?.ok === true) {
+              // DSH commits the submit result and ends the turn without asking the
+              // model for another step after the production session is released.
+              exec?.concludeTurn?.()
+              submitted = true
+              result = value
+              resolveSubmitted()
+            }
             if (!value?.image) return value
             if (llm?.resolveModelInfo) {
               const modelInfo = await llm.resolveModelInfo(provider, model, toolAbort.signal)
@@ -130,12 +183,15 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
       agentCtx.on('tools/execute', async (exec, next) => {
         if (exec.agent?.id !== activeSessionId || names.has(exec.name)) return next()
         const start = Date.now(), timing = stepTiming
+        inheritedTools++
+        toolActivity(exec.name)
         armWatchdog()
         try {
           const value = await next()
           if (!value.isError) toolProgress++
           return value
         } finally {
+          inheritedTools--
           const end = Date.now()
           timing?.intervals.push([start, end])
           timing?.toolNames.add(exec.name)
@@ -147,7 +203,13 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
     agentCtx.on?.('agent/assistant-stream', payload => {
       const chunk = payload?.frame?.type === 'chunk' ? payload.frame.chunk : null
       const streamSessionId = payload?.sessionId ?? payload?.session?.id
-      if (chunk && (streamSessionId == null || streamSessionId === activeSessionId)) armWatchdog()
+      if (chunk && (streamSessionId == null || streamSessionId === activeSessionId)) {
+        if (waitingForModel) {
+          waitingForModel = false
+          activity('模型正在生成下一步…')
+        }
+        armWatchdog()
+      }
       if (stepTiming && (streamSessionId == null || streamSessionId === activeSessionId)) {
         if (chunk?.type === 'reasoning-delta') stepTiming.reasoningChars += chunk.text?.length || 0
         if (chunk?.type === 'text-delta') stepTiming.textChars += chunk.text?.length || 0
@@ -176,8 +238,8 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
         }
       }
       if (session?.id === activeSessionId && event?.type === 'turn/end') {
+        clearTimeout(activityTimer)
         onTiming?.({ type: 'turn', sessionId: activeSessionId, end: event.time, reason: event.data?.reason?.kind })
-        if (event.data?.reason?.kind === 'error') modelError = event.data.reason.error
         if (resolveTurnEnd) {
           turnReason = event.data?.reason
           const resolve = resolveTurnEnd
@@ -189,7 +251,10 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
   }
   try {
     handle = await agents.create({ sessionId: activeSessionId, meta: { cwd: path.resolve(cwd) }, agentOptions: { provider, model, ...(reasoningEffort != null ? { reasoningEffort } : {}) }, setup })
-    onProgress?.({ type: 'status', text: statusText })
+    // Pin the internal session title before its first prompt to avoid a second model request.
+    const sessionTitle = ctx.get?.('sessionTitle') || ctx.sessionTitle
+    if (sessionTitle && handle.agent.session) sessionTitle.rename(handle.agent.session, statusText)
+    await onProgress?.({ type: 'status', text: statusText })
     const timeout = new Promise((_, reject) => { rejectTimeout = reject })
     armWatchdog()
     budgetTimer = setTimeout(() => expire('制作达到总时间预算，已暂停，可继续制作。'), budgetMs)
@@ -197,23 +262,45 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
       submission,
       (async () => {
         let previousProgress = 0
+        let retries = 0
         let instruction = prompt
         while (!submitted && !stopped) {
           const ended = new Promise(resolve => { resolveTurnEnd = resolve })
+          armActivity()
           await handle.agent.followup({ role: 'user', content: [{ type: 'text', text: instruction }], source: { kind: 'user' }, id: randomUUID() })
           await ended
-          if (modelError) {
+          if (submitted || stopped) return
+          if (turnReason?.kind === 'error') {
+            const modelError = turnReason.error
+            if (isTransientStreamError(modelError)) {
+              const summary = [...new Set([modelError.message, modelError.code].flatMap(value =>
+                String(value || '').match(new RegExp(transientStreamPattern.source, 'gi')) || []
+              ))].join(' / ').slice(0, 160)
+              if (retries === maxRetries) throw new Error(`画面模型连接中断，已自动重试 ${retries} 次。可点击「继续原制作」。原因：${summary}`)
+              // DSH settles failed streams as assistant/attempt and retires the driver
+              // after turn/end. Wait for true idle before waking the same session.
+              await handle.agent.whenIdle()
+              if (submitted || stopped) return
+              retries++
+              onTiming?.({ type: 'transient-retry', attempt: retries, error: summary })
+              waitingForModel = false
+              armWatchdog()
+              activity('连接意外中断，正在自动重试续跑…')
+              await new Promise(resolve => { retryTimer = setTimeout(resolve, retries === 1 ? 2000 : 5000) })
+              if (submitted || stopped) return
+              instruction = retryInstruction ? await retryInstruction() : continuation || continueVideo
+              continue
+            }
             const status = /^(?:HTTP\s+)?(429|500|502|503|504)\s*:/.exec(modelError.message)?.[1]
             if (status === '429') throw new Error('画面模型请求受到限制（429），制作已暂停。')
             if (status) throw new Error(`画面模型服务暂时不可用（${status}），制作已暂停。`)
-            throw new Error(modelError.message)
+            throw Object.assign(new Error(modelError.message), { code: modelError.code, status: modelError.status })
           }
-          if (submitted || stopped) return
           if (!['completed', 'max-tokens'].includes(turnReason?.kind)) throw new Error(`视频制作会话已中止，未提交成片（${turnReason?.kind || '未知结束状态'}）`)
           if (toolProgress === previousProgress) throw new Error('视频制作尚未提交，且会话没有新的工具进展')
           previousProgress = toolProgress
           await handle.agent.whenIdle?.()
-          instruction = continuation || '本次制作尚未完成。请先补写尚未保存的画面，再对尚未预览的段落各看一张代表性画面；只修复脚本或播放错误、主体缺失、严重遮挡，然后调用 submit 完成制作。已正常的段落直接沿用，静帧与审美建议不拦交片，不新增用户确认。'
+          instruction = continuation || continueVideo
         }
       })(),
       timeout,
@@ -233,7 +320,9 @@ export async function runVideoAgent({ ctx, sessionId, cwd, model, provider, reas
     stopped = true
     clearTimeout(timer)
     clearTimeout(warningTimer)
+    clearTimeout(activityTimer)
     clearTimeout(budgetTimer)
+    clearTimeout(retryTimer)
     if (runtime) {
       toolAbort.abort()
       await Promise.allSettled([...runtime.processes].map(process => process.done))

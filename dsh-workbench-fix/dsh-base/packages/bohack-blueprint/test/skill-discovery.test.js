@@ -89,8 +89,8 @@ test('同名 Skill 并发任务各自读取正确别名并共享持久缓存', a
   } finally {
     if (oldCache === undefined) delete process.env.JIANGJIE_CACHE_DIR
     else process.env.JIANGJIE_CACHE_DIR = oldCache
-    for (const runtime of [a, b]) if (runtime) await rm(runtime.tmp, { recursive: true, force: true })
-    await rm(root, { recursive: true, force: true })
+    for (const runtime of [a, b]) if (runtime) await rm(runtime.tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
