@@ -39,7 +39,13 @@ pwsh -File scripts/build-win-desktop.ps1 -AppVersion 0.2.1 -ReleaseSequence 2
 pwsh -File scripts/windows/package-installer.ps1 -Version 0.2.1 -ReleaseSequence 2 -Channel beta
 ```
 
-CI 发布门禁位于 `.github/workflows/release-windows.yml`，按「`build-windows`（运行时组装、C++ 编译与单测、双轨在线/离线安装包及组件差分包）→ `verify-clean-windows`（纯净机 PATH 清洗后安装、桌面启动、`/bohack/api/health` 与 `/bohack/api/desktop/busy` 验收、卸载回归）→ `publish-release`（上传 GitHub Release 与清单）」三阶段执行；官网 `#downloads` 由 `frontend/public/site/downloads.js` 动态读取 `/downloads/release-manifest.json`，服务器上线可使用 `scripts/deploy-win-release-server.sh`。
+CI 发布门禁位于 `.github/workflows/release-windows.yml`，按「`build-windows`（运行时组装、C++ 编译与单测、双轨在线/离线安装包及组件差分包）→ `verify-clean-windows`（纯净机 PATH 清洗后安装、桌面启动、`/bohack/api/health` 与 `/bohack/api/desktop/busy` 验收、卸载回归）→ `publish-release`（上传 GitHub Release 与清单）」三阶段执行。Windows 安装包发布与官网静态文件同步各自执行。
+
+## 官网发布
+
+官网首页在 `frontend/public/site/index.html`，下载区使用已上线的 macOS 和 Windows 安装包直链。安装包由发布流程先上传并校验，确认可下载后再改官网链接。
+
+官网 PR 合入 `main` 后，`Deploy Official Website` 同步首页和 `media/` 到生产站点。工作流使用 GitHub 的 `production` 环境和服务器专用 rsync 账号。首次启用时，在 `main` 上先手动运行 `dry_run=true` 检查同步差异，再运行 `dry_run=false` 校验公网首页、两个下载、旧工作台跳转和会员支付返回页。验收通过后设置仓库变量 `SITE_AUTO_DEPLOY=true`，启用合并触发。需要回滚首页时，将对应的回退 PR 合入 `main`。
 
 ## 旧网页预览的自托管说明
 
