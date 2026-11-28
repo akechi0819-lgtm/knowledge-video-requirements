@@ -1,0 +1,82 @@
+name: Deploy Official Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/public/site/index.html'
+      - 'frontend/public/site/media/**'
+      - 'scripts/check-site-downloads.sh'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只查看同步差异'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jiangjie-site-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.SITE_AUTO_DEPLOY == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      SITE_URL: https://jiangjie.gingers.cloud
+      SITE_DIR: frontend/public/site
+      SITE_DRY_RUN: ${{ inputs.dry_run == true }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check both installer URLs before sync
+        run: bash scripts/check-site-downloads.sh "$SITE_DIR/index.html" "$SITE_URL"
+
+      - name: Sync the official website
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?production environment: DEPLOY_HOST is required}"
+          : "${DEPLOY_USER:?production environment: DEPLOY_USER is required}"
+          : "${DEPLOY_SSH_KEY:?production environment: DEPLOY_SSH_KEY is required}"
+          : "${DEPLOY_KNOWN_HOSTS:?production environment: DEPLOY_SSH_KNOWN_HOSTS is required}"
+
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -r "$ssh_dir"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/id"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+
+          args=()
+          if [[ "$SITE_DRY_RUN" == true ]]; then
+            args+=(--dry-run)
+            echo 'Dry run: rsync will report changes without writing to the server.'
+          fi
+
+          rsync -rt --checksum --omit-dir-times --itemize-changes "${args[@]}" \
+            --include='/index.html' --include='/media/***' --exclude='*' \
+            -e "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o ConnectTimeout=15 -i $ssh_dir/id" \
+            "$SITE_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:./"
+
+      - name: Verify the deployed page, downloads and existing routes
+        if: inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 20 "$SITE_URL/?deploy=$GITHUB_SHA" | cmp "$SITE_DIR/index.html" -
+          bash scripts/check-site-downloads.sh "$SITE_DIR/index.html" "$SITE_URL"
+          redirect="$(curl -fsS --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' "$SITE_URL/bohack/")"
+          [[ "$redirect" == "302 $SITE_URL/#downloads" ]]
+          curl -fsS --max-time 20 -o /dev/null "$SITE_URL/desktop-membership/payment/return"

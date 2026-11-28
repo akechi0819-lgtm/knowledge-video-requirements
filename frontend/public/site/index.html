@@ -272,40 +272,10 @@
   .clock{font-size:clamp(56px,13vw,200px);font-weight:300;line-height:1;letter-spacing:.02em;font-variant-numeric:tabular-nums}
   .clock .t{color:var(--muted)}
   .cta p{max-width:560px;color:#cfcfcf;text-wrap:pretty}
-
-  /* ---------- Downloads ---------- */
-  .downloads{padding:clamp(96px,13vw,160px) 0;border-top:1px solid var(--line);background:linear-gradient(180deg,#050505 0%,#0b0b0d 100%)}
-  .dl-shell{display:grid;gap:36px}
-  .dl-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:20px}
-  .dl-head p{max-width:520px;color:var(--muted);text-wrap:pretty}
-  .dl-card{border:1px solid var(--line);background:rgba(255,255,255,.02);padding:clamp(24px,4vw,44px);display:flex;flex-direction:column;gap:24px}
-  .dl-bar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:14px;padding-bottom:18px;border-bottom:1px solid var(--line)}
-  .dl-detected{font-size:13px;letter-spacing:.12em;color:#f6ae62}
-  .dl-tabs{display:flex;flex-wrap:wrap;gap:8px}
-  .dl-tab{padding:8px 16px;border:1px solid var(--line);font-size:12px;letter-spacing:.14em;color:var(--muted);transition:border-color .25s,color .25s,background .25s}
-  .dl-tab:hover,.dl-tab.is-active{border-color:var(--fg);color:var(--bg);background:var(--fg)}
-  .dl-primary-row{display:flex;flex-wrap:wrap;align-items:center;gap:20px}
-  .dl-meta{font-size:14px;color:#cfcfcf;letter-spacing:.03em}
-  .dl-state{font-size:13px;color:#f6ae62;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-  .dl-retry{padding:6px 12px;border:1px solid #f6ae62;color:#f6ae62;font-size:12px;letter-spacing:.1em}
-  .dl-details{border-top:1px solid var(--line);padding-top:18px}
-  .dl-details summary{cursor:pointer;font-size:13px;letter-spacing:.14em;color:var(--muted);list-style:none;display:inline-flex;align-items:center;gap:8px}
-  .dl-details summary::-webkit-details-marker{display:none}
-  .dl-details summary::before{content:"+";display:inline-block;width:16px;color:var(--fg)}
-  .dl-details[open] summary::before{content:"−"}
-  .dl-details-body{margin-top:20px;display:flex;flex-direction:column;gap:18px}
-  .dl-sub-row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);background:rgba(0,0,0,.35)}
-  .dl-sub-row strong{display:block;font-size:14px;font-weight:600;color:var(--fg)}
-  .dl-sub-row span{display:block;font-size:13px;color:var(--muted);margin-top:2px}
-  .dl-link{font-size:13px;letter-spacing:.1em;color:#f6ae62;border-bottom:1px solid rgba(246,174,98,.45);padding-bottom:2px}
-  .dl-link:hover{color:var(--fg);border-color:var(--fg)}
-  .dl-sha-list{display:flex;flex-direction:column;gap:10px}
-  .dl-sha-item{padding:12px 14px;border:1px solid rgba(245,245,245,.1);background:#050505;display:flex;flex-direction:column;gap:6px}
-  .dl-sha-head{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;color:var(--muted)}
-  .dl-sha-item code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:#d8d8d8;word-break:break-all}
-  .dl-copy{padding:4px 10px;border:1px solid var(--line);font-size:11px;letter-spacing:.1em;color:var(--fg)}
-  .dl-copy:hover{border-color:#f6ae62;color:#f6ae62}
-  .dl-muted{font-size:12px;color:var(--muted)}
+  .download-options{display:flex;justify-content:center;align-items:stretch;flex-wrap:wrap;gap:16px;width:min(100%,640px)}
+  .download-option{display:flex;flex-direction:column;align-items:stretch;gap:10px;flex:1 1 270px;text-align:left}
+  .download-option .btn{justify-content:space-between;min-height:58px}
+  .download-option small{color:#cfcfcf;font-size:12px;line-height:1.6;letter-spacing:.04em}
 
   footer{border-top:1px solid var(--line);padding:40px 0}
   footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:20px;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
@@ -524,61 +494,29 @@
     </div>
   </section>
 
-  <!-- DOWNLOADS -->
-  <section class="downloads" id="downloads" aria-labelledby="downloads-title"
-           data-manifest-url="/downloads/release-manifest.json"
-           data-fallback-online-url="/downloads/windows/x64/stable/Jiangjie-Setup-Online-x64.exe">
-    <div class="wrap dl-shell">
-      <div class="dl-head reveal">
-        <div>
-          <span class="eyebrow">Desktop Client · 桌面客户端下载</span>
-          <h2 id="downloads-title" class="section-title" style="margin-top:16px">开箱即用的本地视频工坊。</h2>
-        </div>
-        <p>内置完整渲染、配音与工作台运行时，全流程免管理员权限安装、支持后台静默增量更新，项目数据完全保存在您的本机。</p>
-      </div>
-
-      <div class="dl-card reveal">
-        <div class="dl-bar">
-          <span class="dl-detected" data-dl-detected>正在检测您的操作系统…</span>
-          <div class="dl-tabs" data-dl-switcher role="group" aria-label="选择操作系统平台"></div>
-        </div>
-
-        <div class="dl-state" data-dl-state role="status" aria-live="polite">正在获取最新版本清单…</div>
-
-        <div class="dl-primary-row">
-          <a class="btn" data-dl-primary href="/downloads/windows/x64/stable/Jiangjie-Setup-Online-x64.exe">
-            <span data-dl-primary-label>立即下载（在线安装版）</span>
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 3v8M4.5 7.5L8 11l3.5-3.5M3 13.5h10"/></svg>
-          </a>
-          <span class="dl-meta" data-dl-meta>动态加载最新版本号与校验信息…</span>
-        </div>
-
-        <details class="dl-details" data-dl-details>
-          <summary>离线完整安装包、版本号与 SHA-256 校验值</summary>
-          <div class="dl-details-body">
-            <div data-dl-offline-row hidden></div>
-            <div class="dl-sha-list" data-dl-sha-list></div>
-            <p class="dl-muted" data-dl-codec-row hidden></p>
-          </div>
-        </details>
-      </div>
-    </div>
-  </section>
-
   <!-- CTA -->
-  <section class="cta" aria-labelledby="cta-title">
+  <section class="cta" id="downloads" aria-labelledby="cta-title">
     <div class="bg" id="ctaBg"><img src="./media/table.jpg" alt="" /></div>
     <div class="wrap">
       <span class="eyebrow">Ready for liftoff</span>
       <div class="clock" id="ctaClock" aria-hidden="true"><span class="t">T-</span>00:01:30</div>
       <h2 id="cta-title" class="section-title">你的下一条知识视频，从一句话开始。</h2>
       <p>下载讲界桌面版，在本机完成创作与视频制作。账号和平台模型服务需要联网。</p>
-      <div class="ctas" style="display:flex;gap:20px;flex-wrap:wrap;justify-content:center">
-        <a class="btn" href="#downloads">下载桌面版
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v9M4 8l4 4 4-4M3 14h10"/></svg>
-        </a>
-        <a class="btn ghost" href="#mission">再看一遍成片</a>
+      <div class="download-options" aria-label="桌面版下载">
+        <div class="download-option">
+          <a class="btn" href="/downloads/Jiangjie-macOS-arm64-0.2.1.dmg">下载 macOS 版
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v9M4 8l4 4 4-4M3 14h10"/></svg>
+          </a>
+          <small>0.2.1 内测版 · Apple Silicon · macOS 14 或更高版本<br>使用临时签名</small>
+        </div>
+        <div class="download-option">
+          <a class="btn" href="/downloads/Jiangjie-Windows-x64-0.2.1-win-native.12-setup.exe">下载 Windows x64 版
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2v9M4 8l4 4 4-4M3 14h10"/></svg>
+          </a>
+          <small>0.2.1-win-native.12 内测版 · Windows 11 / Windows 10 22H2（64 位）<br>完整离线安装包 · 未签名</small>
+        </div>
       </div>
+      <a class="btn ghost" href="#mission">再看一遍成片</a>
     </div>
   </section>
 </main>
@@ -592,8 +530,6 @@
     </nav>
   </div>
 </footer>
-
-<script src="./downloads.js" defer></script>
 
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
