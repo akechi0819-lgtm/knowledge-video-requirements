@@ -1,0 +1,107 @@
+name: Deploy Windows Offline Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已通过 Windows CI 的 GitHub Release tag'
+        type: string
+        required: true
+      source_run_id:
+        description: '通过验收与发布的 Windows CI run ID'
+        type: string
+        required: true
+      source_attempt:
+        description: 'Windows CI 的运行尝试编号'
+        type: string
+        default: '1'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: jiangjie-windows-offline
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: windows-downloads
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      SOURCE_RUN: ${{ inputs.source_run_id }}
+      SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+    steps:
+      - name: Verify the Windows clean-machine and GitHub Release gates
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$ ]]
+          [[ "$SOURCE_RUN" =~ ^[1-9][0-9]*$ && "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          source="$RUNNER_TEMP/windows-source.json"
+          gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN/attempts/$SOURCE_ATTEMPT" > "$source"
+          jq -e --arg repo "$GH_REPO" '
+            .path == ".github/workflows/release-windows.yml" and .head_repository.full_name == $repo
+          ' "$source" >/dev/null
+          gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN/attempts/$SOURCE_ATTEMPT/jobs" |
+            jq -e '
+              ([.jobs[] | select(.name == "Verify on Clean Windows Runner (E2E Gate)" and .conclusion == "success")] | length == 1) and
+              ([.jobs[] | select(.name == "Publish Verified Release (GitHub + CDN/Object Storage)" and .conclusion == "success")] | length == 1)
+            ' >/dev/null
+
+      - name: Download and verify the published offline installer
+        run: |
+          set -euo pipefail
+          # First production acceptance replays the previously verified .12 release.
+          [[ "$TAG" == v0.2.1-win-native.12 && "$SOURCE_RUN" == 45955644980 && "$SOURCE_ATTEMPT" == 1 ]]
+          jq -e --arg tag "$TAG" '.event == "push" and .head_branch == $tag' "$RUNNER_TEMP/windows-source.json" >/dev/null
+          digest=6c47b337e8b0837c4bb37f693b4a2c09425e068813274369926444c57b743d9b
+          asset=Jiangjie-Setup-Offline-x64.exe
+          release="$(gh api "repos/$GH_REPO/releases/tags/$TAG")"
+          size="$(jq -er --arg name "$asset" --arg digest "sha256:$digest" '
+            select(.draft == false)
+            | .assets[] | select(.name == $name and .state == "uploaded" and .digest == $digest) | .size
+          ' <<< "$release")"
+          [[ "$size" =~ ^[1-9][0-9]*$ ]]
+          gh release download "$TAG" --pattern "$asset" --dir "$RUNNER_TEMP"
+          [[ "$(stat -c %s "$RUNNER_TEMP/$asset")" == "$size" ]]
+          printf '%s  %s\n' "$digest" "$RUNNER_TEMP/$asset" | sha256sum -c
+          printf 'INSTALLER_SHA=%s\nINSTALLER_SIZE=%s\n' "$digest" "$size" >> "$GITHUB_ENV"
+
+      - name: Publish the verified offline installer via the restricted receiver
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?windows-downloads environment requires DEPLOY_HOST}"
+          : "${DEPLOY_USER:?windows-downloads environment requires DEPLOY_USER}"
+          : "${DEPLOY_SSH_KEY:?windows-downloads environment requires DEPLOY_SSH_KEY}"
+          : "${DEPLOY_KNOWN_HOSTS:?windows-downloads environment requires DEPLOY_SSH_KNOWN_HOSTS}"
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -r "$ssh_dir"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/id"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o ConnectTimeout=15 -i "$ssh_dir/id" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "publish $TAG $INSTALLER_SHA $INSTALLER_SIZE" \
+            < "$RUNNER_TEMP/Jiangjie-Setup-Offline-x64.exe"
+
+      - name: Verify the public versioned installer and byte ranges
+        run: |
+          set -euo pipefail
+          url="https://jiangjie.gingers.cloud/downloads/windows/offline/$TAG/Jiangjie-Setup-Offline-x64.exe"
+          headers="$(curl -fsS --max-time 30 --max-filesize 1024 --range 0-1023 \
+            --dump-header - --output "$RUNNER_TEMP/windows-installer-prefix" "$url" | tr -d '\r')"
+          grep -qiE '^HTTP/[^ ]+ 206([ ]|$)' <<< "$headers"
+          grep -Fxi "Content-Range: bytes 0-1023/$INSTALLER_SIZE" <<< "$headers"
+          [[ "$(stat -c %s "$RUNNER_TEMP/windows-installer-prefix")" == 1024 ]]
+          [[ "$(head -c 2 "$RUNNER_TEMP/windows-installer-prefix")" == MZ ]]
+          printf 'Windows 下载验收通过：%s\n' "$url" >> "$GITHUB_STEP_SUMMARY"
