@@ -14,6 +14,7 @@
 #   SKIP_SITE_HTML=0                       # 设为 1 时仅同步 /downloads/ 产物，不覆盖 index.html
 # ==============================================================================
 set -euo pipefail
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 TAG="${1:-}"
 if [ -z "$TAG" ]; then
@@ -56,7 +57,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   AUTH_ARGS=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 fi
 
-curl -fsSL "${AUTH_ARGS[@]}" -H "Accept: application/vnd.github+json" "$RELEASE_API" -o "$WORK_DIR/release.json"
+curl -fsSL --retry 3 --retry-delay 3 "${AUTH_ARGS[@]}" -H "Accept: application/vnd.github+json" "$RELEASE_API" -o "$WORK_DIR/release.json"
 
 python3 - "$WORK_DIR/release.json" "$WORK_DIR/asset-urls.tsv" <<'PY'
 import json, sys

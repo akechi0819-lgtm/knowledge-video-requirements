@@ -489,6 +489,110 @@ jobs:
               $PRERELEASE_FLAG
           fi
 
+      - name: Deploy Verified Release to Production Server (Conditional via Secrets)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SITE_ROOT: ${{ vars.DEPLOY_SITE_ROOT || '/opt/jiangjie-preview/site' }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS || '' }}
+          GITHUB_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.build-windows.outputs.tag_name }}
+          SSH_TMP_DIR: ${{ runner.temp }}/deploy-release-ssh-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          MISSING=()
+          [ -z "${DEPLOY_HOST:-}" ] && MISSING+=("DEPLOY_HOST")
+          [ -z "${DEPLOY_USER:-}" ] && MISSING+=("DEPLOY_USER")
+          [ -z "${DEPLOY_SSH_KEY:-}" ] && MISSING+=("DEPLOY_SSH_KEY")
+
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            MISSING_LIST="$(IFS=', '; echo "${MISSING[*]}")"
+            echo "::notice title=Production server auto-deploy skipped (missing secrets)::Missing repository secrets: ${MISSING_LIST}. Configure them under Settings -> Secrets and variables -> Actions -> Repository secrets to enable automatic server deployment."
+            exit 0
+          fi
+
+          PORT="${DEPLOY_PORT:-22}"
+          if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+            echo "::error::Invalid DEPLOY_PORT value (must be an integer between 1 and 65535)."
+            exit 1
+          fi
+
+          SITE_ROOT="${DEPLOY_SITE_ROOT%/}"
+          if ! [[ "$SITE_ROOT" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid DEPLOY_SITE_ROOT value: must be an absolute path without shell metacharacters."
+            exit 1
+          fi
+
+          if ! [[ "$GITHUB_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Unexpected GITHUB_REPO format: ${GITHUB_REPO}"
+            exit 1
+          fi
+
+          if ! [[ "$TAG_NAME" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+            echo "::error::Unexpected TAG_NAME format: ${TAG_NAME}"
+            exit 1
+          fi
+
+          mkdir -p "$SSH_TMP_DIR"
+          chmod 700 "$SSH_TMP_DIR"
+
+          KEY_PATH="${SSH_TMP_DIR}/id_deploy"
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+
+          KNOWN_HOSTS_PATH="${SSH_TMP_DIR}/known_hosts"
+          if [ -n "$DEPLOY_SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" | tr -d '\r' > "$KNOWN_HOSTS_PATH"
+            chmod 644 "$KNOWN_HOSTS_PATH"
+            STRICT_CHECKING="yes"
+          else
+            : > "$KNOWN_HOSTS_PATH"
+            chmod 600 "$KNOWN_HOSTS_PATH"
+            STRICT_CHECKING="accept-new"
+          fi
+
+          ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            -o "StrictHostKeyChecking=${STRICT_CHECKING}" \
+            -o "UserKnownHostsFile=${KNOWN_HOSTS_PATH}" \
+            -p "${PORT}" \
+            -i "${KEY_PATH}" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            bash -s -- "${GITHUB_REPO}" "${TAG_NAME}" "${SITE_ROOT}" <<'REMOTE_EOF'
+          set -euo pipefail
+          REPO="$1"
+          TAG="$2"
+          SITE_ROOT="$3"
+
+          TMP_SCRIPT="$(mktemp /tmp/deploy-win-release-server.XXXXXX.sh)"
+          trap 'rm -f "$TMP_SCRIPT"' EXIT
+
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "https://raw.githubusercontent.com/${REPO}/main/scripts/deploy-win-release-server.sh" \
+            -o "$TMP_SCRIPT"
+          chmod 700 "$TMP_SCRIPT"
+
+          if [ "$(id -u)" -eq 0 ]; then
+            GITHUB_REPO="$REPO" GIT_REF="main" SITE_ROOT="$SITE_ROOT" bash "$TMP_SCRIPT" "$TAG"
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo -n env GITHUB_REPO="$REPO" GIT_REF="main" SITE_ROOT="$SITE_ROOT" bash "$TMP_SCRIPT" "$TAG"
+          else
+            echo "[INFO] Non-root user without passwordless sudo; running deploy script directly."
+            GITHUB_REPO="$REPO" GIT_REF="main" SITE_ROOT="$SITE_ROOT" bash "$TMP_SCRIPT" "$TAG"
+          fi
+          REMOTE_EOF
+
+      - name: Cleanup Temporary Deploy SSH Credentials
+        if: always()
+        env:
+          SSH_TMP_DIR: ${{ runner.temp }}/deploy-release-ssh-${{ github.run_id }}
+        run: rm -rf "$SSH_TMP_DIR"
+
       - name: Sync to S3 / Cloudflare R2 (Conditional via Secrets)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_S3_ACCESS_KEY_ID }}

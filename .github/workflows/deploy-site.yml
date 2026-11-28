@@ -1,0 +1,214 @@
+name: Deploy Official Website Static Assets
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'frontend/public/site/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '仅执行 rsync --dry-run 打印差异，不写入生产服务器'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-site-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-site:
+    name: Test & Deploy Static Site to jiangjie.gingers.cloud
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run website download unit tests
+        run: node --test frontend/public/site/downloads.test.mjs
+
+      - name: Check deployment SSH secrets
+        id: check-secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          MISSING=()
+          [ -z "${DEPLOY_HOST:-}" ] && MISSING+=("DEPLOY_HOST")
+          [ -z "${DEPLOY_USER:-}" ] && MISSING+=("DEPLOY_USER")
+          [ -z "${DEPLOY_SSH_KEY:-}" ] && MISSING+=("DEPLOY_SSH_KEY")
+
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            MISSING_LIST="$(IFS=', '; echo "${MISSING[*]}")"
+            echo "::notice title=Auto-deploy skipped (missing secrets)::Missing repository secrets: ${MISSING_LIST}. Configure them under GitHub Repository -> Settings -> Secrets and variables -> Actions -> Repository secrets (optional secret: DEPLOY_PORT; optional variables: DEPLOY_SITE_ROOT, DEPLOY_SSH_KNOWN_HOSTS)."
+            {
+              echo "### 官网静态页自动部署已安全跳过"
+              echo ""
+              echo "- 缺少必需的 Repository Secrets：\`${MISSING_LIST}\`"
+              echo "- 配置路径：**Settings -> Secrets and variables -> Actions -> Repository secrets**"
+              echo "- 可选 Secret：\`DEPLOY_PORT\`（默认 \`22\`）"
+              echo "- 可选 Variables：\`DEPLOY_SITE_ROOT\`（默认 \`/opt/jiangjie-preview/site\`）、\`DEPLOY_SSH_KNOWN_HOSTS\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "All required deployment secrets are configured."
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare temporary SSH credentials
+        if: steps.check-secrets.outputs.ready == 'true'
+        id: ssh-setup
+        env:
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SITE_ROOT: ${{ vars.DEPLOY_SITE_ROOT || '/opt/jiangjie-preview/site' }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS || '' }}
+          SSH_TMP_DIR: ${{ runner.temp }}/deploy-site-ssh-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+            echo "::error::Invalid DEPLOY_PORT value (must be an integer between 1 and 65535)."
+            exit 1
+          fi
+
+          SITE_ROOT="${DEPLOY_SITE_ROOT%/}"
+          if ! [[ "$SITE_ROOT" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid DEPLOY_SITE_ROOT value: must be an absolute path without shell metacharacters."
+            exit 1
+          fi
+
+          mkdir -p "$SSH_TMP_DIR"
+          chmod 700 "$SSH_TMP_DIR"
+
+          KEY_PATH="${SSH_TMP_DIR}/id_deploy"
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+
+          KNOWN_HOSTS_PATH="${SSH_TMP_DIR}/known_hosts"
+          if [ -n "$DEPLOY_SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" | tr -d '\r' > "$KNOWN_HOSTS_PATH"
+            chmod 644 "$KNOWN_HOSTS_PATH"
+            STRICT_CHECKING="yes"
+          else
+            : > "$KNOWN_HOSTS_PATH"
+            chmod 600 "$KNOWN_HOSTS_PATH"
+            STRICT_CHECKING="accept-new"
+          fi
+
+          {
+            echo "key_path=${KEY_PATH}"
+            echo "known_hosts_path=${KNOWN_HOSTS_PATH}"
+            echo "strict_checking=${STRICT_CHECKING}"
+            echo "port=${PORT}"
+            echo "site_root=${SITE_ROOT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sync frontend/public/site to production server (rsync)
+        if: steps.check-secrets.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ steps.ssh-setup.outputs.port }}
+          KEY_PATH: ${{ steps.ssh-setup.outputs.key_path }}
+          KNOWN_HOSTS_PATH: ${{ steps.ssh-setup.outputs.known_hosts_path }}
+          STRICT_CHECKING: ${{ steps.ssh-setup.outputs.strict_checking }}
+          SITE_ROOT: ${{ steps.ssh-setup.outputs.site_root }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          SSH_OPTS=(
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=3
+            -o "StrictHostKeyChecking=${STRICT_CHECKING}"
+            -o "UserKnownHostsFile=${KNOWN_HOSTS_PATH}"
+            -p "${DEPLOY_PORT}"
+            -i "${KEY_PATH}"
+          )
+          SSH_CMD="ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=${STRICT_CHECKING} -o UserKnownHostsFile=${KNOWN_HOSTS_PATH} -p ${DEPLOY_PORT} -i ${KEY_PATH}"
+
+          # 自动检测是否需要免密 sudo 写入目标站点目录（兼容 root 与普通 sudo 用户）
+          USE_SUDO_RSYNC="$(ssh "${SSH_OPTS[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s -- "$SITE_ROOT" <<'REMOTE_EOF'
+          set -euo pipefail
+          TARGET="$1"
+          if [ "$(id -u)" -eq 0 ] || [ -w "$TARGET" ]; then
+            echo "no"
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            echo "yes"
+          else
+            echo "no"
+          fi
+          REMOTE_EOF
+          )"
+
+          RSYNC_EXTRA_ARGS=()
+          if [ "$USE_SUDO_RSYNC" = "yes" ]; then
+            RSYNC_EXTRA_ARGS+=(--rsync-path="sudo -n rsync")
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Running in dry_run mode: no files will be written to the server."
+            RSYNC_EXTRA_ARGS+=(--dry-run)
+          fi
+
+          # 严格护栏：绝不使用 --delete，并明确排除 downloads/、单测及示例清单
+          rsync -av --no-owner --no-group --omit-dir-times --itemize-changes \
+            "${RSYNC_EXTRA_ARGS[@]}" \
+            --exclude='downloads/' \
+            --exclude='downloads/**' \
+            --exclude='*.test.mjs' \
+            --exclude='downloads/release-manifest.example.json' \
+            -e "$SSH_CMD" \
+            frontend/public/site/ \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${SITE_ROOT}/"
+
+      - name: Public HTTPS smoke check
+        if: steps.check-secrets.outputs.ready == 'true' && inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          check_exact_200() {
+            local url="$1"
+            local code
+            code="$(curl -sS --retry 3 --retry-delay 2 --max-time 20 -o /dev/null -w '%{http_code}' "$url")"
+            echo "GET ${url} -> HTTP ${code}"
+            if [ "$code" != "200" ]; then
+              echo "::error::Smoke check failed for ${url}: expected HTTP 200, got ${code}"
+              exit 1
+            fi
+          }
+
+          check_exact_200 "https://jiangjie.gingers.cloud/"
+          check_exact_200 "https://jiangjie.gingers.cloud/downloads.js"
+
+          MEMBERSHIP_URL="https://jiangjie.gingers.cloud/desktop-membership/"
+          MEMBERSHIP_CODE="$(curl -sS --retry 3 --retry-delay 2 --max-time 20 -o /dev/null -w '%{http_code}' "$MEMBERSHIP_URL")"
+          echo "GET ${MEMBERSHIP_URL} -> HTTP ${MEMBERSHIP_CODE}"
+          if ! [[ "$MEMBERSHIP_CODE" =~ ^(2[0-9]{2}|3[0-9]{2}|401|403)$ ]]; then
+            echo "::error::Smoke check failed for ${MEMBERSHIP_URL}: unexpected HTTP ${MEMBERSHIP_CODE}"
+            exit 1
+          fi
+
+          echo "All public HTTPS smoke checks passed."
+
+      - name: Cleanup temporary SSH credentials
+        if: always()
+        env:
+          SSH_TMP_DIR: ${{ runner.temp }}/deploy-site-ssh-${{ github.run_id }}
+        run: rm -rf "$SSH_TMP_DIR"
