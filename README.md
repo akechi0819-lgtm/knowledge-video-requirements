@@ -39,7 +39,7 @@ pwsh -File scripts/build-win-desktop.ps1 -AppVersion 0.2.1 -ReleaseSequence 2
 pwsh -File scripts/windows/package-installer.ps1 -Version 0.2.1 -ReleaseSequence 2 -Channel beta
 ```
 
-CI 发布门禁位于 `.github/workflows/release-windows.yml`，按「`build-windows`（运行时组装、C++ 编译与单测、双轨在线/离线安装包及组件差分包）→ `verify-clean-windows`（纯净机 PATH 清洗后安装、桌面启动、`/bohack/api/health` 与 `/bohack/api/desktop/busy` 验收、卸载回归）→ `publish-release`（上传 GitHub Release 与清单）」三阶段执行。Windows 安装包发布与官网静态文件同步各自执行。
+CI 发布门禁位于 `.github/workflows/release-windows.yml`，按「`build-windows`（运行时组装、C++ 编译与单测、双轨在线/离线安装包及组件差分包）→ `verify-clean-windows`（纯净机 PATH 清洗后安装、桌面启动、`/bohack/api/health` 与 `/bohack/api/desktop/busy` 验收、卸载回归）→ `publish-release`（上传 GitHub Release 与清单）」三阶段执行。Windows 安装包发布与官网静态文件同步各自执行。Windows CI 通过验收并发布到 GitHub Releases 后，会触发 `Deploy Windows Offline Installer` 校验同一次 CI 记录的包大小与 SHA-256，经专用账号发布到 `/downloads/windows/offline/<tag>/Jiangjie-Setup-Offline-x64.exe`。工作流摘要会给出已验证的公网地址，确认后通过官网 PR 更新下载按钮。
 
 ## 官网发布
 

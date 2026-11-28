@@ -416,6 +416,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+    outputs:
+      receipt_attempt: ${{ steps.offline-receipt.outputs.attempt }}
 
     steps:
       - name: Download Verified Release Artifacts
@@ -484,6 +486,7 @@ jobs:
             gh release edit "$TAG_NAME" --notes-file /tmp/release-notes.md $PRERELEASE_FLAG
           else
             gh release create "$TAG_NAME" "${ASSETS[@]}" \
+              --target "$GITHUB_SHA" \
               --title "讲界视频工坊 v${VERSION} (${CHANNEL})" \
               --notes-file /tmp/release-notes.md \
               $PRERELEASE_FLAG
@@ -581,3 +584,44 @@ jobs:
               "oss://${OSS_BUCKET}/downloads/release-manifest-beta.json" \
               --meta "Cache-Control:no-cache"
           fi
+
+      - name: Record the verified offline installer
+        id: offline-receipt
+        env:
+          TAG_NAME: ${{ needs.build-windows.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          asset=Jiangjie-Setup-Offline-x64.exe
+          sha256="$(awk -v name="$asset" '$2 == name {print $1}' release-dist/SHA256SUMS.txt)"
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+          jq -n --arg tag "$TAG_NAME" --arg commit "$GITHUB_SHA" --arg sha256 "$sha256" \
+            --argjson size "$(stat -c %s "release-dist/$asset")" \
+            '{tag: $tag, commit: $commit, sha256: $sha256, size: $size}' > "$RUNNER_TEMP/windows-offline-receipt.json"
+          printf 'attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the offline publication receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-offline-receipt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-offline-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+  dispatch-offline-deploy:
+    name: Dispatch the Windows offline installer deployment
+    needs: [build-windows, publish-release]
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the production workflow on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.build-windows.outputs.tag_name }}
+          SOURCE_ATTEMPT: ${{ needs.publish-release.outputs.receipt_attempt }}
+        run: |
+          : "${SOURCE_ATTEMPT:?Verified publication receipt is missing}"
+          gh workflow run deploy-win-offline.yml --ref main \
+            -f tag="$TAG_NAME" -f source_run_id="$GITHUB_RUN_ID" -f source_attempt="$SOURCE_ATTEMPT"
