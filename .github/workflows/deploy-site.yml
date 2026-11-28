@@ -66,7 +66,7 @@ jobs:
             echo 'Dry run: rsync will report changes without writing to the server.'
           fi
 
-          rsync -rt --checksum --omit-dir-times --itemize-changes "${args[@]}" \
+          rsync -r --checksum --itemize-changes "${args[@]}" \
             --include='/index.html' --include='/media/***' --exclude='*' \
             -e "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o ConnectTimeout=15 -i $ssh_dir/id" \
             "$SITE_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:./"
