@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: jiangjie-windows-offline
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   deploy:
@@ -47,19 +47,34 @@ jobs:
           jq -e --arg repo "$GH_REPO" '
             .path == ".github/workflows/release-windows.yml" and .head_repository.full_name == $repo
           ' "$source" >/dev/null
-          gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN/attempts/$SOURCE_ATTEMPT/jobs" |
-            jq -e '
-              ([.jobs[] | select(.name == "Verify on Clean Windows Runner (E2E Gate)" and .conclusion == "success")] | length == 1) and
-              ([.jobs[] | select(.name == "Publish Verified Release (GitHub + CDN/Object Storage)" and .conclusion == "success")] | length == 1)
+          gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$SOURCE_RUN/jobs?filter=all&per_page=100" |
+            jq -e --argjson attempt "$SOURCE_ATTEMPT" '
+              [.[].jobs[] | select(.conclusion == "success")] as $jobs
+              | any($jobs[]; .name == "Verify on Clean Windows Runner (E2E Gate)" and .run_attempt <= $attempt)
+              and any($jobs[]; .name == "Publish Verified Release (GitHub + CDN/Object Storage)" and .run_attempt == $attempt)
             ' >/dev/null
 
       - name: Download and verify the published offline installer
         run: |
           set -euo pipefail
-          # First production acceptance replays the previously verified .12 release.
-          [[ "$TAG" == v0.2.1-win-native.12 && "$SOURCE_RUN" == 45955644980 && "$SOURCE_ATTEMPT" == 1 ]]
-          jq -e --arg tag "$TAG" '.event == "push" and .head_branch == $tag' "$RUNNER_TEMP/windows-source.json" >/dev/null
-          digest=6c47b337e8b0837c4bb37f693b4a2c09425e068813274369926444c57b743d9b
+          # Bind the Release to the verified attempt and to a commit on main.
+          source_head="$(jq -er '.head_sha | select(test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/windows-source.json")"
+          tag_ref="${TAG//+/%2B}"
+          if [[ "$(gh api "repos/$GH_REPO/commits/$tag_ref" --jq .sha)" != "$source_head" ]]; then
+            echo '::error::The Release tag is not at the verified Windows commit.'
+            exit 1
+          fi
+          comparison="$(gh api "repos/$GH_REPO/compare/$source_head...$GITHUB_SHA" --jq .status)"
+          if [[ "$comparison" != ahead && "$comparison" != identical ]]; then
+            echo '::error::The verified Windows commit is not part of main.'
+            exit 1
+          fi
+          gh run download "$SOURCE_RUN" --name "windows-offline-receipt-$SOURCE_ATTEMPT" --dir "$RUNNER_TEMP/windows-receipt"
+          receipt="$RUNNER_TEMP/windows-receipt/windows-offline-receipt.json"
+          jq -e --arg tag "$TAG" --arg commit "$source_head" '
+            .tag == $tag and .commit == $commit and (.sha256 | test("^[0-9a-f]{64}$"))
+          ' "$receipt" >/dev/null
+          digest="$(jq -er '.sha256' "$receipt")"
           asset=Jiangjie-Setup-Offline-x64.exe
           release="$(gh api "repos/$GH_REPO/releases/tags/$TAG")"
           size="$(jq -er --arg name "$asset" --arg digest "sha256:$digest" '
@@ -67,6 +82,7 @@ jobs:
             | .assets[] | select(.name == $name and .state == "uploaded" and .digest == $digest) | .size
           ' <<< "$release")"
           [[ "$size" =~ ^[1-9][0-9]*$ ]]
+          [[ "$(jq -er '.size' "$receipt")" == "$size" ]]
           gh release download "$TAG" --pattern "$asset" --dir "$RUNNER_TEMP"
           [[ "$(stat -c %s "$RUNNER_TEMP/$asset")" == "$size" ]]
           printf '%s  %s\n' "$digest" "$RUNNER_TEMP/$asset" | sha256sum -c
